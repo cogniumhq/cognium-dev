@@ -194,7 +194,7 @@ describe('option parsing', () => {
 });
 
 describe('refused before scanning', () => {
-  test('bad options exit 1 with nothing on stdout', async () => {
+  test('bad options exit 2 with nothing on stdout', async () => {
     for (const args of [
       ['deadcode', ts, '--verdicts', 'bogus'],
       ['deadcode', ts, '--root-kinds', 'nope'],
@@ -204,7 +204,7 @@ describe('refused before scanning', () => {
       ['deadcode', join(dir, 'missing')],
     ]) {
       const r = await runCli(args);
-      expect(r.code).toBe(1);
+      expect(r.code).toBe(2);
       expect(r.stdout).toBe('');
       expect(r.stderr).toContain('Error:');
     }
@@ -212,7 +212,7 @@ describe('refused before scanning', () => {
 
   test('a mixed tree must name its language', async () => {
     const r = await runCli(['entries', mixed]);
-    expect(r.code).toBe(1);
+    expect(r.code).toBe(2);
     expect(r.stderr).toContain('pass --language');
     const ok = await runCli(['entries', mixed, '--language', 'python', '-f', 'json']);
     expect(ok.code).toBe(0);
@@ -386,7 +386,7 @@ describe('entries --facts-arrow', () => {
 
   test('is refused on a non-Java tree', async () => {
     const r = await runCli(['entries', ts, '--facts-arrow', join(dir, 'nope')]);
-    expect(r.code).toBe(1);
+    expect(r.code).toBe(2);
     expect(r.stdout).toBe('');
     expect(r.stderr).toContain('Java');
   });
@@ -443,7 +443,7 @@ describe('Java registering files', () => {
 
   test('--exported-packages is refused on a non-Java tree', async () => {
     const r = await runCli(['entries', ts, '--exported-packages']);
-    expect(r.code).toBe(1);
+    expect(r.code).toBe(2);
     expect(r.stdout).toBe('');
     expect(r.stderr).toContain('Java');
   });
@@ -480,7 +480,7 @@ describe('reach', () => {
     expect(readFileSync(join(repo, 'src/index.ts'), 'utf-8')).toBe('export function api(): number { return 1; }\n');
 
     const bad = await runCli(['reach', '--base', 'no-such-ref', repo]);
-    expect(bad.code).toBe(1);
+    expect(bad.code).toBe(2);
     expect(bad.stderr).toContain('neither a directory nor a commit');
   });
 });

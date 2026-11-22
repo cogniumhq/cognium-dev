@@ -18,7 +18,9 @@
  * - **Loads**: a class reaches its dunder methods (`__str__`, `__enter__`, …),
  *   which the runtime calls without a call site.
  * - **Entries** (`entry-index@0.1`): Flask and FastAPI routes (blueprint and
- *   router prefixes composed), Django `urls.py` routes, click commands,
+ *   router prefixes composed), Django `urls.py` routes (`include()` prefixes
+ *   composed, inline and across project urls modules; DRF `@api_view` and
+ *   generic-view verbs), click commands,
  *   `if __name__ == "__main__"` blocks and `main` files, console scripts,
  *   Celery tasks, Django management commands, pytest and unittest tests.
  * - **typeOnly**: `Protocol` classes, `@overload` stubs and `.pyi` files.
@@ -91,6 +93,34 @@ const TEST_FILE = /(^|\/)(test_[^/]*|[^/]*_test)\.py$|(^|\/)tests?\/.*\.py$|(^|\
 const TEST_CASE_BASES = new Set(['TestCase', 'unittest.TestCase', 'IsolatedAsyncioTestCase', 'TransactionTestCase', 'SimpleTestCase', 'APITestCase', 'LiveServerTestCase']);
 const TEST_LIFECYCLE = new Set(['setUp', 'tearDown', 'setUpClass', 'tearDownClass', 'asyncSetUp', 'asyncTearDown', 'setup_method', 'teardown_method', 'setup_class', 'teardown_class']);
 const DJANGO_CBV_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'dispatch', 'get_queryset', 'get_context_data', 'get_object', 'form_valid', 'form_invalid', 'perform_create', 'perform_update', 'perform_destroy', 'list', 'create', 'retrieve', 'update', 'partial_update', 'destroy']);
+const DJANGO_URL_CALLS = new Set(['path', 're_path', 'url', 'django.urls.path', 'django.urls.re_path']);
+const URLS_FILE = /(^|\/)urls\.py$/;
+/** Most mount chains one urls module may be reached through. */
+const MAX_URL_MOUNT_CHAINS = 32;
+/** HTTP verbs a DRF generic view serves, by base class. */
+const DRF_GENERIC_VERBS: Record<string, string[]> = {
+  ListAPIView: ['GET'],
+  CreateAPIView: ['POST'],
+  RetrieveAPIView: ['GET'],
+  DestroyAPIView: ['DELETE'],
+  UpdateAPIView: ['PUT', 'PATCH'],
+  ListCreateAPIView: ['GET', 'POST'],
+  RetrieveUpdateAPIView: ['GET', 'PUT', 'PATCH'],
+  RetrieveDestroyAPIView: ['GET', 'DELETE'],
+  RetrieveUpdateDestroyAPIView: ['GET', 'PUT', 'PATCH', 'DELETE'],
+};
+/** HTTP verbs that reach a DRF action or hook method. */
+const DRF_ACTION_VERBS: Record<string, string[]> = {
+  list: ['GET'],
+  retrieve: ['GET'],
+  create: ['POST'],
+  update: ['PUT'],
+  partial_update: ['PATCH'],
+  destroy: ['DELETE'],
+  perform_create: ['POST'],
+  perform_update: ['PUT', 'PATCH'],
+  perform_destroy: ['DELETE'],
+};
 
 // ---------------------------------------------------------------------------
 // Per-file context
@@ -141,6 +171,46 @@ function stringValue(n: Node | null | undefined): string | null {
 function walk(node: Node, visit: (n: Node) => boolean | void): void {
   if (visit(node) === false) return;
   for (const c of namedChildren(node)) walk(c, visit);
+}
+
+/** A Django route as concatenated by the resolver: no regex anchors. */
+function djangoRoute(route: string): string {
+  return route.replace(/^\^/, '').replace(/\$$/, '');
+}
+
+/** A `path()` / `re_path()` / `url()` call: its route (inline `include([...])` prefixes composed) and its view. */
+interface DjangoPattern {
+  call: Node;
+  callee: string;
+  /** The route as written in this file, with enclosing inline prefixes; no leading `/`. */
+  route: string;
+  written: string;
+  view: Node;
+  /** The argument of `include(...)` when the view is one (a tuple's first element). */
+  include?: Node;
+}
+
+/** Each Django URL pattern under `node`, descending into inline `include([...])` lists. */
+function djangoPatterns(node: Node, prefix: string, visit: (p: DjangoPattern) => void): void {
+  walk(node, n => {
+    if (n.type !== 'call') return;
+    const callee = text(n.childForFieldName('function'));
+    if (!DJANGO_URL_CALLS.has(callee)) return;
+    const args = namedChildren(n.childForFieldName('arguments') ?? n).filter(a => a.type !== 'comment');
+    const written = stringValue(args[0]);
+    const view = args[1];
+    if (written === null || !view) return false;
+    const route = prefix + djangoRoute(written);
+    if (view.type === 'call' && text(view.childForFieldName('function')) === 'include') {
+      let inc: Node | undefined = namedChildren(view.childForFieldName('arguments') ?? view).find(a => a.type !== 'comment' && a.type !== 'keyword_argument');
+      if (inc?.type === 'tuple') inc = namedChildren(inc)[0];
+      if (inc?.type === 'list') djangoPatterns(inc, route, visit);
+      else if (inc) visit({ call: n, callee, route, written, view, include: inc });
+      return false;
+    }
+    visit({ call: n, callee, route, written, view });
+    return false;
+  });
 }
 
 /** Resolve a relative module (`.`, `..pkg`) against a module's package. */
@@ -215,6 +285,8 @@ class PyGraphBuilder {
   readonly entries: TsEntry[] = [];
   readonly unresolvedRegistrations: UnresolvedRegistration[] = [];
   readonly typeOnly = new Set<string>();
+  /** Django `include()` of one project urls module by another, with the including route. */
+  private readonly urlMounts: { parent: string; child: string; prefix: string }[] = [];
   private readonly siteKeys = new Set<string>();
   private readonly edgeKeys = new Set<string>();
 
@@ -280,6 +352,38 @@ class PyGraphBuilder {
         }
       }
     }
+    for (const ctx of this.ctxs) {
+      if (!URLS_FILE.test(ctx.path)) continue;
+      djangoPatterns(ctx.root, '', p => {
+        const child = p.include ? this.includedModule(ctx, p.include) : null;
+        if (child && child !== ctx.module) this.urlMounts.push({ parent: ctx.module, child, prefix: p.route });
+      });
+    }
+  }
+
+  /** The project module an `include(...)` argument names: `'pkg.urls'`, or a module bound by an import. */
+  private includedModule(ctx: FileCtx, arg: Node): string | null {
+    const s = stringValue(arg);
+    if (s !== null) return this.byModule.has(s) ? s : null;
+    const b = ctx.imports.get(arg.text.replace(/\s+/g, ''));
+    if (!b) return null;
+    const m = b.kind === 'module' ? b.module : `${b.module}.${b.name}`;
+    return this.byModule.has(m) ? m : null;
+  }
+
+  /** Every chain of `include()` prefixes from a root urls module down to `module`, outermost first. */
+  private urlMountChains(module: string, seen: ReadonlySet<string> = new Set()): string[][] {
+    const parents = this.urlMounts.filter(m => m.child === module);
+    if (parents.length === 0 || seen.has(module)) return [[]];
+    const next = new Set(seen).add(module);
+    const out: string[][] = [];
+    for (const m of parents) {
+      for (const chain of this.urlMountChains(m.parent, next)) {
+        out.push([...chain, m.prefix]);
+        if (out.length >= MAX_URL_MOUNT_CHAINS) return out;
+      }
+    }
+    return out;
   }
 
   /** The declaration a definition node (or its decorated wrapper) declares. */
@@ -754,7 +858,7 @@ class PyGraphBuilder {
     }
 
     // Django urls.py, and the modules Django loads by convention.
-    if (/(^|\/)urls\.py$/.test(ctx.path)) this.djangoUrls(ctx);
+    if (URLS_FILE.test(ctx.path)) this.djangoUrls(ctx);
     const usesDjango = [...ctx.imports.values()].some(b => b.module === 'django' || b.module.startsWith('django.'));
     const conventional = /(^|\/)(urls|admin|apps|models|signals|settings|wsgi|asgi|tasks)\.py$/.exec(ctx.path);
     if (usesDjango && conventional) {
@@ -783,17 +887,11 @@ class PyGraphBuilder {
   }
 
   private djangoUrls(ctx: FileCtx): void {
-    walk(ctx.root, n => {
-      if (n.type !== 'call') return;
-      const callee = text(n.childForFieldName('function'));
-      if (!['path', 're_path', 'url', 'django.urls.path', 'django.urls.re_path'].includes(callee)) return;
-      const args = namedChildren(n.childForFieldName('arguments') ?? n).filter(a => a.type !== 'comment');
-      const route = stringValue(args[0]);
-      const view = args[1];
-      if (route === null || route === undefined || !view) return false;
-      const site = this.site(ctx, n);
-      const path = '/' + route.replace(/^\^/, '').replace(/\$$/, '');
-      if (view.type === 'call' && text(view.childForFieldName('function')) === 'include') return false;
+    const chains = this.urlMountChains(ctx.module);
+    djangoPatterns(ctx.root, '', p => {
+      if (p.include) return; // another urls module: its routes carry this prefix (see urlMounts)
+      const { callee, view } = p;
+      const site = this.site(ctx, p.call);
       let target = view;
       let cbv = false;
       if (view.type === 'call') {
@@ -804,14 +902,26 @@ class PyGraphBuilder {
         }
       }
       const written = target.text.replace(/\s+/g, '');
+      const evidence = `${callee}(${JSON.stringify(p.written)}, ${written})`;
       const d = /^[A-Za-z_][\w.]*$/.test(written) ? this.resolveName(ctx, written) : null;
       if (!d) {
-        this.unresolvedRegistrations.push({ site, reason: 'handler-unresolved', evidence: `${callee}(${JSON.stringify(route)}, ${written})` });
-        return false;
+        this.unresolvedRegistrations.push({ site, reason: 'handler-unresolved', evidence });
+        return;
       }
-      this.entry({ id: d.id, kind: 'route', certainty: 'declared', framework: 'django', method: 'ANY', path, surface: 'api', file: ctx.path, line: site.line, evidence: `${callee}(${JSON.stringify(route)}, ${written})` });
+      const route = (id: string, methods: string[], ev: string): void => {
+        for (const chain of chains) {
+          const mounts = chain.filter(x => x !== '').map(x => '/' + x);
+          const path = '/' + chain.join('') + p.route;
+          for (const method of methods) {
+            const e: TsEntry = { id, kind: 'route', certainty: 'declared', framework: 'django', method, path, surface: 'api', file: ctx.path, line: site.line, evidence: ev };
+            if (mounts.length > 0) { e.registeredPath = '/' + p.route; e.mounts = mounts; }
+            this.entry(e);
+          }
+        }
+      };
+      const info = this.classes.get(d.id);
+      route(d.id, info ? this.drfGenericVerbs(info) : this.apiViewVerbs(d) ?? ['ANY'], evidence);
       if (cbv || d.kind === 'type') {
-        const info = this.classes.get(d.id);
         const seen = new Set<string>();
         const queue = info ? [info] : [];
         while (queue.length > 0) {
@@ -820,14 +930,47 @@ class PyGraphBuilder {
           seen.add(c.decl.id);
           for (const m of c.members.values()) {
             if (m.kind === 'method' && DJANGO_CBV_METHODS.has(m.name)) {
-              this.entry({ id: m.id, kind: 'route', certainty: 'declared', framework: 'django', method: HTTP_VERBS.includes(m.name) ? m.name.toUpperCase() : 'ANY', path, surface: 'api', file: ctx.path, line: site.line, evidence: `${written}.as_view() → ${m.name}` });
+              const verbs = HTTP_VERBS.includes(m.name) ? [m.name.toUpperCase()] : DRF_ACTION_VERBS[m.name] ?? ['ANY'];
+              route(m.id, verbs, `${written}.as_view() → ${m.name}`);
             }
           }
           queue.push(...c.parents);
         }
       }
+    });
+  }
+
+  /** The verbs a class view serves: those of its DRF generic bases, else any. */
+  private drfGenericVerbs(info: ClassInfo): string[] {
+    const verbs = new Set<string>();
+    for (const b of this.allBaseNames(info)) for (const v of DRF_GENERIC_VERBS[b] ?? []) verbs.add(v);
+    return verbs.size > 0 ? [...verbs] : ['ANY'];
+  }
+
+  /** The verbs of a function view's `@api_view([...])` (DRF defaults to GET); null without one. */
+  private apiViewVerbs(d: StableDecl): string[] | null {
+    const ctx = this.declFile.get(d.id);
+    if (!ctx || d.kind !== 'function') return null;
+    let out: string[] | null = null;
+    walk(ctx.root, n => {
+      if (out) return false;
+      if (n.type !== 'decorated_definition') return;
+      const def = n.childForFieldName('definition');
+      if (!def || this.declAt(ctx, def)?.id !== d.id) return;
+      for (const dec of namedChildren(n).filter(c => c.type === 'decorator')) {
+        const expr = namedChildren(dec)[0];
+        const call = expr?.type === 'call' ? expr : null;
+        const callee = text(call ? call.childForFieldName('function') : expr).replace(/\s+/g, '');
+        if ((callee.split('.').pop() ?? '') !== 'api_view') continue;
+        const args = call ? namedChildren(call.childForFieldName('arguments') ?? call) : [];
+        const kw = args.find(a => a.type === 'keyword_argument' && text(a.childForFieldName('name')) === 'http_method_names');
+        const list = kw ? kw.childForFieldName('value') : args.find(a => a.type === 'list' || a.type === 'tuple');
+        const verbs = list ? namedChildren(list).map(x => (stringValue(x) ?? '').toUpperCase()).filter(Boolean) : [];
+        out = verbs.length > 0 ? verbs : ['GET'];
+      }
       return false;
     });
+    return out;
   }
 
   consoleScripts(scripts: readonly string[]): void {

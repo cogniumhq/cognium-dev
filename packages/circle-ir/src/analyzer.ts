@@ -365,8 +365,9 @@ export interface AnalyzerOptions {
    * that starts every file's work before `analyzeProject` runs (on worker
    * threads, say) and returns the pending result here gets a parallel per-file
    * phase with the same merge order. An `AnalysisTimeoutError` it throws is
-   * recorded in `timed_out_files`, and any other error ends the run, the same
-   * as for `analyze()`. Ignored by `analyze()`. Omitted: `analyze()` is used.
+   * recorded in `timed_out_files`; any other error is recorded in
+   * `failed_files` and the project scan continues (cognium-dev#1351). Ignored
+   * by `analyze()`. Omitted: `analyze()` is used.
    */
   analyzeFile?: (code: string, filePath: string, language: SupportedLanguage) => Promise<CircleIR>;
 
@@ -2017,6 +2018,7 @@ export async function analyzeProject(
 ): Promise<ProjectAnalysis> {
   const fileAnalyses: Array<{ file: string; analysis: CircleIR }> = [];
   const timedOutFiles: Array<{ file: string; elapsed_ms: number; phase: string }> = [];
+  const failedFiles: Array<{ file: string; message: string }> = [];
   const projectGraph = new ProjectGraph();
   const sourceLinesByFile = new Map<string, string[]>();
 
@@ -2078,7 +2080,12 @@ export async function analyzeProject(
         });
         continue;
       }
-      throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      failedFiles.push({ file: filePath, message });
+      logger.warn('analyzeProject: file analysis failed, skipping it', {
+        file: filePath, message,
+      });
+      continue;
     }
     fileAnalyses.push({ file: filePath, analysis: ir });
     projectGraph.addFile(filePath, new CodeGraph(ir));
@@ -2199,6 +2206,9 @@ export async function analyzeProject(
   }
   if (timedOutFiles.length > 0) {
     projectAnalysis.timed_out_files = timedOutFiles;
+  }
+  if (failedFiles.length > 0) {
+    projectAnalysis.failed_files = failedFiles;
   }
   if (projectSizeBudgetExceeded) {
     projectAnalysis.project_size_budget_exceeded = true;
