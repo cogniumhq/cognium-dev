@@ -1415,6 +1415,89 @@ const REPLACE_ALL_TO_PLACEHOLDER_RE =
 // output context.
 const HTML_CONTENT_TYPE_RE = /text\/html|TEXT_HTML/;
 
+// JS/TS response writers (`res.end`, `res.send`, `res.write`,
+// `c.body`) are XSS sinks because a browser renders their body as HTML. When
+// the handler sets the response's own Content-Type to a non-HTML type first
+// (`res.writeHead(200, {'Content-Type': 'application/json'})`,
+// `res.setHeader(...)`, `res.type('json')`, `c.body(x, 200, {headers})`), the
+// browser does not render the body as markup, so the write is not an XSS sink.
+// A type that a browser can render as a document (HTML, XHTML, SVG, XML) keeps
+// the sink; so does an unset type or one we cannot read.
+const JS_RESPONSE_WRITE_METHODS = new Set(['end', 'send', 'write', 'body']);
+const JS_CONTENT_TYPE_SETTERS = new Set([
+  'writeHead', 'setHeader', 'set', 'header', 'append', 'type', 'contentType', 'body',
+]);
+const JS_CONTENT_TYPE_KEY_RE = /^\s*['"`]content-type['"`]\s*$/i;
+const JS_CONTENT_TYPE_PROP_RE = /['"`]content-type['"`]\s*:\s*([^,}\n]+)/gi;
+const JS_RENDERABLE_TYPE_RE = /html|svg|xml/i;
+const JS_STRING_LITERAL_RE = /^\s*(['"`])([^'"`$]*)\1\s*$/;
+// A static file server picks the type from the requested file's extension
+// (`MIME[path.extname(file)]`, `mime.getType(file)`, `mime.lookup(file)`); the
+// body is the file on disk, never request text rendered into a page.
+const JS_MIME_BY_EXTENSION_METHODS = new Set(['extname', 'getType', 'lookup', 'contentType']);
+
+/** Lines of the innermost function passed as an argument that holds `line`. */
+function jsEnclosingCallbackRange(calls: readonly CallInfo[], line: number): [number, number] | null {
+  let best: [number, number] | null = null;
+  for (const call of calls) {
+    for (const arg of call.arguments) {
+      const expr = arg.expression;
+      if (!/^\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/.test(expr)) continue;
+      const start = call.location.line;
+      const end = start + (expr.match(/\n/g)?.length ?? 0);
+      if (line < start || line > end) continue;
+      if (!best || end - start < best[1] - best[0]) best = [start, end];
+    }
+  }
+  return best;
+}
+
+/** The Content-Type expressions one call sets on its receiver. */
+function jsContentTypeExpressions(call: CallInfo): string[] {
+  const args = call.arguments.map(a => a.expression);
+  if (call.method_name === 'type' || call.method_name === 'contentType') {
+    return args.length > 0 ? [args[0]] : [];
+  }
+  if (['setHeader', 'set', 'header', 'append'].includes(call.method_name) &&
+      args.length >= 2 && JS_CONTENT_TYPE_KEY_RE.test(args[0])) {
+    return [args[1]];
+  }
+  const out: string[] = [];
+  for (const a of args) {
+    for (const m of a.matchAll(JS_CONTENT_TYPE_PROP_RE)) out.push(m[1].trim());
+  }
+  return out;
+}
+
+/**
+ * True when the response written by the xss sink `sinkCall` has an explicit
+ * Content-Type that a browser does not render as a document.
+ */
+function jsResponseTypeIsNotRenderable(calls: readonly CallInfo[], sinkCall: CallInfo): boolean {
+  const receiver = sinkCall.receiver;
+  if (!receiver) return false;
+  const line = sinkCall.location.line;
+  const range = jsEnclosingCallbackRange(calls, line);
+  const inScope = (c: CallInfo): boolean => range
+    ? c.location.line >= range[0] && c.location.line <= range[1]
+    : (c.in_method ?? null) === (sinkCall.in_method ?? null);
+  const scoped = calls.filter(inScope);
+
+  const types = scoped
+    .filter(c => c.receiver === receiver && c.location.line <= line &&
+      JS_CONTENT_TYPE_SETTERS.has(c.method_name))
+    .flatMap(jsContentTypeExpressions);
+  if (types.length === 0) return false;
+
+  const mimeByExtension = scoped.some(c =>
+    c.receiver !== receiver && JS_MIME_BY_EXTENSION_METHODS.has(c.method_name));
+  return types.every(expr => {
+    const lit = JS_STRING_LITERAL_RE.exec(expr);
+    if (lit) return !JS_RENDERABLE_TYPE_RE.test(lit[2]);
+    return mimeByExtension;
+  });
+}
+
 // skillsregistry#49 — the classless `fetch` SSRF sink (config-loader) exists for
 // the global Web `fetch` API, but `method: 'fetch'` matches any `.fetch(` call —
 // including SDK/ORM entity lookups like discord.js `client.channels.fetch(id)` /
@@ -2941,6 +3024,14 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       filtered = filtered.filter(sink => {
         if (sink.type !== 'xxe') return true;
         return !jsLibxmljsNoentDisablesXxe(ctx.code, sink.line);
+      });
+
+      // Stage 7c — JS/TS xss: response written with a non-HTML Content-Type
+      //. See JS_RESPONSE_WRITE_METHODS above.
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'xss' || !JS_RESPONSE_WRITE_METHODS.has(sink.method ?? '')) return true;
+        const sinkCall = (callsByLine.get(sink.line) ?? []).find(c => c.method_name === sink.method);
+        return !sinkCall || !jsResponseTypeIsNotRenderable(calls, sinkCall);
       });
     }
 
