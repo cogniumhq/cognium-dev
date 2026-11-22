@@ -1485,7 +1485,7 @@ function jsContentTypeExpressions(call: CallInfo): string[] {
 function jsHeaderValueMayChangeType(expr: string): boolean {
   const value = expr.trim();
   if (/^(?:\d+|(['"`])[^'"`$]*\1)$/.test(value)) return false;
-  const headers = /^new\s+Headers\s*\(\s*([\s\S]*)\)$/.exec(value);
+  const headers = /^new\s+Headers\s*\(([\s\S]*)\)$/.exec(value);
   if (headers) return headers[1]!.trim() !== '' && jsHeaderValueMayChangeType(headers[1]!);
   if (value.startsWith('{')) {
     const keys = [...value.matchAll(/['"`]content-type['"`]\s*:/gi)];
