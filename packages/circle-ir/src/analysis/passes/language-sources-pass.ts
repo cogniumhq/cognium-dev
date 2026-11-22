@@ -450,8 +450,12 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
 
     // -- Python: safe-handler sanitizer detectors (cognium-dev #114 Sprint 31) --
     if (language === 'python') {
-      additionalSanitizers.push(...findPythonNetlocAllowlistGuardSanitizers(code));
-      additionalSanitizers.push(...findPythonRangeCheckGuardSanitizers(code));
+      for (const s of findPythonNetlocAllowlistGuardSanitizers(code)) {
+        additionalSanitizers.push(s);
+      }
+      for (const s of findPythonRangeCheckGuardSanitizers(code)) {
+        additionalSanitizers.push(s);
+      }
       // Sprint 74 (#216 Pattern B): regex-allowlist wrapper functions,
       // var-aware set-membership xss guard, and defusedxml import-alias
       // recognition.
@@ -6432,9 +6436,16 @@ function findPythonRangeCheckGuardSanitizers(code: string): TaintSanitizer[] {
   const rangeGuard = /^(\s*)if\s+([A-Za-z_][A-Za-z0-9_]*)\s*[<>]=?\s*(?:\d+|-?\d+\.?\d*|[A-Z][A-Z0-9_]+)\s*(?:(?:or|and)\s+\2\s*[<>]=?\s*(?:\d+|-?\d+\.?\d*|[A-Z][A-Z0-9_]+)\s*)?:\s*$/;
   const terminator = /\b(return|raise|abort\s*\(|sys\.exit\s*\()/;
 
+  const maxGuards = 2000;
+  const maxSanitizers = 50_000;
+  const maxTailLines = 400;
+  let guardCount = 0;
+
   for (let i = 0; i < lines.length; i++) {
+    if (guardCount >= maxGuards || sanitizers.length >= maxSanitizers) break;
     const m = rangeGuard.exec(lines[i]);
     if (!m) continue;
+    guardCount++;
     const guardIndent = m[1].length;
 
     let bodyHasTerminator = false;
@@ -6453,7 +6464,9 @@ function findPythonRangeCheckGuardSanitizers(code: string): TaintSanitizer[] {
     if (blockEnd === -1) blockEnd = Math.min(lines.length - 1, i + 25);
     if (!bodyHasTerminator) continue;
 
-    for (let l = blockEnd + 2; l <= lines.length; l++) {
+    const tailEnd = Math.min(lines.length, blockEnd + 2 + maxTailLines);
+    for (let l = blockEnd + 2; l <= tailEnd; l++) {
+      if (sanitizers.length >= maxSanitizers) break;
       sanitizers.push({
         type: 'python_range_check_guard',
         method: 'if',
@@ -8757,8 +8770,8 @@ const JAVA_LITERAL_COLLECTION_IDENTS = new Set([
  * file whose initializer is nothing but string literals inside the standard
  * collection factories, and the guard must reject (throw / return). Credits
  * `<v>` on later lines of the enclosing method until `<v>` is reassigned.
- * Scoped to `code_injection` (reflective class loading); other sink types
- * are untouched.
+ * Scoped to reflective instantiation sinks (`code_injection`, `deserialization`);
+ * other sink types are untouched.
  */
 function findJavaReflectionAllowlistGuardSanitizers(
   code: string,
@@ -8859,7 +8872,7 @@ function findJavaReflectionAllowlistGuardSanitizers(
         type: 'java_reflection_allowlist_guard',
         method: 'contains',
         line: l + 1,
-        sanitizes: ['code_injection'],
+        sanitizes: ['code_injection', 'deserialization'],
       });
     }
   }

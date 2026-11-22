@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { parseArgs } from '../src/utils/args.js';
+import { parseArgs, showHelp, unknownOptions, COMMAND_OPTIONS } from '../src/utils/args.js';
 
 describe('parseArgs', () => {
   test('parses command with no options', () => {
@@ -95,5 +95,47 @@ describe('parseArgs', () => {
     expect(result.options.severity).toBe('high');
     expect(result.options.f).toBe('sarif');
     expect(result.options.q).toBe(true);
+  });
+});
+
+describe('unknownOptions', () => {
+  test('a typo or an option of another command is reported as typed', () => {
+    expect(unknownOptions('scan', parseArgs(['scan', '.', '--frobnicate']).options)).toEqual(['--frobnicate']);
+    expect(unknownOptions('scan', parseArgs(['scan', '.', '--severty', 'high', '-x']).options)).toEqual(['--severty', '-x']);
+    expect(unknownOptions('metrics', parseArgs(['metrics', '.', '--threads', '2']).options)).toEqual(['--threads']);
+    expect(unknownOptions('deadcode', parseArgs(['deadcode', '.', '--severity', 'high']).options)).toEqual(['--severity']);
+    expect(unknownOptions('list-passes', parseArgs(['list-passes', '-f', 'json']).options)).toEqual(['-f']);
+    expect(unknownOptions(undefined, parseArgs(['--frobnicate']).options)).toEqual(['--frobnicate']);
+  });
+
+  test('known options pass, in long and short spellings, plus the global ones', () => {
+    const argv = ['scan', '.', '-l', 'java', '--format', 'sarif', '-o', 'x', '-q', '-v', '--threads', '2',
+      '--file-timeout-ms', '9', '--severity', 'high', '--category', 'security', '--exclude-cwe', 'CWE-1',
+      '--disable-pass', 'x', '--exclude-tests', '-p', 'c.json', '--project-profile', 'library/production',
+      '--no-project-profile', '--project-profile-explain', '--cross-file-budget-ms', '0',
+      '--max-project-source-chars', '0', '--log-level', 'info'];
+    expect(unknownOptions('scan', parseArgs(argv).options)).toEqual([]);
+    expect(unknownOptions('sbom', parseArgs(['sbom', '.', '--prod', '--prod-only', '--deterministic', '--name', 'n', '--license-map', 'm.json']).options)).toEqual([]);
+    expect(unknownOptions('recheck', parseArgs(['recheck', '.', '--changed', 'a', '--baseline', 'b', '-o', 'c']).options)).toEqual([]);
+    expect(unknownOptions('scan', parseArgs(['scan', '--help']).options)).toEqual([]);
+    expect(unknownOptions(undefined, parseArgs(['--version']).options)).toEqual([]);
+  });
+
+  test('an unknown command is left to the unknown-command error', () => {
+    expect(unknownOptions('frobnicate', parseArgs(['frobnicate', '--x']).options)).toEqual([]);
+  });
+
+  // Refusing unknown options must not refuse a documented one.
+  test('every option --help documents is accepted by some command', () => {
+    const lines: string[] = [];
+    const log = console.log;
+    console.log = (...a: unknown[]) => { lines.push(a.join(' ')); };
+    try { showHelp(); } finally { console.log = log; }
+    const documented = new Set([...lines.join('\n').matchAll(/(?<![\w-])--?([a-zA-Z][\w-]*)/g)].map(m => m[1]));
+    // --max-old-space-size is named in the help as a Node.js option (NODE_OPTIONS), not a CLI one;
+    // --name-status and -M are git diff flags the recheck --changed help quotes.
+    const accepted = new Set(['help', 'h', 'version', 'V', 'log-level', 'max-old-space-size', 'name-status', 'M', ...Object.values(COMMAND_OPTIONS).flat()]);
+    expect(documented.size).toBeGreaterThan(30);
+    expect([...documented].filter(o => !accepted.has(o))).toEqual([]);
   });
 });

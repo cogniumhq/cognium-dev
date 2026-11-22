@@ -117,3 +117,32 @@ def hello():
     expect(sinksByType(ir, 'xss').length).toBeGreaterThan(0);
   });
 });
+
+describe('Issue #1350 — Python range-guard sanitizer scale', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  it('many range guards on a huge file complete without stack overflow', async () => {
+    const guards: string[] = [];
+    for (let i = 0; i < 50; i++) {
+      guards.push(`    if n${i} > 0:\n        return 0`);
+    }
+    const filler = Array.from({ length: 5000 }, () => 'x = 1').join('\n');
+    const code = `from flask import Flask, request
+
+app = Flask(__name__)
+
+@app.route("/huge")
+def handler():
+${guards.join('\n')}
+    qty = int(request.args.get("qty", "1"))
+    return str(qty)
+${filler}
+`;
+    const ir = await analyze(code, 'huge_guards.py', 'python');
+  const rangeGuardCount =
+    ir.taint?.sanitizers?.filter((s) => s.type === 'python_range_check_guard').length ?? 0;
+    expect(rangeGuardCount).toBeLessThanOrEqual(50_000);
+  });
+});
