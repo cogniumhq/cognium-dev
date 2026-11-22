@@ -2901,7 +2901,9 @@ function extractPythonLiteral(node: Node): string | null {
           return null;
         }
       }
-      return text.replace(/^['"]|['"]$/g, '').replace(/^f['"]|['"]$/g, '');
+      // Drop the prefix (`r`, `b`, `f`, `rb`, …) and the quotes, single or triple.
+      const m = /^[rRbBuUfF]{0,2}("""|'''|"|')([\s\S]*)\1$/.exec(text);
+      return m ? m[2] : text;
     }
     return text;
   }

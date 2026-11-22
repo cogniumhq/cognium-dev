@@ -55,6 +55,46 @@ export function parseArgs(argv: string[]): ParsedArgs {
   return { command, args, options };
 }
 
+/** Options every command accepts. */
+const GLOBAL_OPTIONS: readonly string[] = ['help', 'h', 'version', 'V', 'log-level'];
+
+/**
+ * The options each command reads, in every spelling it reads them
+ * (including the short `-p` for `--profile` and `--prod` for `--prod-only`).
+ */
+export const COMMAND_OPTIONS: Readonly<Record<string, readonly string[]>> = {
+  scan: [
+    'language', 'l', 'format', 'f', 'output', 'o', 'quiet', 'q', 'verbose', 'v',
+    'threads', 'file-timeout-ms', 'severity', 'category', 'exclude-cwe', 'disable-pass',
+    'exclude-tests', 'profile', 'p', 'project-profile', 'no-project-profile',
+    'project-profile-explain', 'cross-file-budget-ms', 'max-project-source-chars',
+  ],
+  metrics: ['language', 'l', 'format', 'f', 'output', 'o', 'quiet', 'q', 'category', 'exclude-tests', 'profile', 'p'],
+  sbom: ['format', 'f', 'output', 'o', 'name', 'prod-only', 'prod', 'deterministic', 'license-map'],
+  deadcode: ['language', 'l', 'format', 'f', 'output', 'o', 'root-kinds', 'verdicts', 'bound-registrations', 'exported-packages'],
+  reach: ['language', 'l', 'format', 'f', 'output', 'o', 'root-kinds', 'bound-registrations', 'base', 'exported-packages'],
+  entries: ['language', 'l', 'format', 'f', 'output', 'o', 'facts-arrow', 'facts-scheme', 'exported-packages'],
+  depcalls: ['language', 'l', 'format', 'f', 'output', 'o', 'artifact', 'jar', 'maven-repo'],
+  recheck: ['changed', 'changed-from', 'baseline', 'scope', 'expect-gone', 'renames', 'output', 'o'],
+  'list-passes': [],
+  init: [],
+  version: [],
+};
+
+/**
+ * Options `command` does not take, spelled as typed (`--frobnicate`, `-x`).
+ * They used to be ignored, so a typo such as `--severty high` ran a full
+ * scan with the default. An unknown command is reported on its own, not here.
+ */
+export function unknownOptions(command: string | undefined, options: Record<string, unknown>): string[] {
+  const allowed = command === undefined ? [] : COMMAND_OPTIONS[command];
+  if (allowed === undefined) return [];
+  const known = new Set([...GLOBAL_OPTIONS, ...allowed]);
+  return Object.keys(options)
+    .filter((k) => !known.has(k))
+    .map((k) => (k.length === 1 ? `-${k}` : `--${k}`));
+}
+
 export function showHelp(): void {
   console.log(`
 cognium-dev - Static Application Security Testing CLI
@@ -204,6 +244,12 @@ SBOM OPTIONS:
                                A package-lock.json supersedes its package.json
                                (exact + transitive versions).
                                CVE matching is out of scope (deterministic SAST — no network).
+
+EXIT CODES:
+  0  Success (scan: no security finding after filters)
+  1  scan: security findings present · recheck: the no-new-high rule failed
+  2  Usage, configuration or runtime error: an unknown option or bad value,
+       a malformed config file, a path that does not exist
 
 EXAMPLES:
   cognium-dev scan src/
