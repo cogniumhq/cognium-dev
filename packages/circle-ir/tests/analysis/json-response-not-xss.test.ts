@@ -97,6 +97,32 @@ describe('JSON responses are not XSS sinks', () => {
       expect(r.flows).toEqual([]);
     });
 
+    it('a JSON type set before an if that holds the write still drops the sink', async () => {
+      const code =
+        "const express = require('express'); const app = express();\n" +
+        "app.get('/u', (req, res) => {\n" +
+        '  const name = req.query.name;\n' +
+        "  res.type('json');\n" +
+        '  if (name) {\n' +
+        '    res.send(JSON.stringify({ name }));\n' +
+        '  }\n' +
+        '});\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
+    it('static server with mime.getType of the file it reads', async () => {
+      const code =
+        "const http = require('http'); const fs = require('fs'); const mime = require('mime');\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const file = './public' + req.url;\n" +
+        "  res.setHeader('Content-Type', mime.getType(file));\n" +
+        '  res.end(fs.readFileSync(file));\n' +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
     it('json helpers (c.json, res.json) are not XSS sinks', async () => {
       const hono =
         "import { Hono } from 'hono';\nconst app = new Hono();\n" +
@@ -149,6 +175,68 @@ describe('JSON responses are not XSS sinks', () => {
         "app.get('/b', (req, res) => {\n  const name = req.query.name;\n  res.send('<p>' + name + '</p>');\n});\n";
       const r = await xss(code, 'server.js');
       expect(r.flows).toContain(8);
+    });
+
+    it('a JSON type set in an early-return error branch keeps the HTML write a sink', async () => {
+      const code =
+        "const http = require('http');\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const q = new URL(req.url, 'http://x').searchParams.get('q');\n" +
+        '  if (!q) {\n' +
+        "    res.setHeader('Content-Type', 'application/json');\n" +
+        "    res.end('{\"error\":\"missing\"}');\n" +
+        '    return;\n' +
+        '  }\n' +
+        "  res.end('<p>' + q + '</p>');\n" +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(9);
+    });
+
+    it('a JSON type set only inside an if keeps the sink', async () => {
+      const code =
+        "const express = require('express'); const app = express();\n" +
+        "app.get('/u', (req, res) => {\n" +
+        '  const name = req.query.name;\n' +
+        "  if (req.query.fmt === 'json') {\n" +
+        "    res.type('json');\n" +
+        '  }\n' +
+        "  res.send('<p>' + name + '</p>');\n" +
+        '});\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(7);
+    });
+
+    it('a JSON type set by a braceless if keeps the sink', async () => {
+      const r = await xss(EXPRESS(
+        "if (req.query.fmt === 'json') res.type('json');", "'<p>' + name + '</p>'"));
+      expect(r.flows).toContain(5);
+    });
+
+    it('an unrelated extname call does not let a request-chosen type through', async () => {
+      const code =
+        "const http = require('http'); const path = require('path');\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const q = new URL(req.url, 'http://x').searchParams.get('q');\n" +
+        "  const ext = path.extname(req.url);\n" +
+        "  res.writeHead(200, { 'Content-Type': req.headers.accept, 'X-Ext': ext });\n" +
+        '  res.end(q);\n' +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(6);
+    });
+
+    it('a mime lookup of another path does not cover the served body', async () => {
+      const code =
+        "const http = require('http'); const mime = require('mime');\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const q = new URL(req.url, 'http://x').searchParams.get('q');\n" +
+        "  const type = mime.getType(q);\n" +
+        "  res.writeHead(200, { 'Content-Type': type });\n" +
+        '  res.end(q);\n' +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(6);
     });
 
     it('hono c.html stays an XSS sink', async () => {

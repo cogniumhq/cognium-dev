@@ -1431,10 +1431,17 @@ const JS_CONTENT_TYPE_KEY_RE = /^\s*['"`]content-type['"`]\s*$/i;
 const JS_CONTENT_TYPE_PROP_RE = /['"`]content-type['"`]\s*:\s*([^,}\n]+)/gi;
 const JS_RENDERABLE_TYPE_RE = /html|svg|xml/i;
 const JS_STRING_LITERAL_RE = /^\s*(['"`])([^'"`$]*)\1\s*$/;
-// A static file server picks the type from the requested file's extension
+// A static file server picks the type from the served file's extension
 // (`MIME[path.extname(file)]`, `mime.getType(file)`, `mime.lookup(file)`); the
-// body is the file on disk, never request text rendered into a page.
-const JS_MIME_BY_EXTENSION_METHODS = new Set(['extname', 'getType', 'lookup', 'contentType']);
+// body is that file on disk, never request text rendered into a page. Group 1
+// or 2 is the path the type is looked up for.
+const JS_MIME_LOOKUP_RE =
+  /\[\s*(?:[\w$]+\.)?extname\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\]|\b(?:getType|lookup|contentType)\s*\(\s*(?:(?:[\w$]+\.)?extname\s*\(\s*)?([A-Za-z_$][\w$]*)\s*(?:\)\s*)?\)/;
+// What may stand around the lookup: the map or module it is read from and one
+// literal fallback (`TYPES[...] || 'application/octet-stream'`).
+const JS_MIME_LOOKUP_REST_RE =
+  /^\s*(?:[A-Za-z_$][\w$.]*\s*)?(?:(?:\|\||\?\?)\s*(['"`])([^'"`$]*)\1\s*)?$/;
+const JS_FILE_READ_METHODS = 'readFileSync|readFile|createReadStream';
 
 /** Lines of the innermost function passed as an argument that holds `line`. */
 function jsEnclosingCallbackRange(calls: readonly CallInfo[], line: number): [number, number] | null {
@@ -1469,11 +1476,86 @@ function jsContentTypeExpressions(call: CallInfo): string[] {
   return out;
 }
 
+/** Offset in `code` of a call's start (1-based line, 0-based column). */
+function jsCallOffset(lineStarts: readonly number[], call: CallInfo): number {
+  return (lineStarts[call.location.line - 1] ?? 0) + call.location.column;
+}
+
+/**
+ * True when the statement starting at `from` runs on every path to `to`: it
+ * is a plain statement (not the body of a braceless `if` / `else` / loop, nor
+ * an operand of `&&` / `||` / `?:`), and no block that holds it closes before
+ * `to` (so it is not inside an `if`, an early-return branch, or a callback).
+ */
+function jsStatementDominates(code: string, from: number, to: number): boolean {
+  if (from >= to) return false;
+  let b = from - 1;
+  while (b >= 0 && !';{}\n'.includes(code[b]!)) b--;
+  if (!/^\s*(?:await\s+)?$/.test(code.slice(b + 1, from))) return false;
+  if (b >= 0 && code[b] === '\n') {
+    const prev = code.slice(0, b).split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('//')).pop() ?? '';
+    if (/(?:\)|\belse|\bdo|&&|\|\||[?:=,(+\-*/]|=>)$/.test(prev)) return false;
+  }
+  let depth = 0;
+  for (let i = from; i < to; i++) {
+    const ch = code[i]!;
+    if (ch === '\'' || ch === '"' || ch === '`') {
+      for (i++; i < to && code[i] !== ch; i++) if (code[i] === '\\') i++;
+    } else if (ch === '/' && code[i + 1] === '/') {
+      while (i < to && code[i] !== '\n') i++;
+    } else if (ch === '/' && code[i + 1] === '*') {
+      const end = code.indexOf('*/', i + 2);
+      i = end < 0 ? to : end + 1;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}' && --depth < 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * True when the non-literal type `expr` is a mime lookup of the file that
+ * `sinkCall` writes: `MIME[path.extname(file)]`, `mime.getType(file)`, … where
+ * `file` is read from disk into the body (`res.end(fs.readFileSync(file))`).
+ */
+function jsTypeIsServedFileMime(code: string, expr: string, setterAt: number, sinkCall: CallInfo): boolean {
+  let value = expr.trim();
+  if (/^[A-Za-z_$][\w$]*$/.test(value)) {
+    const name = value;
+    const before = code.slice(0, setterAt);
+    const decls = [...before.matchAll(new RegExp(`\\b(?:const|let|var)\\s+${name}\\s*=\\s*([^;\\n]+)`, 'g'))];
+    const writes = before.match(new RegExp(`(?<![\\w$.])${name}\\s*=(?!=)`, 'g'))?.length ?? 0;
+    if (decls.length !== 1 || writes !== 1) return false;
+    value = decls[0]![1]!.trim();
+  }
+  const m = JS_MIME_LOOKUP_RE.exec(value);
+  if (!m) return false;
+  const rest = JS_MIME_LOOKUP_REST_RE.exec(value.slice(0, m.index) + value.slice(m.index + m[0].length));
+  if (!rest || (rest[2] !== undefined && JS_RENDERABLE_TYPE_RE.test(rest[2]))) return false;
+
+  const file = (m[1] ?? m[2])!;
+  const reads = (v: string): RegExp =>
+    new RegExp(`\\b(?:${JS_FILE_READ_METHODS})\\s*\\(\\s*${v}\\b`);
+  return sinkCall.arguments.some(a => {
+    if (reads(file).test(a.expression)) return true;
+    const body = a.expression.trim();
+    if (!/^[A-Za-z_$][\w$]*$/.test(body)) return false;
+    const read = `(?:${JS_FILE_READ_METHODS})\\s*\\(\\s*${file}\\b`;
+    return new RegExp(`\\b(?:const|let|var)\\s+${body}\\s*=\\s*(?:await\\s+)?[\\w$.]*${read}`).test(code) ||
+      new RegExp(`\\b${read}[^;]*?\\(\\s*[\\w$]+\\s*,\\s*${body}\\s*\\)\\s*=>`).test(code) ||
+      new RegExp(`\\b${read}[^;]*?function\\s*\\(\\s*[\\w$]+\\s*,\\s*${body}\\s*\\)`).test(code);
+  });
+}
+
 /**
  * True when the response written by the xss sink `sinkCall` has an explicit
- * Content-Type that a browser does not render as a document.
+ * Content-Type that a browser does not render as a document. Every type set
+ * on that response before the write must be non-renderable, and at least one
+ * must be set on every path to the write.
  */
-function jsResponseTypeIsNotRenderable(calls: readonly CallInfo[], sinkCall: CallInfo): boolean {
+function jsResponseTypeIsNotRenderable(code: string, calls: readonly CallInfo[], sinkCall: CallInfo): boolean {
   const receiver = sinkCall.receiver;
   if (!receiver) return false;
   const line = sinkCall.location.line;
@@ -1481,21 +1563,27 @@ function jsResponseTypeIsNotRenderable(calls: readonly CallInfo[], sinkCall: Cal
   const inScope = (c: CallInfo): boolean => range
     ? c.location.line >= range[0] && c.location.line <= range[1]
     : (c.in_method ?? null) === (sinkCall.in_method ?? null);
-  const scoped = calls.filter(inScope);
 
-  const types = scoped
-    .filter(c => c.receiver === receiver && c.location.line <= line &&
-      JS_CONTENT_TYPE_SETTERS.has(c.method_name))
-    .flatMap(jsContentTypeExpressions);
-  if (types.length === 0) return false;
+  const lineStarts = [0];
+  for (let i = 0; i < code.length; i++) if (code[i] === '\n') lineStarts.push(i + 1);
+  const sinkAt = jsCallOffset(lineStarts, sinkCall);
 
-  const mimeByExtension = scoped.some(c =>
-    c.receiver !== receiver && JS_MIME_BY_EXTENSION_METHODS.has(c.method_name));
-  return types.every(expr => {
-    const lit = JS_STRING_LITERAL_RE.exec(expr);
-    if (lit) return !JS_RENDERABLE_TYPE_RE.test(lit[2]);
-    return mimeByExtension;
-  });
+  let dominated = false;
+  for (const setter of calls) {
+    if (setter.receiver !== receiver || setter.location.line > line ||
+        !JS_CONTENT_TYPE_SETTERS.has(setter.method_name) || !inScope(setter)) continue;
+    const types = jsContentTypeExpressions(setter);
+    if (types.length === 0) continue;
+    const setterAt = jsCallOffset(lineStarts, setter);
+    const ok = types.every(expr => {
+      const lit = JS_STRING_LITERAL_RE.exec(expr);
+      if (lit) return !JS_RENDERABLE_TYPE_RE.test(lit[2]);
+      return jsTypeIsServedFileMime(code, expr, setterAt, sinkCall);
+    });
+    if (!ok) return false;
+    if (setter === sinkCall || jsStatementDominates(code, setterAt, sinkAt)) dominated = true;
+  }
+  return dominated;
 }
 
 // skillsregistry#49 — the classless `fetch` SSRF sink (config-loader) exists for
@@ -3031,7 +3119,7 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       filtered = filtered.filter(sink => {
         if (sink.type !== 'xss' || !JS_RESPONSE_WRITE_METHODS.has(sink.method ?? '')) return true;
         const sinkCall = (callsByLine.get(sink.line) ?? []).find(c => c.method_name === sink.method);
-        return !sinkCall || !jsResponseTypeIsNotRenderable(calls, sinkCall);
+        return !sinkCall || !jsResponseTypeIsNotRenderable(ctx.code, calls, sinkCall);
       });
     }
 
