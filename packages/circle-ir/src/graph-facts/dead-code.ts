@@ -57,6 +57,111 @@ export interface DeadCodeResult {
   summary: Record<DeadCodeVerdict, number> & { reachedByTestOnly: number };
 }
 
+function verdictRank(v: DeadCodeVerdict): number {
+  return v === 'dead' ? 0 : v === 'may-be-live' ? 1 : 2;
+}
+
+function buildDeclParentChildren(input: ReachInput): { parent: Map<string, string | null>; children: Map<string, string[]> } {
+  const parent = new Map<string, string | null>();
+  const children = new Map<string, string[]>();
+  for (const f of input.files) {
+    for (const d of f.decls) {
+      parent.set(d.id, d.parent);
+      if (d.parent) {
+        const list = children.get(d.parent) ?? [];
+        list.push(d.id);
+        children.set(d.parent, list);
+      }
+    }
+  }
+  return { parent, children };
+}
+
+function descendantIds(root: string, children: Map<string, string[]>): string[] {
+  const out: string[] = [];
+  const stack = [...(children.get(root) ?? [])];
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    out.push(id);
+    stack.push(...(children.get(id) ?? []));
+  }
+  return out;
+}
+
+/**
+ * A module or type cannot be `dead` when a member is `may-be-live` or `live` (#1288).
+ * Fields on a type with a `may-be-live` method follow the type when dynamic `this` may touch them.
+ */
+function promoteMemberConsistentVerdicts(facts: DeadCodeFact[], input: ReachInput): void {
+  const byId = new Map(facts.map(f => [f.id, f]));
+  const { parent, children } = buildDeclParentChildren(input);
+
+  for (const fact of facts) {
+    if ((fact.kind !== 'module' && fact.kind !== 'type') || fact.verdict !== 'dead') continue;
+    for (const did of descendantIds(fact.id, children)) {
+      const child = byId.get(did);
+      if (child && verdictRank(child.verdict) > 0) {
+        fact.verdict = 'may-be-live';
+        const reason: MayBeLiveReason =
+          child.reasons.includes('unresolved-sites') ? 'unresolved-sites' : 'weak-path';
+        if (!fact.reasons.includes(reason)) fact.reasons.push(reason);
+        break;
+      }
+    }
+  }
+
+  for (const fact of facts) {
+    if (fact.kind !== 'field' || fact.verdict !== 'dead') continue;
+    const parentId = parent.get(fact.id);
+    if (!parentId) continue;
+    const typeFact = byId.get(parentId);
+    if (!typeFact || typeFact.kind !== 'type') continue;
+    const hasMayBeLiveMethod = (children.get(parentId) ?? []).some(sid => {
+      const s = byId.get(sid);
+      return (
+        s !== undefined &&
+        (s.kind === 'method' || s.kind === 'function') &&
+        s.verdict === 'may-be-live'
+      );
+    });
+    if (hasMayBeLiveMethod) {
+      fact.verdict = 'may-be-live';
+      if (!fact.reasons.includes('unresolved-sites')) fact.reasons.push('unresolved-sites');
+    }
+  }
+}
+
+function resummary(facts: readonly DeadCodeFact[]): DeadCodeResult['summary'] {
+  const summary = { live: 0, 'may-be-live': 0, dead: 0, reachedByTestOnly: 0 };
+  for (const f of facts) {
+    summary[f.verdict]++;
+    if (f.verdict === 'dead' && f.reachedByTest) summary.reachedByTestOnly++;
+  }
+  return summary;
+}
+
+/** Container ids reported dead while a descendant is not dead (#1288 invariant). */
+export function deadCodeConsistencyViolations(
+  facts: readonly DeadCodeFact[],
+  input: ReachInput,
+): string[] {
+  const byId = new Map(facts.map(f => [f.id, f]));
+  const { children } = buildDeclParentChildren(input);
+  const violations: string[] = [];
+  for (const fact of facts) {
+    if (fact.kind !== 'module' && fact.kind !== 'type') continue;
+    if (fact.verdict !== 'dead') continue;
+    for (const did of descendantIds(fact.id, children)) {
+      const child = byId.get(did);
+      if (child && child.verdict !== 'dead') {
+        violations.push(fact.id);
+        break;
+      }
+    }
+  }
+  return violations;
+}
+
 export function deadCode(input: ReachInput & { typeOnly?: readonly string[] }, options: DeadCodeOptions = {}): DeadCodeResult {
   const product = reach(input, { rootKinds: options.rootKinds ?? ALL_ENTRY_KINDS.filter(k => k !== 'test'), maxUnresolved: options.maxUnresolved, boundRegistrations: options.boundRegistrations });
   // Test reach: every path class counts — a test that reaches it only through an inferred call still exercises it.
@@ -92,7 +197,17 @@ export function deadCode(input: ReachInput & { typeOnly?: readonly string[] }, o
     summary[verdict]++;
     if (verdict === 'dead' && reachedByTest) summary.reachedByTestOnly++;
   }
-  return { scheme: DEAD_CODE_SCHEME, ids: 'ids@0.1', rootKinds: product.rootKinds, partial: product.partial, partialFiles: product.partialFiles, facts, summary };
+  promoteMemberConsistentVerdicts(facts, input);
+  const finalSummary = resummary(facts);
+  return {
+    scheme: DEAD_CODE_SCHEME,
+    ids: 'ids@0.1',
+    rootKinds: product.rootKinds,
+    partial: product.partial,
+    partialFiles: product.partialFiles,
+    facts,
+    summary: finalSummary,
+  };
 }
 
 /**

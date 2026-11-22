@@ -1872,6 +1872,60 @@ function jsAnchoredAllowlistRejectGuardedLines(code: string): Set<number> {
   return covered;
 }
 
+/**
+ * Stage 19b (#1347) — Python: `if not re.fullmatch(<allowlist>, var): return`
+ * before subprocess / exec-shaped sinks. Covers interop IL-77 safe mirrors
+ * where a numeric allowlist rejects attacker input before crossing to node.
+ */
+function pythonFullmatchRejectGuardedLines(code: string): Set<number> {
+  const covered = new Set<number>();
+  const lines = code.split('\n');
+  const rejectFullmatch =
+    /\bif\s+not\s+re\s*\.\s*(?:fullmatch|match)\s*\(\s*r["']((?:[^"'\\]|\\.)*)["']\s*,\s*([A-Za-z_]\w*)\s*\)/;
+  const terminatorRe = /\b(throw|return)\b/;
+  const assignRe = /^\s*([A-Za-z_]\w*)\s*=(?!=)\s*(.*)$/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const rm = rejectFullmatch.exec(lines[i] ?? '');
+    if (!rm || !isImplicitlyAnchoredAllowlistRegex(rm[1] ?? '')) continue;
+    const guardedVar = rm[2];
+    if (!guardedVar) continue;
+
+    let hasTerminator = terminatorRe.test(lines[i] ?? '');
+    if (!hasTerminator) {
+      for (let j = i + 1; j < Math.min(lines.length, i + 6); j++) {
+        const ln = lines[j] ?? '';
+        if (terminatorRe.test(ln)) { hasTerminator = true; break; }
+        if (/^\s*elif\b/.test(ln) || /^\s*else\s*:/.test(ln)) break;
+        if (ln.trim() !== '' && !/^\s+/.test(ln)) break;
+      }
+    }
+    if (!hasTerminator) continue;
+
+    const guarded = new Set<string>([guardedVar]);
+    const mentionsGuarded = (text: string): boolean => {
+      for (const name of guarded) {
+        if (new RegExp(`\\b${escapeRegex(name)}\\b`).test(text)) return true;
+      }
+      return false;
+    };
+    for (let p = 0; p <= i; p++) {
+      const pre = assignRe.exec(lines[p] ?? '');
+      if (pre && mentionsGuarded(pre[2]!)) guarded.add(pre[1]!);
+    }
+    for (let l = i + 1; l < lines.length; l++) {
+      const lineText = lines[l] ?? '';
+      const assign = assignRe.exec(lineText);
+      if (assign) {
+        if (mentionsGuarded(assign[2]!)) guarded.add(assign[1]!);
+        else if (assign[1] !== guardedVar) guarded.delete(assign[1]!);
+      }
+      if (mentionsGuarded(lineText)) covered.add(l + 1);
+    }
+  }
+  return covered;
+}
+
 function jsSsrfHostGuardedLines(code: string): Set<number> {
   const covered = new Set<number>();
   const lines = code.split('\n');
@@ -4283,6 +4337,18 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (!sawHelperWithGuard) return true;
         return false;
       });
+    }
+
+    // Stage 19b — Python command/code injection: inline `re.fullmatch` reject-guard
+    // (#1347 interop IL-77 safe py→node mirror).
+    if (language === 'python') {
+      const guardedLines = pythonFullmatchRejectGuardedLines(ctx.code);
+      if (guardedLines.size > 0) {
+        const CREDITED = new Set(['command_injection', 'code_injection']);
+        filtered = filtered.filter(
+          sink => !(CREDITED.has(sink.type) && guardedLines.has(sink.line)),
+        );
+      }
     }
 
     return { sources, sinks: filtered, sanitizers };
