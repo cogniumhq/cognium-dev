@@ -183,9 +183,9 @@ test('sbom: --prod-only drops dev dependencies', async () => {
   expect(prod.components.some((c: { name: string }) => c.name === 'vitest')).toBe(false);
 });
 
-test('sbom: unknown format exits 1', async () => {
+test('sbom: unknown format is a usage error (exit 2)', async () => {
   const { code } = await runCli(['sbom', fixture, '-f', 'bogus']);
-  expect(code).toBe(1);
+  expect(code).toBe(2);
 });
 
 test('sbom: missing path exits 2', async () => {
@@ -284,12 +284,12 @@ test('sbom: Maven resolved output without a sibling pom.xml is ignored', async (
   }
 });
 
-test('sbom: only an orphan resolved file → no supported manifests (exit 1)', async () => {
+test('sbom: only an orphan resolved file → no supported manifests (exit 2)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'sbom-mvn-only-orphan-'));
   try {
     writeFileSync(join(dir, 'dependency-tree.txt'), '+- org.example:stray:jar:1.0:compile\n');
     const { code } = await runCli(['sbom', dir]);
-    expect(code).toBe(1);
+    expect(code).toBe(2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -426,16 +426,16 @@ test('sbom: --license-map fills the rest; node_modules wins; SPDX keeps NOASSERT
   }
 });
 
-test('sbom: a --license-map that is not a JSON object of strings is refused (exit 1)', async () => {
+test('sbom: a --license-map that is not a JSON object of strings is refused (exit 2)', async () => {
   const dir = pnpmLicenceFixture();
   try {
     const map = join(dir, 'bad.json');
     writeFileSync(map, JSON.stringify(['MIT']));
     const r = await runCli(['sbom', dir, '--license-map', map]);
-    expect(r.code).toBe(1);
+    expect(r.code).toBe(2);
     expect(r.err).toContain('--license-map');
     const r2 = await runCli(['sbom', dir, '--license-map']);
-    expect(r2.code).toBe(1);
+    expect(r2.code).toBe(2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
