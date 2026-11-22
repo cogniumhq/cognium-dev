@@ -32,7 +32,7 @@
   "packages/circle-ir/src/analysis/passes/scan-secrets-pass.ts": 1,
   "packages/circle-ir/src/analysis/passes/security-headers-pass.ts": 2,
   "packages/circle-ir/src/analysis/passes/serial-await-pass.ts": 2,
-  "packages/circle-ir/src/analysis/passes/sink-filter-pass.ts": 50,
+  "packages/circle-ir/src/analysis/passes/sink-filter-pass.ts": 51,
   "packages/circle-ir/src/analysis/passes/source-semantics-pass.ts": 6,
   "packages/circle-ir/src/analysis/passes/speculative-prompt-param-source-pass.ts": 2,
   "packages/circle-ir/src/analysis/passes/taint-propagation-pass.ts": 59,

@@ -212,6 +212,7 @@ import {
 // Pass result types (used to read typed results from the pipeline map)
 import { boundedMakeDefIds, scalarDerivedDefIds } from './analysis/scalar-derivation.js';
 import { constTableLookupDefIds } from './analysis/const-table-lookup.js';
+import { honoEnvDefIds } from './analysis/hono-env.js';
 import type { SinkFilterResult } from './analysis/passes/sink-filter-pass.js';
 import type { InterproceduralPassResult } from './analysis/passes/interprocedural-pass.js';
 import { makeCommentOnlyLineTest } from './analysis/comment-lines.js';
@@ -1245,6 +1246,7 @@ async function analyzeFile(
     ...scalarDerivedDefIds(dfg.defs, code, language),
     ...boundedMakeDefIds(dfg.defs, code, language),
     ...constTableLookupDefIds(dfg.defs, code, language),
+    ...honoEnvDefIds(dfg.defs, dfg.uses, code, language),
   ]);
   phaseEnd('buildCodeGraph', tGraph);
   checkDeadline('buildCodeGraph');

@@ -1575,6 +1575,18 @@ class Graph {
 
   // -- React Native, Expo and Jest ---------------------------------------------
 
+  /** Whether the package ships a Jest config file (preset-only setups may omit a `jest` dependency). */
+  private packageHasJestConfig(root: string): boolean {
+    const prefix = normalizePath(root);
+    const pattern = /^jest\.config\.[cm]?[jt]s$/;
+    for (const ctx of this.sortedFiles()) {
+      if (prefix !== '' && !ctx.path.startsWith(prefix + '/')) continue;
+      const rel = prefix === '' ? ctx.path : ctx.path.slice(prefix.length + 1);
+      if (pattern.test(rel)) return true;
+    }
+    return false;
+  }
+
   /** Files a tool loads by name or place, for the tools the package depends on. */
   private toolFileEntries(root: string, has: (names: readonly string[]) => boolean): void {
     const rows = (this.tables.toolFiles ?? []).filter(r => has(r.dependencies));
@@ -1839,7 +1851,17 @@ class Graph {
       const next = this.tables.nextFileRoutes;
       if (next && Object.prototype.hasOwnProperty.call(deps, next.dependency)) this.nextFileRoutes(pkg.root);
       this.scriptEntries(pkg.root, m.scripts);
-      const has = (names: readonly string[]): boolean => names.some(n => Object.prototype.hasOwnProperty.call(deps, n));
+      const has = (names: readonly string[]): boolean => {
+        if (names.some(n => Object.prototype.hasOwnProperty.call(deps, n))) return true;
+        if (names.includes('jest')) {
+          if (Object.prototype.hasOwnProperty.call(deps, 'jest-expo')) return true;
+          const jestEcosystem = Object.keys(deps).some(
+            k => k === 'jest' || k === 'jest-expo' || k.startsWith('@jest/'),
+          );
+          if (jestEcosystem && this.packageHasJestConfig(pkg.root)) return true;
+        }
+        return false;
+      };
       this.toolFileEntries(pkg.root, has);
       if (this.tables.expo && has(this.tables.expo.dependencies)) {
         this.expoFileRoutes(pkg.root);
