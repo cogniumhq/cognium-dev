@@ -85,4 +85,9 @@ describe('fileTimeoutMs', () => {
     const project = await analyzeProject([{ code: JAVA, filePath: 'A.java', language: 'java' }]);
     expect(project.timed_out_files).toBeUndefined();
   });
+
+  it('analyzeProject has no failed_files field when every file succeeds', async () => {
+    const project = await analyzeProject([{ code: JAVA, filePath: 'A.java', language: 'java' }]);
+    expect(project.failed_files).toBeUndefined();
+  });
 });

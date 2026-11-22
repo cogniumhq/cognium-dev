@@ -6,6 +6,14 @@
  * than silently printed as text.
  */
 
+/**
+ * Exit status of every usage, configuration and runtime error, in every
+ * command. `1` is reserved for a result: security findings from `scan`, a
+ * failed rule from `recheck`. A CI step can then tell "the code has findings"
+ * from "the scan did not run as asked".
+ */
+export const EXIT_ERROR = 2;
+
 export class UsageError extends Error {
   constructor(message: string) {
     super(message);

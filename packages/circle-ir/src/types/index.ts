@@ -1174,6 +1174,13 @@ export interface ProjectAnalysis {
    */
   timed_out_files?: Array<{ file: string; elapsed_ms: number; phase: string }>;
   /**
+   * Files skipped because `analyze()` (or `analyzeFile`) threw an error other
+   * than {@link AnalysisTimeoutError} (cognium-dev#1351). Present only when at
+   * least one file failed. These files are absent from `files`; a consumer must
+   * report them, not treat them as clean.
+   */
+  failed_files?: Array<{ file: string; message: string }>;
+  /**
    * `true` when the PER-FILE phase of `analyzeProject` stopped at a size
    * ceiling (see `AnalyzerOptions.maxProjectSourceChars` /
    * `maxProjectFiles`). As with `per_file_budget_exceeded`, files were
