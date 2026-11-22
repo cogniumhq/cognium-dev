@@ -30,6 +30,7 @@ export {
 export {
   DEAD_CODE_SCHEME,
   deadCode,
+  deadCodeConsistencyViolations,
   type DeadCodeVerdict,
   type MayBeLiveReason,
   type DeadCodeFact,
