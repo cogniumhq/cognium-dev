@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
 import { generateFindings } from '../../src/analysis/findings.js';
-import { ARGV_NO_SHELL_TAG, classifyJsSpawnTaint, jsCallArgs } from '../../src/analysis/js-spawn-argv.js';
+import { ARGV_NO_SHELL_TAG, classifyJsSpawnTaint, jsCallArgs, stripInMethodSuffix } from '../../src/analysis/js-spawn-argv.js';
 
 const cmdFlows = async (code: string) =>
   ((await analyze(code, 'r.ts', 'typescript')).taint.flows ?? []).filter(f => f.sink_type === 'command_injection');
@@ -170,5 +170,27 @@ describe('classifyJsSpawnTaint', () => {
 
   it('other methods are left alone', () => {
     expect(at(`exec(v, { env: {} });`, ['v'])).toBe('command');
+  });
+});
+
+describe('stripInMethodSuffix', () => {
+  it('drops a trailing ` in <method>` like the regex it replaces', () => {
+    const old = (s: string) => s.replace(/\s+in\s+[\w$<>.]+$/, '').trim();
+    for (const s of [
+      'process.env.BIN in run', 'cmd in Foo.<init>', 'x  in\t$run ', ' a b in c', 'cmd in run()',
+      'in run', ' in run', 'cmd in', 'cmd inrun', 'cmd  in  ', 'cmdin run', 'a in b in c', 'mix in m-x', '', '   ',
+      'plain', 'cmd\nin\nrun',
+    ]) {
+      expect(stripInMethodSuffix(s), JSON.stringify(s)).toBe(old(s));
+    }
+    expect(stripInMethodSuffix('process.env.BIN in run')).toBe('process.env.BIN');
+    expect(stripInMethodSuffix('a in b in c')).toBe('a in b');
+  });
+
+  it('stays linear on a long run of spaces', () => {
+    const s = 'x' + ' '.repeat(200_000) + 'y';
+    const t = Date.now();
+    expect(stripInMethodSuffix(s)).toBe(s);
+    expect(Date.now() - t).toBeLessThan(1000);
   });
 });

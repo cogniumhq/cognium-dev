@@ -84,6 +84,25 @@ function resolveProgram(program: string, code: string): string | null {
   return decl ? decl[2]! : null;
 }
 
+const LOCATION_NAME_CHAR = /[\w$<>.]/;
+const isSpace = (ch: string): boolean => ch.trim() === '';
+
+/**
+ * A source's location text without its trailing ` in <method>`
+ * (`"cmd in run"` → `"cmd"`), trimmed. Same result as
+ * `.replace(/\s+in\s+[\w$<>.]+$/, '').trim()`, scanned from the end so a long
+ * run of spaces does not backtrack.
+ */
+export function stripInMethodSuffix(location: string): string {
+  let i = location.length;
+  while (i > 0 && LOCATION_NAME_CHAR.test(location[i - 1]!)) i--;
+  if (i === location.length) return location.trim();
+  let j = i;
+  while (j > 0 && isSpace(location[j - 1]!)) j--;
+  if (j === i || j < 3 || location.slice(j - 2, j) !== 'in' || !isSpace(location[j - 3]!)) return location.trim();
+  return location.slice(0, j - 3).trim();
+}
+
 /**
  * Classify a `command_injection` flow into a spawn-family call.
  *

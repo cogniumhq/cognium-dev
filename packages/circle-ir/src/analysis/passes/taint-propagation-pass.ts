@@ -23,7 +23,7 @@ import { buildJavaTaintedVars, buildJavaScriptTaintedVars, buildPythonTaintedVar
 import { parseJavaArrayAccessExpression } from '../java-array-element-keys.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 import { walkBackwardDefs } from '../dfg-walk.js';
-import { ARGV_NO_SHELL_TAG, JS_SPAWN_METHODS, classifyJsSpawnTaint } from '../js-spawn-argv.js';
+import { ARGV_NO_SHELL_TAG, JS_SPAWN_METHODS, classifyJsSpawnTaint, stripInMethodSuffix } from '../js-spawn-argv.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
 import { HTML_CONTEXT_ENCODER_METHODS } from '../constant-propagation/patterns.js';
 import { javaCanonicalStartsWithAllBare } from '../java-canonical-prefix.js';
@@ -1533,7 +1533,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
           for (const src of sources) {
             if (src.line !== f.source_line || src.type !== f.source_type) continue;
             if (src.variable) carriers.add(src.variable);
-            else if (src.location) carriers.add(src.location.replace(/\s+in\s+[\w$<>.]+$/, '').trim());
+            else if (src.location) carriers.add(stripInMethodSuffix(src.location));
           }
           const shape = classifyJsSpawnTaint(code, sink.line, sink.method!, [...carriers], f.source_type === 'env_input');
           if (shape === 'options-only') return false;
