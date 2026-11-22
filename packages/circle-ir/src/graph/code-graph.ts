@@ -33,6 +33,7 @@ export class CodeGraph {
    *     `re.MatchString(x)`) (#568)
    *   - a lookup in a constant table the file never writes (`T[req.query.k]`)
    *     (#667)
+   *   - a read of Hono bindings, `c.env` or a member below it
    */
   taintBarrierDefIds: ReadonlySet<number> = new Set();
 
