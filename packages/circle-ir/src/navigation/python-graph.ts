@@ -947,7 +947,10 @@ class PyGraphBuilder {
         }
       };
       const info = this.classes.get(d.id);
-      const wired = actions ? [...new Set([...actions.values()].flat())] : null;
+      // The map binds its verbs to its actions; a verb it leaves out still dispatches to the class's own method of that name.
+      const mapped = actions ? new Set([...actions.values()].flat()) : null;
+      const unmapped = mapped && info ? this.classMethodNames(info).filter(n => HTTP_VERBS.includes(n) && !mapped.has(n.toUpperCase())) : [];
+      const wired = mapped ? [...new Set([...mapped, ...unmapped.map(n => n.toUpperCase())])] : null;
       const viewSet = info ? [...this.allBaseNames(info)].some(b => DRF_VIEWSET_BASES.has(b)) : false;
       /** The verbs that reach a view method: the `as_view({...})` map's when given; any on a ViewSet without one. */
       const methodVerbs = (name: string): string[] => {
@@ -956,8 +959,9 @@ class PyGraphBuilder {
           if (own) return own;
           const hooked = DRF_HOOK_ACTIONS[name];
           if (hooked) return [...new Set(hooked.flatMap(a => actions!.get(a) ?? []))];
+          if (unmapped.includes(name)) return [name.toUpperCase()];
           if (HTTP_VERBS.includes(name) || name in DRF_ACTION_VERBS) return []; // not wired by the map
-          return wired; // dispatch, get_queryset, …: every wired action runs them
+          return wired; // dispatch, get_queryset, …: every wired verb runs them
         }
         if (viewSet) return ['ANY'];
         return HTTP_VERBS.includes(name) ? [name.toUpperCase()] : DRF_ACTION_VERBS[name] ?? ['ANY'];
@@ -979,6 +983,21 @@ class PyGraphBuilder {
         }
       }
     });
+  }
+
+  /** The method names a class defines, its own and its project bases'. */
+  private classMethodNames(info: ClassInfo): string[] {
+    const out = new Set<string>();
+    const queue = [info];
+    const seen = new Set<string>();
+    while (queue.length > 0) {
+      const c = queue.shift()!;
+      if (seen.has(c.decl.id)) continue;
+      seen.add(c.decl.id);
+      for (const m of c.members.values()) if (m.kind === 'method') out.add(m.name);
+      queue.push(...c.parents);
+    }
+    return [...out];
   }
 
   /** The verbs a class view serves: those of its DRF generic bases, else any. */

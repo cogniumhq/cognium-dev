@@ -168,6 +168,22 @@ class BareViewSet(viewsets.ViewSet):
 
     def create(self, request):
         return Response({})
+
+
+class UploadMixin:
+    def post(self, request):
+        return Response({})
+
+
+class ReportViewSet(UploadMixin, viewsets.ViewSet):
+    def list(self, request):
+        return Response([])
+
+    def get(self, request):
+        return Response([])
+
+    def put(self, request):
+        return Response({})
 `,
   'src/shop/urls.py': `
 from django.urls import path
@@ -178,6 +194,7 @@ urlpatterns = [
     path("items/", views.ItemViewSet.as_view(actions={"get": "list", "post": "create"})),
     path("items/export/", views.ItemViewSet.as_view({"get": "export"})),
     path("bare/", views.BareViewSet.as_view()),
+    path("reports/", views.ReportViewSet.as_view({"get": "list"})),
 ]
 `,
 };

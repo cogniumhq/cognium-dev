@@ -93,6 +93,19 @@ describe('DRF verbs', () => {
     ]);
   });
 
+  it('keeps the routes of HTTP-verb methods the as_view() map leaves out', async () => {
+    const { rows } = await routes(PY_DRF_VIEWSET);
+    // DRF dispatches POST and PUT to the class's own post/put; get is replaced by list.
+    expect(rows.filter(r => r.endsWith(' /reports/')).sort()).toEqual([
+      'shop.views:ReportViewSet GET /reports/',
+      'shop.views:ReportViewSet POST /reports/',
+      'shop.views:ReportViewSet PUT /reports/',
+      'shop.views:ReportViewSet.list GET /reports/',
+      'shop.views:ReportViewSet.put PUT /reports/',
+      'shop.views:UploadMixin.post POST /reports/',
+    ]);
+  });
+
   it('keeps ANY for a ViewSet without an as_view() map, not verbs guessed from action names', async () => {
     const { rows } = await routes(PY_DRF_VIEWSET);
     expect(rows.filter(r => r.endsWith(' /bare/')).sort()).toEqual([
