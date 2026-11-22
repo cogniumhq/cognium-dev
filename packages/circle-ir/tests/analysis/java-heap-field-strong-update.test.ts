@@ -159,6 +159,61 @@ const TRY_NO_THROW = `${header}
 }
 `;
 
+const SAME_LINE_READ = `${header}
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        String name = req.getParameter("name");
+        Box b = new Box();
+        PrintWriter writer = resp.getWriter();
+        /* BAD: the read on the next line comes before the constant write */
+        b.value = name; writer.println(b.value);
+        b.value = "abc";
+    }
+}
+`;
+
+const COMPOUND_AFTER_KILL = `${header}
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        String name = req.getParameter("name");
+        Box b = new Box();
+        b.value = name;
+        b.value = "abc";
+        b.value += name;
+
+        PrintWriter writer = resp.getWriter();
+        writer.println(b.value); /* BAD */
+    }
+}
+`;
+
+const SETTER_AFTER_KILL = `
+package demo.updates;
+
+import java.io.IOException;
+import java.io.PrintWriter;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class Holder {
+    class Box {
+        String value = null;
+        void setValue(String v) {
+            value = v;
+        }
+    }
+
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        String name = req.getParameter("name");
+        Box b = new Box();
+        b.value = name;
+        b.value = "abc";
+        b.setValue(name);
+
+        PrintWriter writer = resp.getWriter();
+        writer.println(b.value); /* BAD */
+    }
+}
+`;
+
 function xssSinkLines(r: Awaited<ReturnType<typeof analyze>>): Set<number> {
   const flows = (r.taint?.flows ?? []).filter(f => f.sink_type === 'xss' && !f.sanitized);
   return new Set(flows.map(f => f.sink_line));
@@ -220,5 +275,20 @@ describe('Java heap field strong update', () => {
   it('only a literal local assignment between the writes in a try still kills the taint', async () => {
     const r = await analyze(TRY_NO_THROW, 'Holder.java', 'java');
     expect(xssSinkLines(r).size).toBe(0);
+  });
+
+  it('a read on the same line as the tainted write stays tainted', async () => {
+    const r = await analyze(SAME_LINE_READ, 'Holder.java', 'java');
+    expect(xssSinkLines(r).has(lineOf(SAME_LINE_READ, 'println(b.value)'))).toBe(true);
+  });
+
+  it('a compound assignment of tainted data after the constant write keeps the taint', async () => {
+    const r = await analyze(COMPOUND_AFTER_KILL, 'Holder.java', 'java');
+    expect(xssSinkLines(r).has(lineOf(COMPOUND_AFTER_KILL, 'println(b.value)'))).toBe(true);
+  });
+
+  it('a method call on the receiver after the constant write keeps the taint', async () => {
+    const r = await analyze(SETTER_AFTER_KILL, 'Holder.java', 'java');
+    expect(xssSinkLines(r).has(lineOf(SETTER_AFTER_KILL, 'println(b.value)'))).toBe(true);
   });
 });

@@ -1663,8 +1663,10 @@ function isInsideJavaTryOrCatch(lines: string[], idx: number): boolean {
  *   - the line before the kill ends a statement (no brace-less `if`/`else`);
  *   - inside a `try` or `catch`, every statement between the writes cannot
  *     throw (a local assigned a literal), so no exception path skips the kill;
+ *   - the tainted write is alone on its line;
  *   - every read of `recv.field` comes after the kill, and no later write of
- *     the field stores anything but a literal;
+ *     the field (plain, compound or `++`/`--`) stores anything but a literal;
+ *   - no method is called on `recv` after the kill, since it may write the field;
  *   - `recv` is only ever used as `recv.<member>` or assigned to, never passed
  *     or copied, so no other reference can read the field.
  */
@@ -1713,17 +1715,30 @@ function isJavaHeapFieldStronglyUpdated(
 
   // Every mention of `recv` must be a member access or an assignment to it.
   const mentionRe = new RegExp(`(?<![\\w.])${recv}\\b(?!\\s*\\.)(?!\\s*=(?!=))`);
+  // A method on `recv` may write the field (`b.setValue(name)`).
+  const recvCallRe = new RegExp(`(?<![\\w.])${recv}\\s*\\.\\s*[A-Za-z_]\\w*\\s*\\(`);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].replace(/"(?:[^"\\]|\\.)*"/g, '""');
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
     if (mentionRe.test(line)) return false;
-    if (i === writeIdx || i === killIdx) continue;
-    fieldRe.lastIndex = 0;
-    if (!fieldRe.test(line)) continue;
-    if (i < killIdx) return false;
-    const w = fieldWriteRe.exec(line);
-    if (w && !JAVA_LITERAL_RHS_RE.test(w[1].trim())) return false;
+    // The tainted write must be alone on its line: a read after it on the same
+    // line (`b.value = name; writer.println(b.value);`) comes before the kill.
+    if (i === writeIdx) {
+      if (trimmed.indexOf(';') !== trimmed.length - 1) return false;
+      continue;
+    }
+    if (i === killIdx) continue;
+    if (i > killIdx && recvCallRe.test(line)) return false;
+    for (const fm of line.matchAll(fieldRe)) {
+      if (i < killIdx) return false;
+      // `++b.value`, `b.value++`, `b.value += x`: a write of a non-literal.
+      if (/(?:\+\+|--)\s*$/.test(line.slice(0, fm.index))) return false;
+      const after = line.slice((fm.index ?? 0) + fm[0].length);
+      if (/^\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>>?)=)/.test(after)) return false;
+      const w = /^\s*=(?!=)\s*([^;]*)/.exec(after);
+      if (w && !JAVA_LITERAL_RHS_RE.test(w[1].trim())) return false;
+    }
   }
   return true;
 }
