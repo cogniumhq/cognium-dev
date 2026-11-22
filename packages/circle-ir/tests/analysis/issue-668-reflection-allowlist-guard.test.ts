@@ -95,6 +95,28 @@ describe('cognium-dev#668 — reflection allowlist guard', () => {
     expect(codeInjectionLines(r)).toEqual([]);
   });
 
+  it('the same guard clears deserialization on GAP-470 safe mirrors (cwe699)', async () => {
+    const safe = `package com.demo;
+
+import java.util.Set;
+import javax.servlet.http.HttpServletRequest;
+
+public class SafeUnsafeReflection {
+    private static final Set<String> ALLOWED = Set.of("com.demo.CsvExport", "com.demo.JsonExport");
+
+    public Object make(HttpServletRequest req) throws Exception {
+        String cls = req.getParameter("cls");
+        if (!ALLOWED.contains(cls)) {
+            throw new SecurityException("denied");
+        }
+        return Class.forName(cls).getDeclaredConstructor().newInstance();
+    }
+}
+`;
+    const r = await analyze(safe, 'com/demo/SafeUnsafeReflection.java', 'java');
+    expect(r.taint.flows ?? []).toEqual([]);
+  });
+
   it('non-rejecting, other-variable, reassigned and non-literal guards still report', async () => {
     const r = await analyze(unguarded, 'Plugins.java', 'java');
     expect(codeInjectionLines(r)).toEqual([18, 25, 32, 38]);

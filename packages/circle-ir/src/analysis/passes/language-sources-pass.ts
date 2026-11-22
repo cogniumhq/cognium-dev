@@ -8766,8 +8766,8 @@ const JAVA_LITERAL_COLLECTION_IDENTS = new Set([
  * file whose initializer is nothing but string literals inside the standard
  * collection factories, and the guard must reject (throw / return). Credits
  * `<v>` on later lines of the enclosing method until `<v>` is reassigned.
- * Scoped to `code_injection` (reflective class loading); other sink types
- * are untouched.
+ * Scoped to reflective instantiation sinks (`code_injection`, `deserialization`);
+ * other sink types are untouched.
  */
 function findJavaReflectionAllowlistGuardSanitizers(
   code: string,
@@ -8868,7 +8868,7 @@ function findJavaReflectionAllowlistGuardSanitizers(
         type: 'java_reflection_allowlist_guard',
         method: 'contains',
         line: l + 1,
-        sanitizes: ['code_injection'],
+        sanitizes: ['code_injection', 'deserialization'],
       });
     }
   }
