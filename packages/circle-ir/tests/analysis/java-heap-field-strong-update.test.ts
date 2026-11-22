@@ -92,6 +92,73 @@ const RETAINT_AFTER_KILL = `${header}
 }
 `;
 
+const TRY_DIVISION = `${header}
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        String name = req.getParameter("name");
+        int n = name.length() - 3;
+        Box b = new Box();
+        PrintWriter writer = resp.getWriter();
+        try {
+            b.value = name;
+            int z = 10 / n;
+            b.value = "abc";
+        } catch (ArithmeticException e) {
+            writer.println(b.value); /* BAD */
+        }
+    }
+}
+`;
+
+const TRY_ARRAY = `${header}
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        String name = req.getParameter("name");
+        String[] parts = name.split(",");
+        Box b = new Box();
+        PrintWriter writer = resp.getWriter();
+        try {
+            b.value = name;
+            String second = parts[1];
+            b.value = "abc";
+        } catch (ArrayIndexOutOfBoundsException e) {
+            writer.println(b.value); /* BAD */
+        }
+    }
+}
+`;
+
+const TRY_READ_AFTER = `${header}
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        String name = req.getParameter("name");
+        int n = name.length() - 3;
+        Box b = new Box();
+        try {
+            b.value = name;
+            int z = 10 / n;
+            b.value = "abc";
+        } catch (ArithmeticException e) {
+        }
+        PrintWriter writer = resp.getWriter();
+        writer.println(b.value); /* BAD */
+    }
+}
+`;
+
+const TRY_NO_THROW = `${header}
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        String name = req.getParameter("name");
+        Box b = new Box();
+        PrintWriter writer = resp.getWriter();
+        try {
+            b.value = name;
+            int z = 10;
+            b.value = "abc";
+        } catch (RuntimeException e) {
+            writer.println(b.value); /* OK */
+        }
+    }
+}
+`;
+
 function xssSinkLines(r: Awaited<ReturnType<typeof analyze>>): Set<number> {
   const flows = (r.taint?.flows ?? []).filter(f => f.sink_type === 'xss' && !f.sanitized);
   return new Set(flows.map(f => f.sink_line));
@@ -133,5 +200,25 @@ describe('Java heap field strong update', () => {
   it('a tainted write after the constant write keeps the taint', async () => {
     const r = await analyze(RETAINT_AFTER_KILL, 'Holder.java', 'java');
     expect(xssSinkLines(r).has(lineOf(RETAINT_AFTER_KILL, 'println(b.value)'))).toBe(true);
+  });
+
+  it('a division between the writes in a try keeps the taint for the catch', async () => {
+    const r = await analyze(TRY_DIVISION, 'Holder.java', 'java');
+    expect(xssSinkLines(r).has(lineOf(TRY_DIVISION, 'println(b.value)'))).toBe(true);
+  });
+
+  it('an array access between the writes in a try keeps the taint for the catch', async () => {
+    const r = await analyze(TRY_ARRAY, 'Holder.java', 'java');
+    expect(xssSinkLines(r).has(lineOf(TRY_ARRAY, 'println(b.value)'))).toBe(true);
+  });
+
+  it('a read after a try whose catch swallows the exception stays tainted', async () => {
+    const r = await analyze(TRY_READ_AFTER, 'Holder.java', 'java');
+    expect(xssSinkLines(r).has(lineOf(TRY_READ_AFTER, 'println(b.value)'))).toBe(true);
+  });
+
+  it('only a literal local assignment between the writes in a try still kills the taint', async () => {
+    const r = await analyze(TRY_NO_THROW, 'Holder.java', 'java');
+    expect(xssSinkLines(r).size).toBe(0);
   });
 });

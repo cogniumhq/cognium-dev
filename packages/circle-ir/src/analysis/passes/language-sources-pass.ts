@@ -1617,6 +1617,37 @@ function findJavaHeapFieldDerivedSources(
 const JAVA_LITERAL_RHS_RE =
   /^(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)'|-?\d[\w.]*|true|false|null)$/;
 const JAVA_JUMP_RE = /\b(?:return|break|continue|throw|yield)\b/;
+// `[final] [Type] local = <literal>;`: no call, division, array or field access.
+const JAVA_NON_THROWING_STMT_RE = new RegExp(
+  '^(?:final\\s+)?(?:[A-Za-z_][\\w.]*(?:<[^;=()]*>)?(?:\\s*\\[\\s*\\])*\\s+)?' +
+    `[A-Za-z_]\\w*\\s*=\\s*(?:${JAVA_LITERAL_RHS_RE.source.slice(1, -1)})\\s*;$`,
+);
+
+/**
+ * True when line `idx` sits inside a `try` or `catch` block, at any depth.
+ * Walks back over the enclosing blocks and checks the header of each.
+ */
+function isInsideJavaTryOrCatch(lines: string[], idx: number): boolean {
+  let depth = 0;
+  for (let i = idx - 1; i >= 0; i--) {
+    const line = lines[i].replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
+    for (let j = line.length - 1; j >= 0; j--) {
+      if (line[j] === '}') depth++;
+      else if (line[j] === '{') {
+        if (depth > 0) {
+          depth--;
+          continue;
+        }
+        let header = line.slice(0, j).trim();
+        for (let k = i - 1; !header && k >= 0; k--) header = lines[k].trim();
+        if (/\btry\s*(?:\(.*\))?$/.test(header) || /\bcatch\s*\(.*\)$/.test(header)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
 
 /**
  * Strong update of a heap field (SecuriBench StrongUpdates3): the tainted
@@ -1626,6 +1657,8 @@ const JAVA_JUMP_RE = /\b(?:return|break|continue|throw|yield)\b/;
  *   - the kill is in the same block, and the lines between the two writes have
  *     no braces, jumps or calls and do not mention `recv`;
  *   - the line before the kill ends a statement (no brace-less `if`/`else`);
+ *   - inside a `try` or `catch`, every statement between the writes cannot
+ *     throw (a local assigned a literal), so no exception path skips the kill;
  *   - every read of `recv.field` comes after the kill, and no later write of
  *     the field stores anything but a literal;
  *   - `recv` is only ever used as `recv.<member>` or assigned to, never passed
@@ -1662,6 +1695,16 @@ function isJavaHeapFieldStronglyUpdated(
     if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
     if (!trimmed.endsWith(';')) return false;
     break;
+  }
+  // Inside a `try` or `catch`, an exception between the two writes skips the
+  // kill and reaches a handler, a `finally` or the code after the statement,
+  // any of which can read the field. Only statements that cannot throw count.
+  if (isInsideJavaTryOrCatch(lines, killIdx)) {
+    for (let i = writeIdx + 1; i < killIdx; i++) {
+      const trimmed = lines[i].trim();
+      if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+      if (!JAVA_NON_THROWING_STMT_RE.test(trimmed)) return false;
+    }
   }
 
   // Every mention of `recv` must be a member access or an assignment to it.
