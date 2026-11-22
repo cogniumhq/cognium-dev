@@ -1476,6 +1476,51 @@ function jsContentTypeExpressions(call: CallInfo): string[] {
   return out;
 }
 
+/**
+ * True when the header object or list `expr` may set a Content-Type we cannot
+ * read: a variable, a call, a spread or computed key (after any literal
+ * `content-type` key, since a later key wins), or a raw header list that names
+ * the type or holds a non-literal entry.
+ */
+function jsHeaderValueMayChangeType(expr: string): boolean {
+  const value = expr.trim();
+  if (/^(?:\d+|(['"`])[^'"`$]*\1)$/.test(value)) return false;
+  const headers = /^new\s+Headers\s*\(\s*([\s\S]*)\)$/.exec(value);
+  if (headers) return headers[1]!.trim() !== '' && jsHeaderValueMayChangeType(headers[1]!);
+  if (value.startsWith('{')) {
+    const keys = [...value.matchAll(/['"`]content-type['"`]\s*:/gi)];
+    const tail = keys.length > 0 ? value.slice(keys[keys.length - 1]!.index) : value;
+    return /\.\.\.|[{,]\s*\[/.test(tail);
+  }
+  if (value.startsWith('[')) {
+    return /content-type/i.test(value) || /[[,]\s*[^'"`\s\]]/.test(value);
+  }
+  return true;
+}
+
+/**
+ * True when the header write `call` may change the response's Content-Type
+ * to a value we cannot read: `res.writeHead(200, headers)`,
+ * `res.setHeader(name, value)` with a non-literal name, `res.set(headers)`,
+ * or a header object with a spread after its `content-type` key.
+ */
+function jsHeaderWriteMayChangeType(call: CallInfo): boolean {
+  const args = call.arguments.map(a => a.expression);
+  switch (call.method_name) {
+    case 'writeHead':
+    case 'body':
+      return args.slice(1).some(jsHeaderValueMayChangeType);
+    case 'setHeader':
+    case 'set':
+    case 'header':
+    case 'append':
+      if (args.length >= 2) return !JS_STRING_LITERAL_RE.test(args[0]!);
+      return args.length === 1 && jsHeaderValueMayChangeType(args[0]!);
+    default:
+      return false;
+  }
+}
+
 /** Offset in `code` of a call's start (1-based line, 0-based column). */
 function jsCallOffset(lineStarts: readonly number[], call: CallInfo): number {
   return (lineStarts[call.location.line - 1] ?? 0) + call.location.column;
@@ -1552,8 +1597,9 @@ function jsTypeIsServedFileMime(code: string, expr: string, setterAt: number, si
 /**
  * True when the response written by the xss sink `sinkCall` has an explicit
  * Content-Type that a browser does not render as a document. Every type set
- * on that response before the write must be non-renderable, and at least one
- * must be set on every path to the write.
+ * on that response before the write must be non-renderable, at least one
+ * must be set on every path to the write, and no header write after it (on
+ * any path) may set a type we cannot read.
  */
 function jsResponseTypeIsNotRenderable(code: string, calls: readonly CallInfo[], sinkCall: CallInfo): boolean {
   const receiver = sinkCall.receiver;
@@ -1568,22 +1614,31 @@ function jsResponseTypeIsNotRenderable(code: string, calls: readonly CallInfo[],
   for (let i = 0; i < code.length; i++) if (code[i] === '\n') lineStarts.push(i + 1);
   const sinkAt = jsCallOffset(lineStarts, sinkCall);
 
-  let dominated = false;
+  // Offsets of the last type set that runs on every path to the write, and of
+  // the last header write that may change the type to one we cannot read.
+  let lastSetAt = -1;
+  let lastChangeAt = -1;
   for (const setter of calls) {
     if (setter.receiver !== receiver || setter.location.line > line ||
         !JS_CONTENT_TYPE_SETTERS.has(setter.method_name) || !inScope(setter)) continue;
+    // An earlier `c.body` is another response, not a header write on this one.
+    if (setter.method_name === 'body' && setter !== sinkCall) continue;
+    const setterAt = jsCallOffset(lineStarts, setter);
+    if (setterAt > sinkAt) continue;
+    if (jsHeaderWriteMayChangeType(setter)) lastChangeAt = Math.max(lastChangeAt, setterAt);
     const types = jsContentTypeExpressions(setter);
     if (types.length === 0) continue;
-    const setterAt = jsCallOffset(lineStarts, setter);
     const ok = types.every(expr => {
       const lit = JS_STRING_LITERAL_RE.exec(expr);
       if (lit) return !JS_RENDERABLE_TYPE_RE.test(lit[2]);
       return jsTypeIsServedFileMime(code, expr, setterAt, sinkCall);
     });
     if (!ok) return false;
-    if (setter === sinkCall || jsStatementDominates(code, setterAt, sinkAt)) dominated = true;
+    if (setter === sinkCall || jsStatementDominates(code, setterAt, sinkAt)) {
+      lastSetAt = Math.max(lastSetAt, setterAt);
+    }
   }
-  return dominated;
+  return lastSetAt >= 0 && lastChangeAt < lastSetAt;
 }
 
 // skillsregistry#49 — the classless `fetch` SSRF sink (config-loader) exists for

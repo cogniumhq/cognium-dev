@@ -123,6 +123,29 @@ describe('JSON responses are not XSS sinks', () => {
       expect(r.flows).toEqual([]);
     });
 
+    it('a later header write with literal non-type headers still drops the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.setHeader('Content-Type', 'application/json');\n" +
+        "  res.setHeader('Cache-Control', 'no-store');\n" +
+        "  res.writeHead(200, { 'X-Frame-Options': 'DENY' });",
+        'JSON.stringify({ q })'), 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
+    it('a JSON type set after a header write from a variable still drops the sink', async () => {
+      const code =
+        "const http = require('http');\n" +
+        "const CORS = { 'Access-Control-Allow-Origin': '*' };\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const q = new URL(req.url, 'http://x').searchParams.get('q');\n" +
+        '  for (const k of Object.keys(CORS)) res.setHeader(k, CORS[k]);\n' +
+        "  res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' });\n" +
+        '  res.end(JSON.stringify({ q }));\n' +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
     it('json helpers (c.json, res.json) are not XSS sinks', async () => {
       const hono =
         "import { Hono } from 'hono';\nconst app = new Hono();\n" +
@@ -237,6 +260,60 @@ describe('JSON responses are not XSS sinks', () => {
         '}).listen(8080);\n';
       const r = await xss(code, 'server.js');
       expect(r.flows).toContain(6);
+    });
+
+    it('a later writeHead from a variable keeps the sink after a JSON type', async () => {
+      const code =
+        "const http = require('http');\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const q = new URL(req.url, 'http://x').searchParams.get('q');\n" +
+        "  res.setHeader('Content-Type', 'application/json');\n" +
+        "  const headers = { 'Content-Type': req.headers.accept };\n" +
+        '  res.writeHead(200, headers);\n' +
+        "  res.end('<p>' + q + '</p>');\n" +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(7);
+    });
+
+    it('a later writeHead from a variable inside an if keeps the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.writeHead(200, { 'Content-Type': 'application/json' });\n" +
+        "  if (req.headers.accept) res.writeHead(200, req.headers);",
+        "'<p>' + q + '</p>'"), 'server.js');
+      expect(r.flows).toContain(6);
+    });
+
+    it('a later header write that can change the type keeps the sink', async () => {
+      const cases = [
+        "res.setHeader(req.query.h, req.query.v);",
+        "res.set(req.query);",
+        "res.writeHead(200, { ...req.query });",
+      ];
+      for (const later of cases) {
+        const r = await xss(EXPRESS(
+          `res.set('Content-Type', 'application/json');\n  ${later}`,
+          "'<p>' + name + '</p>'"), 'server.js');
+        expect(r.flows, later).toContain(6);
+      }
+    });
+
+    it('a spread after the JSON content-type key keeps the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.writeHead(200, { 'Content-Type': 'application/json', ...req.headers });",
+        "'<p>' + q + '</p>'"), 'server.js');
+      expect(r.flows).toContain(5);
+    });
+
+    it('hono c.body with a header object from a variable keeps the sink', async () => {
+      const code =
+        "import { Hono } from 'hono';\nconst app = new Hono();\n" +
+        "app.get('/u', (c) => {\n  const name = c.req.query('name');\n" +
+        "  c.header('Content-Type', 'application/json');\n" +
+        "  const h = { 'content-type': c.req.query('t') };\n" +
+        "  return c.body('<p>' + name + '</p>', 200, h);\n});\n";
+      const r = await xss(code);
+      expect(r.flows).toContain(7);
     });
 
     it('hono c.html stays an XSS sink', async () => {
