@@ -1131,6 +1131,13 @@ async function scanProject(
       errorKind: 'timeout',
     });
   }
+  for (const f of projectResult.failed_files ?? []) {
+    results.push({
+      file: f.file,
+      vulnerabilities: [],
+      error: `analysis failed: ${f.message}; file skipped`,
+    });
+  }
 
   return {
     results,
