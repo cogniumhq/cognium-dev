@@ -26,6 +26,7 @@ import {
   getSinkDescription,
 } from './rules.js';
 import { isNonExecutableSourceLine } from './non-executable-lines.js';
+import { ARGV_NO_SHELL_TAG } from './js-spawn-argv.js';
 import { sanitizerCoversSink } from './sanitizer-index.js';
 import { walkBackwardDefs } from './dfg-walk.js';
 import { isProvablyLiteralExpression } from './literal-expression.js';
@@ -490,6 +491,22 @@ export function generateFindings(
   }
 
   const deduped = Array.from(grouped.values());
+
+  // a sink whose every flow is argv with no shell is argument
+  // injection at most: report it at medium.
+  const argvOnlyKeys = new Set<string>();
+  const otherFlowKeys = new Set<string>();
+  for (const fl of flows) {
+    const key = `${fl.sink_line}:${fl.sink_type}`;
+    if (fl.tags?.includes(ARGV_NO_SHELL_TAG)) argvOnlyKeys.add(key);
+    else otherFlowKeys.add(key);
+  }
+  for (const f of deduped) {
+    const key = `${f.sink.line}:${f.type}`;
+    if (argvOnlyKeys.has(key) && !otherFlowKeys.has(key) && (f.severity === 'critical' || f.severity === 'high')) {
+      f.severity = 'medium';
+    }
+  }
 
   // Sort by severity and confidence
   deduped.sort((a, b) => {

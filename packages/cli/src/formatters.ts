@@ -68,14 +68,21 @@ export interface ProjectProfileSummary {
 export const LIBRARY_API_SURFACE_TAG = 'library-api-surface:caller-responsibility';
 
 /**
+ * Tag for a command_injection flow into a spawn-family call with an argument
+ * array and no shell: argument injection at most. Mirrors `ARGV_NO_SHELL_TAG`
+ * in `circle-ir`.
+ */
+export const ARGV_NO_SHELL_TAG = 'argv-no-shell:argument-injection';
+
+/**
  * Apply policy-driven severity downgrade for taint flows tagged at a
- * library API surface. Returns a new severity string; non-tagged inputs
- * pass through unchanged. The circle-ir post-processing pipeline also
- * downgrades SastFinding-based emissions; this helper covers the parallel
- * TaintFlow → Vulnerability path that bypasses that pipeline.
+ * library API surface or as argv-only. Returns a new severity string;
+ * non-tagged inputs pass through unchanged. The circle-ir post-processing
+ * pipeline also downgrades SastFinding-based emissions; this helper covers
+ * the parallel TaintFlow → Vulnerability path that bypasses that pipeline.
  */
 export function applyTagSeverityDowngrade(severity: string, tags: string[] | undefined): string {
-  if (!tags || !tags.includes(LIBRARY_API_SURFACE_TAG)) return severity;
+  if (!tags || !(tags.includes(LIBRARY_API_SURFACE_TAG) || tags.includes(ARGV_NO_SHELL_TAG))) return severity;
   if (severity === 'critical' || severity === 'high') return 'medium';
   return severity;
 }
