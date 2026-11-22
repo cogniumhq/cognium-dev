@@ -108,9 +108,9 @@ describe('depcalls', () => {
     expect(r.stdout).toMatch(/uncovered src\/main\/java\/app\/Codec\.java:7\s+org\.yaml\.snakeyaml\.Yaml\.load/);
   }, 60_000);
 
-  test('refuses an artifact nothing resolves, with exit 1', async () => {
+  test('refuses an artifact nothing resolves, with exit 2', async () => {
     const r = await runCli(['depcalls', '--artifact', 'org.example:nothing', '--maven-repo', repo, java]);
-    expect(r.code).toBe(1);
+    expect(r.code).toBe(2);
     expect(r.stderr).toContain('org.example:nothing');
   }, 60_000);
 });

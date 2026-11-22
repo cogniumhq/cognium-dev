@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Usage and configuration errors exit `2` instead of `1`, in every command.** This covers a bad `-f`/`--format`, `--severity`, `--threads` or `--language` value, a missing path argument, an unknown command, a malformed `cognium.config.json` or an invalid `severity` in it, `deadcode`/`reach`/`entries`/`depcalls` option errors, `sbom` option errors and `sbom` finding no manifests. Old: exit `1`, the same code as "security findings present". New: exit `2`, with a one-line `Error: …` on stderr. Exit `1` now means only that `scan` found security findings, or that the `recheck` no-new-high rule failed. Analysis results keep their exit codes (0, 1 for findings; a partial run exits by its findings). `--help` has an EXIT CODES section. A script that treated `1` as "findings" no longer sees a typo as findings; a script that expected `1` on a bad option must expect `2`. Refs #1306
+- **Unknown options are refused with exit `2`.** Each command accepts the options it reads (plus `--help`, `--version` and `--log-level`); anything else stops with `Error: unknown option '--x' for 'scan'` before any work is done. Old: the option was ignored and the command ran (exit `0` or `1` by its result), so `--severty high` ran a full scan at the default severity. New: exit `2`. Every option `--help` documents is still accepted. Refs #1306
+
 ### Fixed
 
 - **`scan`: the entry-path gate no longer drops findings in an Express handler that a router registers as a default import under another name, through an `index.ts` re-export, as `handlers.run`, or inside an array of handlers (Refs #1323, follow-up to #1331; circle-ir fix).**
