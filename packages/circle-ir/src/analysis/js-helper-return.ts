@@ -101,7 +101,11 @@ function splitTernary(expr: string): [string, string] | null {
  * that every assignment gives a number.
  */
 function isNumericExpr(expr: string, body: string, params: ReadonlySet<string>, depth: number): boolean {
-  let e = expr.trim().replace(/\s+as\s+number$/, '');
+  let e = expr.trim();
+  if (e.endsWith('number')) {
+    const head = e.slice(0, -'number'.length).trimEnd();
+    if (head.length < e.length - 'number'.length && /\sas$/.test(head)) e = head.slice(0, -2).trimEnd();
+  }
   while (e.startsWith('(') && closeAt(e, 0) === e.length - 1) e = e.slice(1, -1).trim();
   if (e === '' || depth > 4) return false;
   if (NUMERIC_LITERAL.test(e)) return true;
@@ -112,6 +116,19 @@ function isNumericExpr(expr: string, body: string, params: ReadonlySet<string>, 
   if (tern) return tern.every(t => isNumericExpr(t, body, params, depth + 1));
   if (!/^[A-Za-z_$][\w$]*$/.test(e) || params.has(e)) return false;
   return localIsNumeric(e, body, params, depth);
+}
+
+/** Drops each closed `/* … *\/` comment; an unclosed one is left as is. */
+function stripBlockComments(text: string): string {
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const open = text.indexOf('/*', i);
+    const close = open < 0 ? -1 : text.indexOf('*/', open + 2);
+    if (close < 0) return out + text.slice(i);
+    out += text.slice(i, open);
+    i = close + 2;
+  }
 }
 
 /** Every write to the local `name` in `body` stores a number. */
@@ -155,7 +172,8 @@ export function jsHelperReturnsNumber(sourceCode: string, rawName: string): bool
   const open = decls[0]!.index! + decls[0]![0].length - 1;
   const close = closeAt(sourceCode, open);
   if (close < 0) return false;
-  const body = sourceCode.slice(open + 1, close).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  const body = stripBlockComments(sourceCode.slice(open + 1, close))
+    .split('\n').map(l => { const c = l.indexOf('//'); return c < 0 ? l : l.slice(0, c); }).join('\n');
   if (/\bfunction\b|=>|\byield\b/.test(body)) return false;
   const params = new Set(
     (decls[0]![1] ?? decls[0]![2] ?? '').split(',')

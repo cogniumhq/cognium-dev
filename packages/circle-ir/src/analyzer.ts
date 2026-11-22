@@ -1246,7 +1246,7 @@ async function analyzeFile(
     ...scalarDerivedDefIds(dfg.defs, code, language),
     ...boundedMakeDefIds(dfg.defs, code, language),
     ...constTableLookupDefIds(dfg.defs, code, language),
-    ...honoEnvDefIds(dfg.defs, code, language),
+    ...honoEnvDefIds(dfg.defs, dfg.uses, code, language),
   ]);
   phaseEnd('buildCodeGraph', tGraph);
   checkDeadline('buildCodeGraph');

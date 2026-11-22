@@ -11,6 +11,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
 import { jsHelperReturnsNumber } from '../../src/analysis/js-helper-return.js';
+import { honoEnvDefIds } from '../../src/analysis/hono-env.js';
 
 const flows = async (code: string, type = 'sql_injection') =>
   (await analyze(code, 'src/r.ts', 'typescript')).taint.flows.filter(f => f.sink_type === type);
@@ -88,10 +89,14 @@ describe('jsHelperReturnsNumber', () => {
     yes('function f(x) { return +x; }');
     yes('function f(x) { let n = 0; if (x) n = parseFloat(x); n++; return n; }');
     yes('const f = async function (x) { return x ? 1 : (2); };');
+    yes('function f(x) { /* a */ return Number(x) as  number; /* b */ }');
   });
 
   it('rejects anything that may return a non-number', () => {
     no('function f(x) { return x; }');
+    no('function f(x) { return x as number; }');
+    no('function f(x) { return Number(x)asnumber; }');
+    no('function f(x) { /* 1 */ return x; /* 2 */ }');
     no('function f(x) { return Number(x) + x; }');
     no('function f(x) { if (x) return; return 1; }');
     no('function f(x) { const n = Number(x); return n\n    + x; }');
@@ -148,5 +153,72 @@ ${body}
   const q = c.req.query('q');
   const r = await pool.query(\`SELECT * FROM \${table} WHERE name = '\${q}'\`);
   return c.json(r.rows);`))).length).toBeGreaterThan(0);
+  });
+
+  const cmdRoute = (path: string, body: string) => `import { Hono } from 'hono';
+import { exec } from 'child_process';
+const app = new Hono();
+app.get('${path}', (c) => {
+${body}
+  return c.text('ok');
+});
+`;
+
+  it('an env field of the query object still flows', async () => {
+    expect((await flows(cmdRoute('/run', `  const q = c.req.query();
+  const target = q.env;
+  exec(\`deploy \${target}\`);`), 'command_injection')).length).toBeGreaterThan(0);
+  });
+
+  it('an env field of the path params still flows', async () => {
+    expect((await flows(cmdRoute('/run/:env', `  const tag = c.req.query('tag');
+  const p = c.req.param();
+  const name = p.env;
+  exec(\`deploy \${name}\`);`), 'command_injection')).length).toBeGreaterThan(0);
+  });
+
+  it('only an env read on the context parameter is a barrier', async () => {
+    const code = `import { Hono } from 'hono';
+const app = new Hono();
+app.post('/run', async (c) => {
+  const body = await c.req.json();
+  const bin = c.env.TOOL;
+  body.jobs.forEach((job) => {
+    const target = job.env;
+  });
+  const q = c.req.query();
+  const mode = q.env;
+  return c.text(bin);
+});
+function helper(c) {
+  const dir = c.env;
+}
+`;
+    const { dfg } = await analyze(code, 'src/r.ts', 'typescript');
+    const barrier = honoEnvDefIds(dfg.defs, dfg.uses, code, 'typescript');
+    const names = dfg.defs.filter(d => barrier.has(d.id)).map(d => d.variable);
+    expect(names).toEqual(['bin']);
+  });
+
+  it('the context parameter keeps the barrier under any name, in middleware too', async () => {
+    const code = `import { Hono } from 'hono';
+import type { Context, Next } from 'hono';
+import { exec } from 'child_process';
+const app = new Hono();
+app.use('*', async (ctx, next) => {
+  const q = ctx.req.query('q');
+  const dir = ctx.env.WORK_DIR;
+  exec(\`ls \${dir}\`);
+  await next();
+});
+async function handler(c: Context) {
+  const q = c.req.query('q');
+  const bin = c.env.TOOL;
+  exec(\`\${bin} --version\`);
+  return c.text(q ?? '');
+}
+app.get('/v', handler);
+`;
+    expect(await flows(code, 'command_injection')).toHaveLength(0);
   });
 });
