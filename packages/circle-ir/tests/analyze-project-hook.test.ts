@@ -46,7 +46,7 @@ describe('analyzeProject analyzeFile hook', () => {
     expect(strip(hooked)).toBe(strip(plain));
   });
 
-  it('records an AnalysisTimeoutError from the hook and rethrows any other error', async () => {
+  it('records an AnalysisTimeoutError from the hook and continues after any other error', async () => {
     const timed = await analyzeProject(files, {
       analyzeFile: async (code, filePath, language) => {
         if (filePath === 'app/A.java') throw new AnalysisTimeoutError(filePath, 5, 'parse');
@@ -56,8 +56,13 @@ describe('analyzeProject analyzeFile hook', () => {
     expect(timed.timed_out_files).toEqual([{ file: 'app/A.java', elapsed_ms: 5, phase: 'parse' }]);
     expect(timed.files.map((f) => f.file)).toEqual(['app/B.java']);
 
-    await expect(analyzeProject(files, {
-      analyzeFile: async () => { throw new Error('Failed to parse code'); },
-    })).rejects.toThrow('Failed to parse code');
+    const failed = await analyzeProject(files, {
+      analyzeFile: async (code, filePath, language) => {
+        if (filePath === 'app/A.java') throw new Error('Failed to parse code');
+        return analyze(code, filePath, language);
+      },
+    });
+    expect(failed.failed_files).toEqual([{ file: 'app/A.java', message: 'Failed to parse code' }]);
+    expect(failed.files.map((f) => f.file)).toEqual(['app/B.java']);
   });
 });
