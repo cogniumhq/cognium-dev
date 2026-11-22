@@ -5,7 +5,7 @@
  */
 
 import { runsArgvAsCommand } from './arg-executing-programs.js';
-import { jsHelperReturnsNoParam } from './js-helper-return.js';
+import { jsHelperReturnsNoParam, jsHelperReturnsNumber } from './js-helper-return.js';
 import type { ArgumentInfo, CallInfo, TypeInfo, ImportInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SinkType, SupportedLanguage } from '../types/index.js';
 import { javaWikiTagInheritedContextReceiver } from './passes/language-sources-pass.js';
 import { DOM_ASSIGNMENT_SINK_METHODS, isProvablyLiteralExpression } from './literal-expression.js';
@@ -4286,6 +4286,27 @@ function findSanitizers(
       line: call.location.line,
       sanitizes: removes,
     });
+  }
+
+  // a same-file JS/TS helper that returns a number on every path
+  // (`parseHours(raw)` → `Number(raw)` after a range check, or a literal
+  // default) cleans what a numeric coercion cleans.
+  if (sourceLines && (language === 'javascript' || language === 'typescript' || language === 'tsx')) {
+    const numericRemoves = patterns.find(p => p.method === 'Number' && !p.class)?.removes ?? [];
+    const jsCode = sourceLines.join('\n');
+    const numericHelper = new Map<string, boolean>();
+    for (const call of calls) {
+      if (call.receiver || wrapperSanitizers.has(call.method_name) || numericRemoves.length === 0) continue;
+      let numeric = numericHelper.get(call.method_name);
+      if (numeric === undefined) numericHelper.set(call.method_name, numeric = jsHelperReturnsNumber(jsCode, call.method_name));
+      if (!numeric) continue;
+      sanitizers.push({
+        type: 'derived_wrapper',
+        method: formatSanitizerMethod(call),
+        line: call.location.line,
+        sanitizes: [...numericRemoves],
+      });
+    }
   }
 
   const noopLocalHelpers = !sourceLines
