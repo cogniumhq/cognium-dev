@@ -379,6 +379,36 @@ export function propagateTaint(
 const PARAM_SCOPED_SOURCE_RE = /^(?:GraphQL \w+\.\w+ resolver args|Express handler destructured request) /;
 
 /**
+ * cognium-dev the callback parameters on a call source's line that the
+ * source call itself reads. In
+ * `fs.readdirSync(dir).map((e) => fs.readFileSync(path.join(dir, e)))` the
+ * read is the source and `e` shares its line, but `e` is bound before the read
+ * runs, so the read's content cannot define it. Seeding `e` made the content
+ * taint the read's own path argument. A parameter the call does not read
+ * (`getInput().map((x) => x)`) is still seeded.
+ */
+function paramsConsumedBySourceCall(
+  source: TaintSource,
+  defsOnLine: DFGDef[],
+  calls: CallInfo[] | undefined,
+): Set<string> | null {
+  if (source.type === 'interprocedural_param' || !calls) return null;
+  const method = source.method ?? /([A-Za-z_$][\w$]*)\s*\(\)(?:\s+in\b|$)/.exec(source.location ?? '')?.[1];
+  if (!method) return null;
+  const params = defsOnLine.filter(d => d.kind === 'param' && /^[A-Za-z_$][\w$]*$/.test(d.variable));
+  if (params.length === 0) return null;
+  const out = new Set<string>();
+  for (const call of calls) {
+    if (call.method_name !== method) continue;
+    for (const p of params) {
+      const re = new RegExp(String.raw`(?<![.\w$])${p.variable.replace(/\$/g, '\\$')}(?![\w$])`);
+      if (call.arguments.some(a => re.test(a.expression))) out.add(p.variable);
+    }
+  }
+  return out.size > 0 ? out : null;
+}
+
+/**
  * True when `code` (one trimmed source line) is an `if` / `else if` / `while`
  * header whose parenthesised condition closes on that same line.
  */
@@ -497,8 +527,11 @@ function findInitialTaint(
       }
     }
 
+    const consumedParams = jsLike ? paramsConsumedBySourceCall(source, defsOnLine, callsByLine.get(source.line)) : null;
+
     for (const def of defsOnLine) {
       if (seedable && !seedable.has(def.id)) continue;
+      if (consumedParams?.has(def.variable)) continue;
       // cognium-dev #308 (from cognium-ai#326 / #289): an
       // `interprocedural_param` source names exactly one parameter
       // (`source.variable`, set for Java/C#). Every parameter shares the
