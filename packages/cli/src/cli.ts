@@ -42,12 +42,12 @@ import {
 } from './formatters.js';
 import { version } from './version.js';
 import { buildInfo } from './build-info.js';
-import { parseArgs, showHelp, showVersion } from './utils/args.js';
+import { parseArgs, showHelp, showVersion, unknownOptions } from './utils/args.js';
 import { computeRecheck, parseRecheckOptions, recheckExitCode } from './recheck.js';
 import { startFileWatchdog, type FileWatchdog } from './file-watchdog.js';
 import { ScanPool, scanPoolSize, serveScanWorker, decodeScanError } from './scan-pool.js';
 import { isMainThread, workerData } from 'worker_threads';
-import { UsageError, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush, writeStdout } from './utils/options.js';
+import { UsageError, EXIT_ERROR, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush, writeStdout } from './utils/options.js';
 import { writeJson } from './utils/json-stream.js';
 import { spinner, type Spinner } from './utils/spinner.js';
 import { SCAN_SKIPPED_DIRECTORIES, isScanSkippedDirectory, isStructureSkippedDirectory } from './utils/skip-dirs.js';
@@ -516,7 +516,7 @@ function languageFromCliOptions(options: { language?: unknown; l?: unknown }): s
     return resolveScanLanguage((options.language || options.l) as string | undefined);
   } catch (err) {
     console.error(colors.red(`Error: ${(err as Error).message}`));
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 }
 
@@ -1129,6 +1129,13 @@ async function scanProject(
       vulnerabilities: [],
       error: `analysis timed out after ${t.elapsed_ms}ms (at ${t.phase}); file skipped`,
       errorKind: 'timeout',
+    });
+  }
+  for (const f of projectResult.failed_files ?? []) {
+    results.push({
+      file: f.file,
+      vulnerabilities: [],
+      error: `analysis failed: ${f.message}; file skipped`,
     });
   }
 
@@ -1756,7 +1763,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
   } catch (error) {
     if (spin) spin.fail('Analysis failed');
     console.error(colors.red(error instanceof Error ? error.message : 'Unknown error'));
-    await exitAfterFlush(error instanceof UsageError ? 1 : 2);
+    await exitAfterFlush(EXIT_ERROR);
   }
 }
 
@@ -2320,7 +2327,7 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   const manifests = await collectManifestFiles(absPath);
   if (manifests.length === 0) {
     console.error(colors.red('Error: no supported manifests found (package.json/-lock, requirements.txt, pyproject.toml, poetry.lock, pom.xml with dependency-tree.txt/-list.txt, build.gradle, gradle.lockfile, Cargo.toml/.lock, go.mod, *.target)'));
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 
   // A lockfile supersedes its sibling manifest — it pins exact + transitive
@@ -2355,7 +2362,7 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   const effective = usable.filter((m) => !supersededInDir.has(`${dirname(m)}\0${basename(m)}`));
   if (effective.length === 0) {
     console.error(colors.red('Error: no supported manifests found (Maven resolved output needs its pom.xml beside it)'));
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 
   let projectName = options.name;
@@ -2442,6 +2449,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  // An option the command does not take is a usage error, never ignored.
+  const unknown = unknownOptions(command, options);
+  if (unknown.length > 0) {
+    throw new UsageError(
+      `unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map(o => `'${o}'`).join(', ')}${command ? ` for '${command}'` : ''}`,
+    );
+  }
+
   // Handle version command or flag
   if (command === 'version' || options.version || options.V) {
     showVersion(version, buildInfo);
@@ -2465,7 +2480,7 @@ async function main(): Promise<void> {
     if (args.length === 0) {
       console.error(colors.red('Error: metrics command requires a path argument'));
       console.error('\nUsage: cognium-dev metrics <path> [options]');
-      process.exit(1);
+      process.exit(EXIT_ERROR);
     }
 
     const targetPath = args[0];
@@ -2488,16 +2503,16 @@ async function main(): Promise<void> {
     if (args.length === 0) {
       console.error(colors.red('Error: sbom command requires a path argument'));
       console.error('\nUsage: cognium-dev sbom <path> [--format cyclonedx|spdx] [--output <file>]');
-      process.exit(1);
+      process.exit(EXIT_ERROR);
     }
     const rawFormat = ((options.format || options.f || 'cyclonedx') as string).toLowerCase();
     if (rawFormat !== 'cyclonedx' && rawFormat !== 'spdx') {
       console.error(colors.red(`Error: unknown SBOM format '${rawFormat}' (expected 'cyclonedx' or 'spdx')`));
-      process.exit(1);
+      process.exit(EXIT_ERROR);
     }
     if (options['license-map'] === true) {
       console.error(colors.red('Error: --license-map needs a file path'));
-      process.exit(1);
+      process.exit(EXIT_ERROR);
     }
     const sbomOptions: SbomOptions = {
       format: rawFormat as 'cyclonedx' | 'spdx',
@@ -2510,7 +2525,7 @@ async function main(): Promise<void> {
     try {
       await runSbom(args[0], sbomOptions);
     } catch (e) {
-      if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(1); }
+      if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(EXIT_ERROR); }
       throw e;
     }
     return;
@@ -2558,7 +2573,7 @@ async function main(): Promise<void> {
       else writeStdout(payload + '\n');
       if (outputFile) console.error(`Wrote ${outputFile}`);
     } catch (e) {
-      if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(1); }
+      if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(EXIT_ERROR); }
       throw e;
     }
     await exitAfterFlush(0);
@@ -2594,7 +2609,7 @@ async function main(): Promise<void> {
     if (args.length === 0) {
       console.error(colors.red('Error: scan command requires a path argument'));
       console.error('\nUsage: cognium-dev scan <path> [options]');
-      process.exit(1);
+      process.exit(EXIT_ERROR);
     }
 
     const targetPath = args[0];
@@ -2629,7 +2644,7 @@ async function main(): Promise<void> {
   } else {
     console.error(colors.red(`Error: Unknown command '${command}'`));
     console.error('\nRun \'cognium-dev --help\' for usage information');
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 }
 
@@ -2639,11 +2654,11 @@ const scanWorker = !isMainThread && (workerData as { kind?: unknown } | null)?.k
 if (scanWorker) {
   runScanWorker(workerData as ScanWorkerData);
 } else main().catch((error) => {
-  // #1006: a bad option is a usage error (exit 1), reported before any scan work.
+  // #1006: a bad option is a usage error (exit 2), reported before any scan work.
   if (error instanceof UsageError) {
     console.error(colors.red(`Error: ${error.message}`));
     console.error('\nRun \'cognium-dev --help\' for usage information');
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
   console.error(colors.red('Fatal error:'), error.message);
   process.exit(2);

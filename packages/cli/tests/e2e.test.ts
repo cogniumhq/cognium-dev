@@ -241,6 +241,46 @@ describe('exit codes', () => {
     const { exitCode } = await run('scan', '/nonexistent/path/file.java', '-q');
     expect(exitCode).toBe(2);
   }, 30_000);
+
+  // 1 means findings. A usage or config error used to exit 1 as well, so a CI
+  // gate could not tell a typo from a vulnerable codebase.
+  test('a usage error exits 2, not the findings code', async () => {
+    for (const args of [
+      ['scan', VULN_FILE, '-f', 'xml'],
+      ['scan', VULN_FILE, '--severity', 'urgent'],
+      ['scan', VULN_FILE, '--threads', '0'],
+      ['scan'],
+      ['frobnicate'],
+      ['scan', VULN_FILE, '--frobnicate'],
+    ]) {
+      const { exitCode, stderr } = await run(...args);
+      expect(exitCode).toBe(2);
+      expect(stderr).toContain('Error');
+    }
+  }, 60_000);
+
+  // An unknown option used to be ignored: `--severty high` ran a full scan at
+  // the default severity and exited by its findings.
+  test('an unknown option is refused before any scan work', async () => {
+    const { exitCode, stdout, stderr } = await run('scan', VULN_FILE, '-f', 'json', '--severty', 'high');
+    expect(exitCode).toBe(2);
+    expect(stdout).toBe('');
+    expect(stderr).toContain("unknown option '--severty' for 'scan'");
+  }, 30_000);
+
+  test('a config error exits 2', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cognium-config-'));
+    try {
+      const badJson = join(dir, 'bad.json');
+      writeFileSync(badJson, '{ not json');
+      const badSeverity = join(dir, 'severity.json');
+      writeFileSync(badSeverity, JSON.stringify({ severity: 'urgent' }));
+      expect((await run('scan', VULN_FILE, '-q', '--profile', badJson)).exitCode).toBe(2);
+      expect((await run('scan', VULN_FILE, '-q', '--profile', badSeverity)).exitCode).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 // ─── Scan: filtering ────────────────────────────────────────────────────────
@@ -290,17 +330,17 @@ describe('scan directory', () => {
     }
   }, 60_000);
 
-  test('invalid --language exits 1 instead of scanning nothing (cognium-dev#443)', async () => {
+  test('invalid --language exits 2 instead of scanning nothing (cognium-dev#443)', async () => {
     const { stdout, stderr, exitCode } = await run('scan', FIXTURES, '-f', 'json', '-q', '--language', 'ruby');
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(2);
     expect(stderr).toContain('Invalid language: ruby');
     expect(stderr).toContain('Valid options:');
     expect(stdout.trim()).toBe('');
   }, 30_000);
 
-  test('typo --language jaba exits 1 (cognium-dev#443)', async () => {
+  test('typo --language jaba exits 2 (cognium-dev#443)', async () => {
     const { stderr, exitCode } = await run('scan', '.', '-q', '-l', 'jaba');
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(2);
     expect(stderr).toContain('Invalid language: jaba');
     expect(stderr).toContain('java');
   }, 30_000);
