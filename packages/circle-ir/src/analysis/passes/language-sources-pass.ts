@@ -1605,6 +1605,7 @@ function findJavaHeapFieldDerivedSources(
     const written = `${m[1]}.${m[2]}`;
   // Direct write or same-line alias (e.g. head.next.value after next.value = name).
     if (varName !== written && !varName.endsWith(`.${m[2]}`)) continue;
+    if (varName === written && isJavaHeapFieldStronglyUpdated(code, line - 1, m[1], m[2])) continue;
     sources.push({
       type: 'http_param',
       location: `heap field read ${varName} — #1198`,
@@ -1615,6 +1616,131 @@ function findJavaHeapFieldDerivedSources(
     });
   }
   return sources;
+}
+
+const JAVA_LITERAL_RHS_RE =
+  /^(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)'|-?\d[\w.]*|true|false|null)$/;
+const JAVA_JUMP_RE = /\b(?:return|break|continue|throw|yield)\b/;
+// `[final] [Type] local = <literal>;`: no call, division, array or field access.
+const JAVA_NON_THROWING_STMT_RE = new RegExp(
+  '^(?:final\\s+)?(?:[A-Za-z_][\\w.]*(?:<[^;=()]*>)?(?:\\s*\\[\\s*\\])*\\s+)?' +
+    `[A-Za-z_]\\w*\\s*=\\s*(?:${JAVA_LITERAL_RHS_RE.source.slice(1, -1)})\\s*;$`,
+);
+
+/**
+ * True when line `idx` sits inside a `try` or `catch` block, at any depth.
+ * Walks back over the enclosing blocks and checks the header of each.
+ */
+function isInsideJavaTryOrCatch(lines: string[], idx: number): boolean {
+  let depth = 0;
+  for (let i = idx - 1; i >= 0; i--) {
+    const line = lines[i].replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
+    for (let j = line.length - 1; j >= 0; j--) {
+      if (line[j] === '}') depth++;
+      else if (line[j] === '{') {
+        if (depth > 0) {
+          depth--;
+          continue;
+        }
+        let header = line.slice(0, j).trim();
+        for (let k = i - 1; !header && k >= 0; k--) header = lines[k].trim();
+        if (/\btry\s*(?:\(.*\))?$/.test(header) || /\bcatch\s*\(.*\)$/.test(header)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Strong update of a heap field (SecuriBench StrongUpdates3): the tainted
+ * write `recv.field = x;` on line `writeIdx` is overwritten by a later
+ * `recv.field = <literal>;` before any read. Only the plain straight-line case
+ * counts, so anything unsure keeps the taint:
+ *   - the kill is in the same block, and the lines between the two writes have
+ *     no braces, jumps or calls and do not mention `recv`;
+ *   - the line before the kill ends a statement (no brace-less `if`/`else`);
+ *   - inside a `try` or `catch`, every statement between the writes cannot
+ *     throw (a local assigned a literal), so no exception path skips the kill;
+ *   - the tainted write is alone on its line;
+ *   - every read of `recv.field` comes after the kill, and no later write of
+ *     the field (plain, compound or `++`/`--`) stores anything but a literal;
+ *   - no method is called on `recv` after the kill, since it may write the field;
+ *   - `recv` is only ever used as `recv.<member>` or assigned to, never passed
+ *     or copied, so no other reference can read the field.
+ */
+function isJavaHeapFieldStronglyUpdated(
+  code: string,
+  writeIdx: number,
+  recv: string,
+  field: string,
+): boolean {
+  const lines = code.split('\n').map(stripJavaTrailingLineComment);
+  const recvRe = new RegExp(`\\b${recv}\\b`);
+  const fieldRe = new RegExp(`(?<![\\w.])${recv}\\s*\\.\\s*${field}\\b`, 'g');
+  const fieldWriteRe = new RegExp(`^\\s*${recv}\\.${field}\\s*=(?!=)\\s*(.+?);\\s*$`);
+
+  let killIdx = -1;
+  for (let i = writeIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    const w = fieldWriteRe.exec(line);
+    if (w) {
+      if (!JAVA_LITERAL_RHS_RE.test(w[1].trim())) return false;
+      killIdx = i;
+      break;
+    }
+    if (/[{}]/.test(trimmed) || JAVA_JUMP_RE.test(trimmed)) return false;
+    if (/[\w)\]>]\s*\(/.test(trimmed) || recvRe.test(trimmed)) return false;
+  }
+  if (killIdx < 0) return false;
+  for (let i = killIdx - 1; i > writeIdx; i--) {
+    const trimmed = lines[i].trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    if (!trimmed.endsWith(';')) return false;
+    break;
+  }
+  // Inside a `try` or `catch`, an exception between the two writes skips the
+  // kill and reaches a handler, a `finally` or the code after the statement,
+  // any of which can read the field. Only statements that cannot throw count.
+  if (isInsideJavaTryOrCatch(lines, killIdx)) {
+    for (let i = writeIdx + 1; i < killIdx; i++) {
+      const trimmed = lines[i].trim();
+      if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+      if (!JAVA_NON_THROWING_STMT_RE.test(trimmed)) return false;
+    }
+  }
+
+  // Every mention of `recv` must be a member access or an assignment to it.
+  const mentionRe = new RegExp(`(?<![\\w.])${recv}\\b(?!\\s*\\.)(?!\\s*=(?!=))`);
+  // A method on `recv` may write the field (`b.setValue(name)`).
+  const recvCallRe = new RegExp(`(?<![\\w.])${recv}\\s*\\.\\s*[A-Za-z_]\\w*\\s*\\(`);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/"(?:[^"\\]|\\.)*"/g, '""');
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    if (mentionRe.test(line)) return false;
+    // The tainted write must be alone on its line: a read after it on the same
+    // line (`b.value = name; writer.println(b.value);`) comes before the kill.
+    if (i === writeIdx) {
+      if (trimmed.indexOf(';') !== trimmed.length - 1) return false;
+      continue;
+    }
+    if (i === killIdx) continue;
+    if (i > killIdx && recvCallRe.test(line)) return false;
+    for (const fm of line.matchAll(fieldRe)) {
+      if (i < killIdx) return false;
+      // `++b.value`, `b.value++`, `b.value += x`: a write of a non-literal.
+      if (/(?:\+\+|--)\s*$/.test(line.slice(0, fm.index))) return false;
+      const after = line.slice((fm.index ?? 0) + fm[0].length);
+      if (/^\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>>?)=)/.test(after)) return false;
+      const w = /^\s*=(?!=)\s*([^;]*)/.exec(after);
+      if (w && !JAVA_LITERAL_RHS_RE.test(w[1].trim())) return false;
+    }
+  }
+  return true;
 }
 
 /**
