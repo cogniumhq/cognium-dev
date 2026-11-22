@@ -146,6 +146,35 @@ describe('JSON responses are not XSS sinks', () => {
       expect(r.flows).toEqual([]);
     });
 
+    it('later calls that leave the type alone still drop the sink', async () => {
+      const cases = [
+        "res.removeHeader('X-Powered-By');",
+        "res.setHeaders(new Headers({ 'Cache-Control': 'no-store' }));",
+        'res.status(200);',
+        'console.log(res.statusCode, res.getHeader(\'content-type\'));',
+      ];
+      for (const later of cases) {
+        const r = await xss(NODE_HTTP(
+          `res.setHeader('Content-Type', 'application/json');\n  ${later}`,
+          'JSON.stringify({ q })'), 'server.js');
+        expect(r.flows, later).toEqual([]);
+      }
+    });
+
+    it('a JSON type set with setHeaders drops the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.setHeaders(new Headers({ 'Content-Type': 'application/json' }));",
+        'JSON.stringify({ q })'), 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
+    it('a helper handed the response before the JSON type still drops the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "cors(req, res);\n  res.setHeader('Content-Type', 'application/json');",
+        'JSON.stringify({ q })'), 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
     it('json helpers (c.json, res.json) are not XSS sinks', async () => {
       const hono =
         "import { Hono } from 'hono';\nconst app = new Hono();\n" +
@@ -295,6 +324,62 @@ describe('JSON responses are not XSS sinks', () => {
           `res.set('Content-Type', 'application/json');\n  ${later}`,
           "'<p>' + name + '</p>'"), 'server.js');
         expect(r.flows, later).toContain(6);
+      }
+    });
+
+    it('a later removeHeader of the type keeps the sink', async () => {
+      const cases = [
+        "res.removeHeader('Content-Type');",
+        "res.removeHeader('content-type');",
+        'res.removeHeader(req.query.h);',
+      ];
+      for (const later of cases) {
+        const r = await xss(NODE_HTTP(
+          `res.setHeader('Content-Type', 'application/json');\n  ${later}`,
+          "'<p>' + q + '</p>'"), 'server.js');
+        expect(r.flows, later).toContain(6);
+      }
+    });
+
+    it('a later setHeaders that can change the type keeps the sink', async () => {
+      const cases = [
+        "res.setHeaders(new Headers({ 'Content-Type': 'text/html' }));",
+        "res.setHeaders(new Headers({ 'Content-Type': req.headers.accept }));",
+        "res.setHeaders(new Map([['Content-Type', 'text/html']]));",
+        'res.setHeaders(new Headers(req.headers));',
+        'res.setHeaders(headers);',
+      ];
+      for (const later of cases) {
+        const r = await xss(NODE_HTTP(
+          `res.setHeader('Content-Type', 'application/json');\n  ${later}`,
+          "'<p>' + q + '</p>'"), 'server.js');
+        expect(r.flows, later).toContain(6);
+      }
+    });
+
+    it('a later helper handed the response keeps the sink', async () => {
+      const code =
+        "const http = require('http');\n" +
+        "function setHtml(r) { r.setHeader('Content-Type', 'text/html'); }\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const q = new URL(req.url, 'http://x').searchParams.get('q');\n" +
+        "  res.setHeader('Content-Type', 'application/json');\n" +
+        '  setHtml(res);\n' +
+        "  res.end('<p>' + q + '</p>');\n" +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(7);
+    });
+
+    it('a helper handed the response in the write or in an object keeps the sink', async () => {
+      const cases: [string, string][] = [
+        ['', "render(res, '<p>' + name + '</p>')"],
+        ['setType({ res });', "'<p>' + name + '</p>'"],
+        ["res.attachment(req.query.f);", "'<p>' + name + '</p>'"],
+      ];
+      for (const [later, body] of cases) {
+        const r = await xss(EXPRESS(`res.type('json');\n  ${later}`, body), 'server.js');
+        expect(r.flows, later || body).toContain(6);
       }
     });
 

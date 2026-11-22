@@ -1425,7 +1425,17 @@ const HTML_CONTENT_TYPE_RE = /text\/html|TEXT_HTML/;
 // the sink; so does an unset type or one we cannot read.
 const JS_RESPONSE_WRITE_METHODS = new Set(['end', 'send', 'write', 'body']);
 const JS_CONTENT_TYPE_SETTERS = new Set([
-  'writeHead', 'setHeader', 'set', 'header', 'append', 'type', 'contentType', 'body',
+  'writeHead', 'setHeader', 'setHeaders', 'set', 'header', 'append', 'type', 'contentType', 'body',
+]);
+// Calls on the response that leave its Content-Type alone: body writes
+// (Express's `send` / `json` set a type only when none is set), status and
+// cookie writes, header reads and event hooks. Any other call on the response
+// after the type is set may change it (`removeHeader`, `attachment`,
+// `render`, `redirect`, `format`, …).
+const JS_TYPE_KEEPING_METHODS = new Set([
+  'end', 'send', 'write', 'json', 'status', 'cookie', 'clearCookie', 'vary',
+  'get', 'getHeader', 'getHeaders', 'getHeaderNames', 'hasHeader',
+  'on', 'once', 'off', 'flushHeaders', 'setTimeout', 'cork', 'uncork',
 ]);
 const JS_CONTENT_TYPE_KEY_RE = /^\s*['"`]content-type['"`]\s*$/i;
 const JS_CONTENT_TYPE_PROP_RE = /['"`]content-type['"`]\s*:\s*([^,}\n]+)/gi;
@@ -1499,10 +1509,12 @@ function jsHeaderValueMayChangeType(expr: string): boolean {
 }
 
 /**
- * True when the header write `call` may change the response's Content-Type
- * to a value we cannot read: `res.writeHead(200, headers)`,
+ * True when the call `call` on the response may change its Content-Type to a
+ * value we cannot read, or unset it: `res.writeHead(200, headers)`,
  * `res.setHeader(name, value)` with a non-literal name, `res.set(headers)`,
- * or a header object with a spread after its `content-type` key.
+ * `res.setHeaders(map)`, a header object with a spread after its
+ * `content-type` key, `res.removeHeader('Content-Type')`, or any method not
+ * known to leave the type alone.
  */
 function jsHeaderWriteMayChangeType(call: CallInfo): boolean {
   const args = call.arguments.map(a => a.expression);
@@ -1516,9 +1528,28 @@ function jsHeaderWriteMayChangeType(call: CallInfo): boolean {
     case 'append':
       if (args.length >= 2) return !JS_STRING_LITERAL_RE.test(args[0]!);
       return args.length === 1 && jsHeaderValueMayChangeType(args[0]!);
-    default:
+    case 'setHeaders':
+      return args.length > 0 && jsHeaderValueMayChangeType(args[0]!);
+    case 'removeHeader':
+      return args.length === 0 || !JS_STRING_LITERAL_RE.test(args[0]!) || JS_CONTENT_TYPE_KEY_RE.test(args[0]!);
+    case 'type':
+    case 'contentType':
       return false;
+    default:
+      return !JS_TYPE_KEEPING_METHODS.has(call.method_name);
   }
+}
+
+/**
+ * True when the call argument `expr` hands over the response `receiver` itself
+ * (`setType(res)`, `send({ res })`), so the callee may change its type. A
+ * member read (`res.locals`) or a function argument does not count.
+ */
+function jsArgumentPassesReceiver(expr: string, receiver: string): boolean {
+  if (/^\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/.test(expr)) return false;
+  const text = expr.replace(/'[^'\n]*'|"[^"\n]*"|`[^`]*`/g, '""');
+  const name = receiver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![\\w$.])${name}(?![\\w$.[]|\\?\\.)`).test(text);
 }
 
 /** Offset in `code` of a call's start (1-based line, 0-based column). */
@@ -1598,8 +1629,9 @@ function jsTypeIsServedFileMime(code: string, expr: string, setterAt: number, si
  * True when the response written by the xss sink `sinkCall` has an explicit
  * Content-Type that a browser does not render as a document. Every type set
  * on that response before the write must be non-renderable, at least one
- * must be set on every path to the write, and no header write after it (on
- * any path) may set a type we cannot read.
+ * must be set on every path to the write, and no call after it (on any path)
+ * may change the type: a header write we cannot read, a removal, a method not
+ * known to leave the type alone, or a helper handed the response.
  */
 function jsResponseTypeIsNotRenderable(code: string, calls: readonly CallInfo[], sinkCall: CallInfo): boolean {
   const receiver = sinkCall.receiver;
@@ -1614,18 +1646,28 @@ function jsResponseTypeIsNotRenderable(code: string, calls: readonly CallInfo[],
   for (let i = 0; i < code.length; i++) if (code[i] === '\n') lineStarts.push(i + 1);
   const sinkAt = jsCallOffset(lineStarts, sinkCall);
 
+  // A helper called inside the write may set the type: `res.end(render(res))`.
+  if (sinkCall.arguments.some(a => jsArgumentPassesReceiver(a.expression, receiver))) return false;
+
   // Offsets of the last type set that runs on every path to the write, and of
-  // the last header write that may change the type to one we cannot read.
+  // the last call that may change the type to one we cannot read.
   let lastSetAt = -1;
   let lastChangeAt = -1;
   for (const setter of calls) {
-    if (setter.receiver !== receiver || setter.location.line > line ||
-        !JS_CONTENT_TYPE_SETTERS.has(setter.method_name) || !inScope(setter)) continue;
-    // An earlier `c.body` is another response, not a header write on this one.
-    if (setter.method_name === 'body' && setter !== sinkCall) continue;
+    if (setter.location.line > line || !inScope(setter)) continue;
     const setterAt = jsCallOffset(lineStarts, setter);
     if (setterAt > sinkAt) continue;
+    if (setter.receiver !== receiver) {
+      // A helper handed the response may set its type: `setJsonType(res)`.
+      if (setter.arguments.some(a => jsArgumentPassesReceiver(a.expression, receiver))) {
+        lastChangeAt = Math.max(lastChangeAt, setterAt);
+      }
+      continue;
+    }
+    // The write itself, or an earlier `c.body`, which is another response.
+    if (setter.method_name === 'body' ? setter !== sinkCall : setter === sinkCall) continue;
     if (jsHeaderWriteMayChangeType(setter)) lastChangeAt = Math.max(lastChangeAt, setterAt);
+    if (!JS_CONTENT_TYPE_SETTERS.has(setter.method_name)) continue;
     const types = jsContentTypeExpressions(setter);
     if (types.length === 0) continue;
     const ok = types.every(expr => {
