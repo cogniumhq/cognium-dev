@@ -1919,6 +1919,31 @@ function isTypedNonDbReceiver(receiver: string | null | undefined, sourceLines?:
 }
 
 /**
+ * is this receiver an HTTP request object (`req`, `request`,
+ * `c.req`, `ctx.request`, `this.req`)? Hono `c.req.query(key)`, Fastify /
+ * Koa `request.query` and friends read a URL parameter; they never run SQL.
+ */
+function isRequestObjectReceiver(receiver: string | null | undefined): boolean {
+  const r = (receiver ?? '').trim();
+  if (!r) return false;
+  const last = r.slice(r.lastIndexOf('.') + 1);
+  return last === 'req' || last === 'request';
+}
+
+/**
+ * the last name of a dotted, type-unresolved receiver looks like a
+ * database client (pg / mysql / knex / drizzle / sequelize shaped): `req.db`,
+ * `this.pool`, `ctx.app.knex`, `strapi.db`. Gates the
+ * `allow_unresolved_receiver` fallback for `query`, which otherwise accepted
+ * any dotted receiver (`c.req.query(k)` became a SQL execute).
+ */
+const DB_CLIENT_RECEIVER_NAME = /(?:^db|db$|database|connection|^conn|^con$|pool|client|knex|drizzle|sql|prisma|sequelize|^orm$|datasource|transaction|^trx$|^tx$)/i;
+function isDbClientReceiverName(receiver: string): boolean {
+  const last = receiver.slice(receiver.lastIndexOf('.') + 1).replace(/\(\)$/, '').replace(/^#/, '');
+  return DB_CLIENT_RECEIVER_NAME.test(last);
+}
+
+/**
  * cognium-dev#1000 — is this receiver named like a navigation object
  * (`router`, `this.router`, `history`, `navigation`, `navigator`, `nav`)?
  * Used to keep `Array.prototype.push` off the `router.push` open-redirect sink
@@ -2816,6 +2841,20 @@ function findSinks(
           continue;
         }
 
+        // `query` on a request object reads a URL parameter
+        // (Hono `c.req.query(key)`); it is a source, never a SQL execute.
+        // Covers the classless `query` sink (its safe-receiver list compares
+        // the whole receiver, so `c.req` slipped past `req`) and the
+        // `Client` / `Pool` / `Connection` rows.
+        if (
+          pattern.type === 'sql_injection' &&
+          call.method_name === 'query' &&
+          (language === 'javascript' || language === 'typescript') &&
+          isRequestObjectReceiver(call.receiver)
+        ) {
+          continue;
+        }
+
         if (
           pattern.type === 'sql_injection' &&
           call.method_name === 'get' &&
@@ -3496,11 +3535,14 @@ function matchesSinkPattern(
       // (e.g. `req.db.query`, `ctx.app.db.execute` — Express-style runtime
       // decoration), accept the match. Strictly gated to avoid widening the
       // FP surface on every sink. (cognium-dev #95)
+      // For `query` the receiver's last name must also look like a database
+      // client: `req.db.query` stays, `c.req.query` does not.
       if (
         pattern.allow_unresolved_receiver &&
         !call.receiver_type &&
         !call.receiver_type_fqn &&
-        call.receiver.includes('.')
+        call.receiver.includes('.') &&
+        (pattern.method !== 'query' || isDbClientReceiverName(call.receiver))
       ) {
         return true;
       }
