@@ -146,4 +146,50 @@ export function h(req: any) {
 `);
     expect(r.sinks.filter(s => s.type === 'sql_injection').map(s => s.line)).toEqual([4]);
   });
+
+  it('app.locals.pg.query still sinks', async () => {
+    const r = await run(`
+export function h(app: any, req: any) {
+  const n = req.query.name;
+  return app.locals.pg.query("SELECT * FROM t WHERE n='" + n + "'");
+}
+`);
+    expect(r.sinks.filter(s => s.type === 'sql_injection').map(s => s.line)).toEqual([4]);
+  });
+
+  it('req.app.get("db").query still sinks', async () => {
+    const r = await run(`
+export function h(req: any) {
+  const n = req.query.name;
+  return req.app.get("db").query("SELECT * FROM t WHERE n='" + n + "'");
+}
+`);
+    expect(r.sinks.filter(s => s.type === 'sql_injection').map(s => s.line)).toEqual([4]);
+  });
+
+  it('req.app.locals.em.query still sinks', async () => {
+    const r = await run(`
+export function h(req: any) {
+  const n = req.query.name;
+  return req.app.locals.em.query("SELECT * FROM t WHERE n='" + n + "'");
+}
+`);
+    expect(r.sinks.filter(s => s.type === 'sql_injection').map(s => s.line)).toEqual([4]);
+  });
+
+  it('a longer chain ending in a request-like name (c.env.req, this.ctx.request) still sinks', async () => {
+    const r = await run(`
+export class H {
+  constructor(private ctx: any) {}
+  a(c: any, req: any) {
+    const n = req.query.name;
+    c.env.req.query("SELECT * FROM t WHERE n='" + n + "'");
+    this.ctx.request.query("SELECT * FROM t WHERE n='" + n + "'");
+  }
+}
+`);
+    const lines = r.sinks.filter(s => s.type === 'sql_injection').map(s => s.line);
+    expect(lines).toContain(6);
+    expect(lines).toContain(7);
+  });
 });
