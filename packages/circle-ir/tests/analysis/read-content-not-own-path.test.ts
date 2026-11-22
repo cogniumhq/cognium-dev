@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
+import { calledMethodInLocation } from '../../src/analysis/taint-propagation.js';
 
 const header = `import * as fs from 'fs';
 import { promises as fsp } from 'fs';
@@ -103,5 +104,29 @@ app.get('/f', (req, res) => res.send(fs.readFileSync(path.join(root, req.query.f
   res.json(out);
 }
 `)).length).toBeGreaterThan(0);
+  });
+});
+
+describe('calledMethodInLocation', () => {
+  it('names the method like the regex it replaces', () => {
+    const old = (s: string) => /([A-Za-z_$][\w$]*)\s*\(\)(?:\s+in\b|$)/.exec(s)?.[1];
+    for (const s of [
+      'readFileSync() in load', 'fs.readFileSync()', 'fs.readFileSync ()  in\tx', 'a() b() in c', 'a()x b()',
+      'a() inner', 'a() in$x', 'a() in', 'a()in x', '9abc()', '$x()', '_() in f', 'a.b.c() in d.e()', '()',
+      ' () in x', 'a(x) in y', 'get() ', 'f()() in g', 'x\n() in\ny', '', 'plain', 'getInput()',
+    ]) {
+      expect(calledMethodInLocation(s), JSON.stringify(s)).toBe(old(s));
+    }
+    expect(calledMethodInLocation('readFileSync() in load')).toBe('readFileSync');
+    expect(calledMethodInLocation('a() inner')).toBeUndefined();
+  });
+
+  it('stays linear on a long run of name characters', () => {
+    const s = 'a'.repeat(200_000) + '!';
+    const t = Date.now();
+    expect(calledMethodInLocation(s)).toBeUndefined();
+    expect(calledMethodInLocation(s + '()')).toBeUndefined();
+    expect(calledMethodInLocation('x' + s + ' get()')).toBe('get');
+    expect(Date.now() - t).toBeLessThan(1000);
   });
 });

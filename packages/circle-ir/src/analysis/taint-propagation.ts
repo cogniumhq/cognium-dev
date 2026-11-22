@@ -378,6 +378,35 @@ export function propagateTaint(
 /** Locations of sources that name exactly one parameter binding (#586, #587). */
 const PARAM_SCOPED_SOURCE_RE = /^(?:GraphQL \w+\.\w+ resolver args|Express handler destructured request) /;
 
+const IDENT_START = /[A-Za-z_$]/;
+const IDENT_PART = /[\w$]/;
+const WORD_CHAR = /\w/;
+const isSpace = (ch: string): boolean => ch.trim() === '';
+
+/**
+ * The method a call source's location names: `readFileSync` in
+ * `"readFileSync() in load"` or `"fs.readFileSync()"`. Same result as
+ * `/([A-Za-z_$][\w$]*)\s*\(\)(?:\s+in\b|$)/.exec(location)?.[1]`, scanned by
+ * hand so a long run of name characters does not backtrack.
+ */
+export function calledMethodInLocation(location: string): string | undefined {
+  for (let at = location.indexOf('()'); at >= 0; at = location.indexOf('()', at + 1)) {
+    const after = at + 2;
+    if (after < location.length) {
+      let w = after;
+      while (w < location.length && isSpace(location[w]!)) w++;
+      if (w === after || location.slice(w, w + 2) !== 'in' || WORD_CHAR.test(location[w + 2] ?? '')) continue;
+    }
+    let end = at;
+    while (end > 0 && isSpace(location[end - 1]!)) end--;
+    let start = end;
+    while (start > 0 && IDENT_PART.test(location[start - 1]!)) start--;
+    while (start < end && !IDENT_START.test(location[start]!)) start++;
+    if (start < end) return location.slice(start, end);
+  }
+  return undefined;
+}
+
 /**
  * cognium-dev the callback parameters on a call source's line that the
  * source call itself reads. In
@@ -393,7 +422,7 @@ function paramsConsumedBySourceCall(
   calls: CallInfo[] | undefined,
 ): Set<string> | null {
   if (source.type === 'interprocedural_param' || !calls) return null;
-  const method = source.method ?? /([A-Za-z_$][\w$]*)\s*\(\)(?:\s+in\b|$)/.exec(source.location ?? '')?.[1];
+  const method = source.method ?? calledMethodInLocation(source.location ?? '');
   if (!method) return null;
   const params = defsOnLine.filter(d => d.kind === 'param' && /^[A-Za-z_$][\w$]*$/.test(d.variable));
   if (params.length === 0) return null;
