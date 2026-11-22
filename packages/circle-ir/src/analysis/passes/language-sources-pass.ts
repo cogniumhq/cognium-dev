@@ -1601,6 +1601,7 @@ function findJavaHeapFieldDerivedSources(
     const written = `${m[1]}.${m[2]}`;
   // Direct write or same-line alias (e.g. head.next.value after next.value = name).
     if (varName !== written && !varName.endsWith(`.${m[2]}`)) continue;
+    if (varName === written && isJavaHeapFieldStronglyUpdated(code, line - 1, m[1], m[2])) continue;
     sources.push({
       type: 'http_param',
       location: `heap field read ${varName} — #1198`,
@@ -1611,6 +1612,73 @@ function findJavaHeapFieldDerivedSources(
     });
   }
   return sources;
+}
+
+const JAVA_LITERAL_RHS_RE =
+  /^(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)'|-?\d[\w.]*|true|false|null)$/;
+const JAVA_JUMP_RE = /\b(?:return|break|continue|throw|yield)\b/;
+
+/**
+ * Strong update of a heap field (SecuriBench StrongUpdates3): the tainted
+ * write `recv.field = x;` on line `writeIdx` is overwritten by a later
+ * `recv.field = <literal>;` before any read. Only the plain straight-line case
+ * counts, so anything unsure keeps the taint:
+ *   - the kill is in the same block, and the lines between the two writes have
+ *     no braces, jumps or calls and do not mention `recv`;
+ *   - the line before the kill ends a statement (no brace-less `if`/`else`);
+ *   - every read of `recv.field` comes after the kill, and no later write of
+ *     the field stores anything but a literal;
+ *   - `recv` is only ever used as `recv.<member>` or assigned to, never passed
+ *     or copied, so no other reference can read the field.
+ */
+function isJavaHeapFieldStronglyUpdated(
+  code: string,
+  writeIdx: number,
+  recv: string,
+  field: string,
+): boolean {
+  const lines = code.split('\n').map(stripJavaTrailingLineComment);
+  const recvRe = new RegExp(`\\b${recv}\\b`);
+  const fieldRe = new RegExp(`(?<![\\w.])${recv}\\s*\\.\\s*${field}\\b`, 'g');
+  const fieldWriteRe = new RegExp(`^\\s*${recv}\\.${field}\\s*=(?!=)\\s*(.+?);\\s*$`);
+
+  let killIdx = -1;
+  for (let i = writeIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    const w = fieldWriteRe.exec(line);
+    if (w) {
+      if (!JAVA_LITERAL_RHS_RE.test(w[1].trim())) return false;
+      killIdx = i;
+      break;
+    }
+    if (/[{}]/.test(trimmed) || JAVA_JUMP_RE.test(trimmed)) return false;
+    if (/[\w)\]>]\s*\(/.test(trimmed) || recvRe.test(trimmed)) return false;
+  }
+  if (killIdx < 0) return false;
+  for (let i = killIdx - 1; i > writeIdx; i--) {
+    const trimmed = lines[i].trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    if (!trimmed.endsWith(';')) return false;
+    break;
+  }
+
+  // Every mention of `recv` must be a member access or an assignment to it.
+  const mentionRe = new RegExp(`(?<![\\w.])${recv}\\b(?!\\s*\\.)(?!\\s*=(?!=))`);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/"(?:[^"\\]|\\.)*"/g, '""');
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    if (mentionRe.test(line)) return false;
+    if (i === writeIdx || i === killIdx) continue;
+    fieldRe.lastIndex = 0;
+    if (!fieldRe.test(line)) continue;
+    if (i < killIdx) return false;
+    const w = fieldWriteRe.exec(line);
+    if (w && !JAVA_LITERAL_RHS_RE.test(w[1].trim())) return false;
+  }
+  return true;
 }
 
 /**
