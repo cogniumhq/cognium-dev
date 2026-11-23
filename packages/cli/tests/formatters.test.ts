@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { formatResults, formatJSON, formatSARIF, type ScanResult, type CrossFileData } from '../src/formatters.js';
+import { formatResults, formatJSON, formatSARIF, applyTagSeverityDowngrade, ARGV_NO_SHELL_TAG, type ScanResult, type CrossFileData } from '../src/formatters.js';
 import { version } from '../src/version.js';
 
 function makeResult(file: string, vulns: ScanResult['vulnerabilities'], error?: string): ScanResult {
@@ -216,5 +216,19 @@ describe('formatSARIF', () => {
     const results = [makeResult('src/Foo.java', [withFix])];
     const parsed = JSON.parse(formatSARIF(results));
     expect(parsed.runs[0].results[0].properties.fix).toBe('Remove unreachable block');
+  });
+});
+
+// ─── applyTagSeverityDowngrade ───────────────────────────────────────────────
+
+describe('applyTagSeverityDowngrade', () => {
+  test('argv with no shell is reported at medium', () => {
+    expect(applyTagSeverityDowngrade('critical', [ARGV_NO_SHELL_TAG])).toBe('medium');
+    expect(applyTagSeverityDowngrade('low', [ARGV_NO_SHELL_TAG])).toBe('low');
+  });
+
+  test('untagged severity is unchanged', () => {
+    expect(applyTagSeverityDowngrade('critical', undefined)).toBe('critical');
+    expect(applyTagSeverityDowngrade('critical', ['other'])).toBe('critical');
   });
 });

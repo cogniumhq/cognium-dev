@@ -15,6 +15,7 @@
  */
 
 import { runsArgvAsCommand } from '../arg-executing-programs.js';
+import { SHELL_OPTION_ON } from '../js-spawn-argv.js';
 import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, ImportInfo, CallInfo, SourceType, SastFinding, DFG } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import {
@@ -8181,6 +8182,9 @@ function findJsArgvFormExecSanitizers(
     // #1066: ssh / sudo / docker / xargs / … run their argv as a command.
     const prog = /\b(?:execFile|spawn)(?:Sync)?\s*\(\s*(['"`])([^'"`]*)\1/.exec(text);
     if (prog && runsArgvAsCommand(prog[2]!)) continue;
+    // `shell: true` joins program and argv into a shell command line,
+    // and an interpolated template program is not a fixed program.
+    if (SHELL_OPTION_ON.test(text) || (prog && prog[1] === '`' && prog[2]!.includes('${'))) continue;
     sanitizers.push({
       type: 'js_argv_form_exec',
       method: 'execFile',
