@@ -29,6 +29,19 @@ describe('file watchdog', () => {
 
   test('is off without a limit', () => {
     expect(startFileWatchdog(0)).toBeNull();
+    expect(startFileWatchdog(-1)).toBeNull();
+  });
+
+  test('tracks in-flight files, refcount, and stop', () => {
+    const w = startFileWatchdog(60_000);
+    expect(w).not.toBeNull();
+    w!.onFileStart('src/a.go');
+    w!.onFileStart('src/a.go');
+    w!.onFileEnd('src/a.go');
+    w!.onFileStart('src/b.go');
+    w!.onFileEnd('src/a.go');
+    w!.onFileEnd('src/b.go');
+    w!.stop();
   });
 
   test('stops a run blocked on a file past the bound and names the file', async () => {
