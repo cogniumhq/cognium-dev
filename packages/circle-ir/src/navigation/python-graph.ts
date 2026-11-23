@@ -121,6 +121,14 @@ const DRF_ACTION_VERBS: Record<string, string[]> = {
   perform_update: ['PUT', 'PATCH'],
   perform_destroy: ['DELETE'],
 };
+/** The DRF actions that call each `perform_*` hook. */
+const DRF_HOOK_ACTIONS: Record<string, string[]> = {
+  perform_create: ['create'],
+  perform_update: ['update', 'partial_update'],
+  perform_destroy: ['destroy'],
+};
+/** DRF ViewSet bases: their actions are wired by the `as_view({...})` map (or a router), not by name. */
+const DRF_VIEWSET_BASES = new Set(['ViewSetMixin', 'ViewSet', 'GenericViewSet', 'ModelViewSet', 'ReadOnlyModelViewSet']);
 
 // ---------------------------------------------------------------------------
 // Per-file context
@@ -211,6 +219,23 @@ function djangoPatterns(node: Node, prefix: string, visit: (p: DjangoPattern) =>
     visit({ call: n, callee, route, written, view });
     return false;
   });
+}
+
+/** The `{verb: action}` map of `as_view({...})` or `as_view(actions={...})`, as action → verbs; null without one. */
+function asViewActions(call: Node): Map<string, string[]> | null {
+  const args = namedChildren(call.childForFieldName('arguments') ?? call).filter(a => a.type !== 'comment');
+  const kw = args.find(a => a.type === 'keyword_argument' && text(a.childForFieldName('name')) === 'actions');
+  const dict = kw ? kw.childForFieldName('value') : args[0];
+  if (dict?.type !== 'dictionary') return null;
+  const out = new Map<string, string[]>();
+  for (const pair of namedChildren(dict)) {
+    if (pair.type !== 'pair') continue;
+    const verb = stringValue(pair.childForFieldName('key'));
+    const action = stringValue(pair.childForFieldName('value'));
+    if (!verb || !action) continue;
+    out.set(action, [...(out.get(action) ?? []), verb.toUpperCase()]);
+  }
+  return out.size > 0 ? out : null;
 }
 
 /** Resolve a relative module (`.`, `..pkg`) against a module's package. */
@@ -894,11 +919,13 @@ class PyGraphBuilder {
       const site = this.site(ctx, p.call);
       let target = view;
       let cbv = false;
+      let actions: Map<string, string[]> | null = null;
       if (view.type === 'call') {
         const fn = view.childForFieldName('function');
         if (fn?.type === 'attribute' && text(fn.childForFieldName('attribute')) === 'as_view') {
           target = fn.childForFieldName('object') ?? view;
           cbv = true;
+          actions = asViewActions(view);
         }
       }
       const written = target.text.replace(/\s+/g, '');
@@ -920,7 +947,26 @@ class PyGraphBuilder {
         }
       };
       const info = this.classes.get(d.id);
-      route(d.id, info ? this.drfGenericVerbs(info) : this.apiViewVerbs(d) ?? ['ANY'], evidence);
+      // The map binds its verbs to its actions; a verb it leaves out still dispatches to the class's own method of that name.
+      const mapped = actions ? new Set([...actions.values()].flat()) : null;
+      const unmapped = mapped && info ? this.classMethodNames(info).filter(n => HTTP_VERBS.includes(n) && !mapped.has(n.toUpperCase())) : [];
+      const wired = mapped ? [...new Set([...mapped, ...unmapped.map(n => n.toUpperCase())])] : null;
+      const viewSet = info ? [...this.allBaseNames(info)].some(b => DRF_VIEWSET_BASES.has(b)) : false;
+      /** The verbs that reach a view method: the `as_view({...})` map's when given; any on a ViewSet without one. */
+      const methodVerbs = (name: string): string[] => {
+        if (actions && wired) {
+          const own = actions.get(name);
+          if (own) return own;
+          const hooked = DRF_HOOK_ACTIONS[name];
+          if (hooked) return [...new Set(hooked.flatMap(a => actions!.get(a) ?? []))];
+          if (unmapped.includes(name)) return [name.toUpperCase()];
+          if (HTTP_VERBS.includes(name) || name in DRF_ACTION_VERBS) return []; // not wired by the map
+          return wired; // dispatch, get_queryset, …: every wired verb runs them
+        }
+        if (viewSet) return ['ANY'];
+        return HTTP_VERBS.includes(name) ? [name.toUpperCase()] : DRF_ACTION_VERBS[name] ?? ['ANY'];
+      };
+      route(d.id, wired ?? (info ? this.drfGenericVerbs(info) : this.apiViewVerbs(d) ?? ['ANY']), evidence);
       if (cbv || d.kind === 'type') {
         const seen = new Set<string>();
         const queue = info ? [info] : [];
@@ -929,15 +975,29 @@ class PyGraphBuilder {
           if (seen.has(c.decl.id)) continue;
           seen.add(c.decl.id);
           for (const m of c.members.values()) {
-            if (m.kind === 'method' && DJANGO_CBV_METHODS.has(m.name)) {
-              const verbs = HTTP_VERBS.includes(m.name) ? [m.name.toUpperCase()] : DRF_ACTION_VERBS[m.name] ?? ['ANY'];
-              route(m.id, verbs, `${written}.as_view() → ${m.name}`);
+            if (m.kind === 'method' && (DJANGO_CBV_METHODS.has(m.name) || actions?.has(m.name))) {
+              route(m.id, methodVerbs(m.name), `${written}.as_view() → ${m.name}`);
             }
           }
           queue.push(...c.parents);
         }
       }
     });
+  }
+
+  /** The method names a class defines, its own and its project bases'. */
+  private classMethodNames(info: ClassInfo): string[] {
+    const out = new Set<string>();
+    const queue = [info];
+    const seen = new Set<string>();
+    while (queue.length > 0) {
+      const c = queue.shift()!;
+      if (seen.has(c.decl.id)) continue;
+      seen.add(c.decl.id);
+      for (const m of c.members.values()) if (m.kind === 'method') out.add(m.name);
+      queue.push(...c.parents);
+    }
+    return [...out];
   }
 
   /** The verbs a class view serves: those of its DRF generic bases, else any. */

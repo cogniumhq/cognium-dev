@@ -378,6 +378,65 @@ export function propagateTaint(
 /** Locations of sources that name exactly one parameter binding (#586, #587). */
 const PARAM_SCOPED_SOURCE_RE = /^(?:GraphQL \w+\.\w+ resolver args|Express handler destructured request) /;
 
+const IDENT_START = /[A-Za-z_$]/;
+const IDENT_PART = /[\w$]/;
+const WORD_CHAR = /\w/;
+const isSpace = (ch: string): boolean => ch.trim() === '';
+
+/**
+ * The method a call source's location names: `readFileSync` in
+ * `"readFileSync() in load"` or `"fs.readFileSync()"`. Same result as
+ * `/([A-Za-z_$][\w$]*)\s*\(\)(?:\s+in\b|$)/.exec(location)?.[1]`, scanned by
+ * hand so a long run of name characters does not backtrack.
+ */
+export function calledMethodInLocation(location: string): string | undefined {
+  for (let at = location.indexOf('()'); at >= 0; at = location.indexOf('()', at + 1)) {
+    const after = at + 2;
+    if (after < location.length) {
+      let w = after;
+      while (w < location.length && isSpace(location[w]!)) w++;
+      if (w === after || location.slice(w, w + 2) !== 'in' || WORD_CHAR.test(location[w + 2] ?? '')) continue;
+    }
+    let end = at;
+    while (end > 0 && isSpace(location[end - 1]!)) end--;
+    let start = end;
+    while (start > 0 && IDENT_PART.test(location[start - 1]!)) start--;
+    while (start < end && !IDENT_START.test(location[start]!)) start++;
+    if (start < end) return location.slice(start, end);
+  }
+  return undefined;
+}
+
+/**
+ * cognium-dev the callback parameters on a call source's line that the
+ * source call itself reads. In
+ * `fs.readdirSync(dir).map((e) => fs.readFileSync(path.join(dir, e)))` the
+ * read is the source and `e` shares its line, but `e` is bound before the read
+ * runs, so the read's content cannot define it. Seeding `e` made the content
+ * taint the read's own path argument. A parameter the call does not read
+ * (`getInput().map((x) => x)`) is still seeded.
+ */
+function paramsConsumedBySourceCall(
+  source: TaintSource,
+  defsOnLine: DFGDef[],
+  calls: CallInfo[] | undefined,
+): Set<string> | null {
+  if (source.type === 'interprocedural_param' || !calls) return null;
+  const method = source.method ?? calledMethodInLocation(source.location ?? '');
+  if (!method) return null;
+  const params = defsOnLine.filter(d => d.kind === 'param' && /^[A-Za-z_$][\w$]*$/.test(d.variable));
+  if (params.length === 0) return null;
+  const out = new Set<string>();
+  for (const call of calls) {
+    if (call.method_name !== method) continue;
+    for (const p of params) {
+      const re = new RegExp(String.raw`(?<![.\w$])${p.variable.replace(/\$/g, '\\$')}(?![\w$])`);
+      if (call.arguments.some(a => re.test(a.expression))) out.add(p.variable);
+    }
+  }
+  return out.size > 0 ? out : null;
+}
+
 /**
  * True when `code` (one trimmed source line) is an `if` / `else if` / `while`
  * header whose parenthesised condition closes on that same line.
@@ -497,8 +556,11 @@ function findInitialTaint(
       }
     }
 
+    const consumedParams = jsLike ? paramsConsumedBySourceCall(source, defsOnLine, callsByLine.get(source.line)) : null;
+
     for (const def of defsOnLine) {
       if (seedable && !seedable.has(def.id)) continue;
+      if (consumedParams?.has(def.variable)) continue;
       // cognium-dev #308 (from cognium-ai#326 / #289): an
       // `interprocedural_param` source names exactly one parameter
       // (`source.variable`, set for Java/C#). Every parameter shares the
