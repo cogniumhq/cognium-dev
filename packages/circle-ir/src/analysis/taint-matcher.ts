@@ -5,6 +5,7 @@
  */
 
 import { runsArgvAsCommand } from './arg-executing-programs.js';
+import { SHELL_OPTION_ON } from './js-spawn-argv.js';
 import { jsHelperReturnsNoParam, jsHelperReturnsNumber } from './js-helper-return.js';
 import type { ArgumentInfo, CallInfo, TypeInfo, ImportInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SinkType, SupportedLanguage } from '../types/index.js';
 import { javaWikiTagInheritedContextReceiver } from './passes/language-sources-pass.js';
@@ -1174,6 +1175,10 @@ function isSafeJSChildProcessCall(call: CallInfo, pattern: SinkPattern, language
   const programArg = call.arguments.find(a => a.position === 0);
   if (!programArg) return false;
 
+  // `{ shell: true }` (or any value but `false`) runs the command
+  // line through a shell, so argv is no longer inert.
+  if (call.arguments.some(a => SHELL_OPTION_ON.test(a.expression ?? ''))) return false;
+
   let program: string;
   if (programArg.literal !== null && programArg.literal !== undefined) {
     program = String(programArg.literal).split('/').pop() ?? String(programArg.literal);
@@ -1182,6 +1187,7 @@ function isSafeJSChildProcessCall(call: CallInfo, pattern: SinkPattern, language
     if (!(expr.startsWith('"') || expr.startsWith('`') || expr.startsWith("'"))) {
       return false;  // unknown / variable program — assume dangerous
     }
+    if (expr.startsWith('`') && expr.includes('${')) return false;  // interpolated program
     const stripped = expr.slice(1, -1);
     program = stripped.split('/').pop() ?? stripped;
   }
