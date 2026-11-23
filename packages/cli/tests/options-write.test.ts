@@ -2,7 +2,7 @@
  * `writeStdout` / `exitAfterFlush` flush behaviour (#1001): stdout must drain
  * before exit when the CLI writes a large pipe-bound payload.
  */
-import { test, expect } from 'bun:test';
+import { test, expect, afterAll } from 'bun:test';
 import { join } from 'path';
 import { writeStdout, exitAfterFlush } from '../src/utils/options';
 
@@ -44,18 +44,25 @@ test('exitAfterFlush waits for stdout before exiting', async () => {
 test('exitAfterFlush sets exit code after the stdout queue drains', async () => {
   let exited: number | undefined;
   const origExit = process.exit;
+  const origExitCode = process.exitCode;
   process.exit = ((code?: number) => {
     exited = code;
   }) as typeof process.exit;
   try {
     writeStdout('queued\n');
-    void exitAfterFlush(7);
+    void exitAfterFlush(9);
     await new Promise((r) => setTimeout(r, 100));
-    expect(exited).toBe(7);
-    expect(process.exitCode).toBe(7);
+    expect(exited).toBe(9);
+    expect(process.exitCode).toBe(9);
   } finally {
     process.exit = origExit;
+    // `bun test --coverage` exits with process.exitCode when the suite finishes.
+    process.exitCode = origExitCode ?? 0;
   }
+});
+
+afterAll(() => {
+  process.exitCode = 0;
 });
 
 test('writeStdout hooks drain when the kernel buffer is full', async () => {
