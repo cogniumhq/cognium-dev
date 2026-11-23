@@ -302,6 +302,9 @@ export function shouldSuppressGatedLoggerLogInjection(
         const expr = (arg.expression ?? '').trim();
         if (expr === sinkVar) return false;
         if (re.test(expr) && expr.length <= sinkVar.length + 2) return false;
+        // variant-regression slf4j_concat (cognium-dev#1378): concatenated log
+        // messages carry CWE-117 even when external_taint_escape is gated (#468).
+        if (expr.includes('+') && re.test(expr)) return false;
       }
     }
   }
