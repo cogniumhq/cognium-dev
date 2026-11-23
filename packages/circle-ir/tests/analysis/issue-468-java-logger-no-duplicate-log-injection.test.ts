@@ -14,7 +14,7 @@ const flowTypes = (ir: Awaited<ReturnType<typeof analyze>>, type: string): numbe
 describe('#468 S2 Java: no duplicate log_injection on gated loggers', () => {
   beforeAll(async () => { await initAnalyzer(); });
 
-  it('does not report log_injection or escape for SLF4J info with tainted concat', async () => {
+  it('does not report log_injection or escape for SLF4J info with inline getParameter concat', async () => {
     const code = `import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import javax.servlet.http.HttpServletRequest;
