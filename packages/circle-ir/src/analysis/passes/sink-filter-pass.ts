@@ -1553,6 +1553,44 @@ function jsArgumentPassesReceiver(expr: string, receiver: string): boolean {
   return new RegExp(`(?<![\\w$.])${name}(?![\\w$.[]|\\?\\.)`).test(text);
 }
 
+/**
+ * The receiver and method of a call. A bracket call (`res['setHeader'](…)`)
+ * has no receiver in the IR and its whole callee as the method name; read it
+ * as `res` / `setHeader`. A computed name (`res[m](…)`) gives method `''`,
+ * which no method set holds, so it counts as a call that may change the type.
+ */
+function jsCallTarget(call: CallInfo): { receiver: string | null; method: string } {
+  if (call.receiver) return { receiver: call.receiver, method: call.method_name };
+  const m = /^([A-Za-z_$][\w$.]*)\s*(?:\?\.)?\[([\s\S]*)\]$/.exec(call.method_name);
+  if (!m) return { receiver: null, method: call.method_name };
+  const lit = JS_STRING_LITERAL_RE.exec(m[2]!);
+  return { receiver: m[1]!, method: lit ? lit[2]! : '' };
+}
+
+/**
+ * Names that hold the same response as `receiver`: `const out = res`,
+ * `res = out`, and chains of those. A call on one may change the type the
+ * write sends.
+ */
+function jsReceiverAliases(code: string, receiver: string): Set<string> {
+  const aliases = new Set<string>();
+  const queue = [receiver];
+  while (queue.length > 0) {
+    const name = queue.pop()!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const found = [
+      ...code.matchAll(new RegExp(`(?<![\\w$.])([A-Za-z_$][\\w$]*)\\s*=\\s*${name}(?![\\w$.([]|\\s*\\?\\.)`, 'g')),
+      ...code.matchAll(new RegExp(`(?<![\\w$.])${name}\\s*=(?!=)\\s*([A-Za-z_$][\\w$]*)(?![\\w$.([]|\\s*\\?\\.)`, 'g')),
+    ];
+    for (const m of found) {
+      if (m[1] !== receiver && !aliases.has(m[1]!)) {
+        aliases.add(m[1]!);
+        queue.push(m[1]!);
+      }
+    }
+  }
+  return aliases;
+}
+
 /** Offset in `code` of a call's start (1-based line, 0-based column). */
 function jsCallOffset(lineStarts: readonly number[], call: CallInfo): number {
   return (lineStarts[call.location.line - 1] ?? 0) + call.location.column;
@@ -1654,11 +1692,24 @@ function jsResponseTypeIsNotRenderable(code: string, calls: readonly CallInfo[],
   // the last call that may change the type to one we cannot read.
   let lastSetAt = -1;
   let lastChangeAt = -1;
+  const aliases = jsReceiverAliases(code, receiver);
   for (const setter of calls) {
     if (setter.location.line > line || !inScope(setter)) continue;
     const setterAt = jsCallOffset(lineStarts, setter);
     if (setterAt > sinkAt) continue;
-    if (setter.receiver !== receiver) {
+    const target = jsCallTarget(setter);
+    const call = target.receiver === setter.receiver && target.method === setter.method_name
+      ? setter
+      : { ...setter, receiver: target.receiver, method_name: target.method };
+    if (call.receiver !== null && aliases.has(call.receiver)) {
+      // Another name for the response (`const out = res`): any call on it
+      // that may touch the type, a type set included, keeps the sink.
+      if (!JS_TYPE_KEEPING_METHODS.has(call.method_name)) {
+        lastChangeAt = Math.max(lastChangeAt, setterAt);
+      }
+      continue;
+    }
+    if (call.receiver !== receiver) {
       // A helper handed the response may set its type: `setJsonType(res)`.
       if (setter.arguments.some(a => jsArgumentPassesReceiver(a.expression, receiver))) {
         lastChangeAt = Math.max(lastChangeAt, setterAt);
@@ -1666,10 +1717,10 @@ function jsResponseTypeIsNotRenderable(code: string, calls: readonly CallInfo[],
       continue;
     }
     // The write itself, or an earlier `c.body`, which is another response.
-    if (setter.method_name === 'body' ? setter !== sinkCall : setter === sinkCall) continue;
-    if (jsHeaderWriteMayChangeType(setter)) lastChangeAt = Math.max(lastChangeAt, setterAt);
-    if (!JS_CONTENT_TYPE_SETTERS.has(setter.method_name)) continue;
-    const types = jsContentTypeExpressions(setter);
+    if (call.method_name === 'body' ? setter !== sinkCall : setter === sinkCall) continue;
+    if (jsHeaderWriteMayChangeType(call)) lastChangeAt = Math.max(lastChangeAt, setterAt);
+    if (!JS_CONTENT_TYPE_SETTERS.has(call.method_name)) continue;
+    const types = jsContentTypeExpressions(call);
     if (types.length === 0) continue;
     const ok = types.every(expr => {
       const lit = JS_STRING_LITERAL_RE.exec(expr);

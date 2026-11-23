@@ -401,6 +401,43 @@ describe('JSON responses are not XSS sinks', () => {
       expect(r.flows).toContain(7);
     });
 
+    it('an HTML type set through another name for the response keeps the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.setHeader('Content-Type', 'application/json');\n" +
+        "  const out = res;\n" +
+        "  out.setHeader('Content-Type', 'text/html');",
+        "'<p>' + q + '</p>'"), 'server.js');
+      expect(r.flows).toContain(7);
+    });
+
+    it('an HTML type set with a bracket call keeps the sink', async () => {
+      const cases = [
+        "res['setHeader']('Content-Type', 'text/html');",
+        'res["setHeader"]("Content-Type", "text/html");',
+        "res['removeHeader']('Content-Type');",
+        "res[method]('Content-Type', 'text/html');",
+      ];
+      for (const later of cases) {
+        const r = await xss(NODE_HTTP(
+          "res.setHeader('Content-Type', 'application/json');\n  " + later,
+          "'<p>' + q + '</p>'"), 'server.js');
+        expect(r.flows, later).toContain(6);
+      }
+    });
+
+    it('a JSON type set with a bracket call drops the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "res['setHeader']('Content-Type', 'application/json');", 'JSON.stringify({ q })'), 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
+    it('a real HTML response is still reported', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });",
+        "'<h1>Hello ' + q + '</h1>'"), 'server.js');
+      expect(r.flows).toContain(5);
+    });
+
     it('hono c.html stays an XSS sink', async () => {
       const code =
         "import { Hono } from 'hono';\nconst app = new Hono();\n" +
