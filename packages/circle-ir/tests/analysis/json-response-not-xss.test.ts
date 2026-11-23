@@ -1,0 +1,501 @@
+/**
+ * a response the handler marks with a non-HTML Content-Type is not
+ * an XSS sink. Only a type a browser renders as a document (HTML, XHTML, SVG,
+ * XML), or an unset type, keeps `res.end` / `res.send` / `c.body` an XSS sink.
+ */
+import { describe, it, expect, beforeAll } from 'vitest';
+import { analyze, initAnalyzer } from '../../src/analyzer.js';
+
+async function xss(code: string, file = 'server.ts') {
+  const lang = file.endsWith('.ts') ? 'typescript' : 'javascript';
+  const r = await analyze(code, file, lang);
+  return {
+    sinks: r.taint.sinks.filter(s => s.type === 'xss').map(s => s.line),
+    flows: (r.taint.flows ?? []).filter(f => f.sink_type === 'xss').map(f => f.sink_line),
+  };
+}
+
+const NODE_HTTP = (setType: string, body: string) =>
+  "const http = require('http');\n" +
+  "http.createServer((req, res) => {\n" +
+  "  const q = new URL(req.url, 'http://x').searchParams.get('q');\n" +
+  `  ${setType}\n` +
+  `  res.end(${body});\n` +
+  '}).listen(8080);\n';
+
+const EXPRESS = (setType: string, body: string) =>
+  "const express = require('express'); const app = express();\n" +
+  "app.get('/u', (req, res) => {\n" +
+  '  const name = req.query.name;\n' +
+  `  ${setType}\n` +
+  `  res.send(${body});\n` +
+  '});\n';
+
+describe('JSON responses are not XSS sinks', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  describe('non-HTML Content-Type drops the sink', () => {
+    it('writeHead application/json then res.end', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.writeHead(200, { 'Content-Type': 'application/json' });",
+        'JSON.stringify({ q })'));
+      expect(r.sinks).toEqual([]);
+      expect(r.flows).toEqual([]);
+    });
+
+    it('setHeader application/json then res.end', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.setHeader('Content-Type', 'application/json; charset=utf-8');",
+        'JSON.stringify({ q })'));
+      expect(r.flows).toEqual([]);
+    });
+
+    it('setHeader text/plain then res.end', async () => {
+      const r = await xss(NODE_HTTP("res.setHeader('content-type', 'text/plain');", 'q'));
+      expect(r.flows).toEqual([]);
+    });
+
+    it("express res.type('json') then res.send", async () => {
+      const r = await xss(EXPRESS("res.type('json');", 'JSON.stringify({ name })'));
+      expect(r.flows).toEqual([]);
+    });
+
+    it("express res.set('Content-Type', 'application/json') then res.send", async () => {
+      const r = await xss(EXPRESS("res.set('Content-Type', 'application/json');", 'JSON.stringify({ name })'));
+      expect(r.flows).toEqual([]);
+    });
+
+    it('express res.set({ Content-Type: json }) object form', async () => {
+      const r = await xss(EXPRESS("res.set({ 'Content-Type': 'application/json' });", 'JSON.stringify({ name })'));
+      expect(r.flows).toEqual([]);
+    });
+
+    it('hono c.body with a JSON content-type header', async () => {
+      const code =
+        "import { Hono } from 'hono';\nconst app = new Hono();\n" +
+        "app.get('/u', (c) => {\n  const name = c.req.query('name');\n" +
+        "  return c.body(JSON.stringify({ name }), 200, { 'content-type': 'application/json' });\n});\n";
+      const r = await xss(code);
+      expect(r.sinks).toEqual([]);
+      expect(r.flows).toEqual([]);
+    });
+
+    it('static server that sets the type from the file extension', async () => {
+      const code =
+        "const http = require('http'); const fs = require('fs'); const path = require('path');\n" +
+        "const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json' };\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const file = path.join(__dirname, 'public', path.normalize(req.url));\n" +
+        "  const type = TYPES[path.extname(file)] || 'application/octet-stream';\n" +
+        "  res.writeHead(200, { 'Content-Type': type });\n" +
+        '  res.end(fs.readFileSync(file));\n' +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.sinks).toEqual([]);
+      expect(r.flows).toEqual([]);
+    });
+
+    it('a JSON type set before an if that holds the write still drops the sink', async () => {
+      const code =
+        "const express = require('express'); const app = express();\n" +
+        "app.get('/u', (req, res) => {\n" +
+        '  const name = req.query.name;\n' +
+        "  res.type('json');\n" +
+        '  if (name) {\n' +
+        '    res.send(JSON.stringify({ name }));\n' +
+        '  }\n' +
+        '});\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
+    it('static server with mime.getType of the file it reads', async () => {
+      const code =
+        "const http = require('http'); const fs = require('fs'); const mime = require('mime');\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const file = './public' + req.url;\n" +
+        "  res.setHeader('Content-Type', mime.getType(file));\n" +
+        '  res.end(fs.readFileSync(file));\n' +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
+    it('a later header write with literal non-type headers still drops the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.setHeader('Content-Type', 'application/json');\n" +
+        "  res.setHeader('Cache-Control', 'no-store');\n" +
+        "  res.writeHead(200, { 'X-Frame-Options': 'DENY' });",
+        'JSON.stringify({ q })'), 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
+    it('a JSON type set after a header write from a variable still drops the sink', async () => {
+      const code =
+        "const http = require('http');\n" +
+        "const CORS = { 'Access-Control-Allow-Origin': '*' };\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const q = new URL(req.url, 'http://x').searchParams.get('q');\n" +
+        '  for (const k of Object.keys(CORS)) res.setHeader(k, CORS[k]);\n' +
+        "  res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' });\n" +
+        '  res.end(JSON.stringify({ q }));\n' +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
+    it('later calls that leave the type alone still drop the sink', async () => {
+      const cases = [
+        "res.removeHeader('X-Powered-By');",
+        "res.setHeaders(new Headers({ 'Cache-Control': 'no-store' }));",
+        'res.status(200);',
+        'console.log(res.statusCode, res.getHeader(\'content-type\'));',
+      ];
+      for (const later of cases) {
+        const r = await xss(NODE_HTTP(
+          `res.setHeader('Content-Type', 'application/json');\n  ${later}`,
+          'JSON.stringify({ q })'), 'server.js');
+        expect(r.flows, later).toEqual([]);
+      }
+    });
+
+    it('a JSON type set with setHeaders drops the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.setHeaders(new Headers({ 'Content-Type': 'application/json' }));",
+        'JSON.stringify({ q })'), 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
+    it('a helper handed the response before the JSON type still drops the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "cors(req, res);\n  res.setHeader('Content-Type', 'application/json');",
+        'JSON.stringify({ q })'), 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
+    it('a JSON type set on a chain off the response drops the sink', async () => {
+      const r = await xss(EXPRESS("res.status(200).type('json');", 'JSON.stringify({ name })'), 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
+    it('a JSON type set after the response is wrapped still drops the sink', async () => {
+      const r = await xss(EXPRESS(
+        "const ctx = { req, res };\n  log(ctx);\n  res.type('json');", 'JSON.stringify({ name })'), 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
+    it('json helpers (c.json, res.json) are not XSS sinks', async () => {
+      const hono =
+        "import { Hono } from 'hono';\nconst app = new Hono();\n" +
+        "app.get('/u', (c) => {\n  const name = c.req.query('name');\n  return c.json({ name });\n});\n";
+      const express =
+        "const express = require('express'); const app = express();\n" +
+        "app.get('/u', (req, res) => {\n  const name = req.query.name;\n  res.json({ name });\n});\n";
+      expect((await xss(hono)).flows).toEqual([]);
+      expect((await xss(express, 'server.js')).flows).toEqual([]);
+    });
+  });
+
+  describe('HTML or unset Content-Type keeps the sink', () => {
+    it('writeHead text/html then res.end', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.writeHead(200, { 'Content-Type': 'text/html' });", "'<p>' + q + '</p>'"));
+      expect(r.flows).toContain(5);
+    });
+
+    it('setHeader image/svg+xml then res.end', async () => {
+      const r = await xss(NODE_HTTP("res.setHeader('Content-Type', 'image/svg+xml');", 'q'));
+      expect(r.flows).toContain(5);
+    });
+
+    it('express res.send with no type set', async () => {
+      const r = await xss(EXPRESS('', "'<p>' + name + '</p>'"));
+      expect(r.flows).toContain(5);
+    });
+
+    it('express res.send of JSON text with no type set (express sends it as text/html)', async () => {
+      const r = await xss(EXPRESS('', 'JSON.stringify({ name })'));
+      expect(r.flows).toContain(5);
+    });
+
+    it("express res.type('html') then res.send", async () => {
+      const r = await xss(EXPRESS("res.type('html');", "'<p>' + name + '</p>'"));
+      expect(r.flows).toContain(5);
+    });
+
+    it('a type read from a variable with no extension lookup keeps the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.writeHead(200, { 'Content-Type': req.headers.accept });", 'q'));
+      expect(r.flows).toContain(5);
+    });
+
+    it('a JSON type in a different handler does not drop the sink', async () => {
+      const code =
+        "const express = require('express'); const app = express();\n" +
+        "app.get('/a', (req, res) => {\n  res.type('json');\n  res.send(JSON.stringify({ ok: true }));\n});\n" +
+        "app.get('/b', (req, res) => {\n  const name = req.query.name;\n  res.send('<p>' + name + '</p>');\n});\n";
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(8);
+    });
+
+    it('a JSON type set in an early-return error branch keeps the HTML write a sink', async () => {
+      const code =
+        "const http = require('http');\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const q = new URL(req.url, 'http://x').searchParams.get('q');\n" +
+        '  if (!q) {\n' +
+        "    res.setHeader('Content-Type', 'application/json');\n" +
+        "    res.end('{\"error\":\"missing\"}');\n" +
+        '    return;\n' +
+        '  }\n' +
+        "  res.end('<p>' + q + '</p>');\n" +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(9);
+    });
+
+    it('a JSON type set only inside an if keeps the sink', async () => {
+      const code =
+        "const express = require('express'); const app = express();\n" +
+        "app.get('/u', (req, res) => {\n" +
+        '  const name = req.query.name;\n' +
+        "  if (req.query.fmt === 'json') {\n" +
+        "    res.type('json');\n" +
+        '  }\n' +
+        "  res.send('<p>' + name + '</p>');\n" +
+        '});\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(7);
+    });
+
+    it('a JSON type set by a braceless if keeps the sink', async () => {
+      const r = await xss(EXPRESS(
+        "if (req.query.fmt === 'json') res.type('json');", "'<p>' + name + '</p>'"));
+      expect(r.flows).toContain(5);
+    });
+
+    it('an unrelated extname call does not let a request-chosen type through', async () => {
+      const code =
+        "const http = require('http'); const path = require('path');\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const q = new URL(req.url, 'http://x').searchParams.get('q');\n" +
+        "  const ext = path.extname(req.url);\n" +
+        "  res.writeHead(200, { 'Content-Type': req.headers.accept, 'X-Ext': ext });\n" +
+        '  res.end(q);\n' +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(6);
+    });
+
+    it('a mime lookup of another path does not cover the served body', async () => {
+      const code =
+        "const http = require('http'); const mime = require('mime');\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const q = new URL(req.url, 'http://x').searchParams.get('q');\n" +
+        "  const type = mime.getType(q);\n" +
+        "  res.writeHead(200, { 'Content-Type': type });\n" +
+        '  res.end(q);\n' +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(6);
+    });
+
+    it('a later writeHead from a variable keeps the sink after a JSON type', async () => {
+      const code =
+        "const http = require('http');\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const q = new URL(req.url, 'http://x').searchParams.get('q');\n" +
+        "  res.setHeader('Content-Type', 'application/json');\n" +
+        "  const headers = { 'Content-Type': req.headers.accept };\n" +
+        '  res.writeHead(200, headers);\n' +
+        "  res.end('<p>' + q + '</p>');\n" +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(7);
+    });
+
+    it('a later writeHead from a variable inside an if keeps the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.writeHead(200, { 'Content-Type': 'application/json' });\n" +
+        "  if (req.headers.accept) res.writeHead(200, req.headers);",
+        "'<p>' + q + '</p>'"), 'server.js');
+      expect(r.flows).toContain(6);
+    });
+
+    it('a later header write that can change the type keeps the sink', async () => {
+      const cases = [
+        "res.setHeader(req.query.h, req.query.v);",
+        "res.set(req.query);",
+        "res.writeHead(200, { ...req.query });",
+      ];
+      for (const later of cases) {
+        const r = await xss(EXPRESS(
+          `res.set('Content-Type', 'application/json');\n  ${later}`,
+          "'<p>' + name + '</p>'"), 'server.js');
+        expect(r.flows, later).toContain(6);
+      }
+    });
+
+    it('a later removeHeader of the type keeps the sink', async () => {
+      const cases = [
+        "res.removeHeader('Content-Type');",
+        "res.removeHeader('content-type');",
+        'res.removeHeader(req.query.h);',
+      ];
+      for (const later of cases) {
+        const r = await xss(NODE_HTTP(
+          `res.setHeader('Content-Type', 'application/json');\n  ${later}`,
+          "'<p>' + q + '</p>'"), 'server.js');
+        expect(r.flows, later).toContain(6);
+      }
+    });
+
+    it('a later setHeaders that can change the type keeps the sink', async () => {
+      const cases = [
+        "res.setHeaders(new Headers({ 'Content-Type': 'text/html' }));",
+        "res.setHeaders(new Headers({ 'Content-Type': req.headers.accept }));",
+        "res.setHeaders(new Map([['Content-Type', 'text/html']]));",
+        'res.setHeaders(new Headers(req.headers));',
+        'res.setHeaders(headers);',
+      ];
+      for (const later of cases) {
+        const r = await xss(NODE_HTTP(
+          `res.setHeader('Content-Type', 'application/json');\n  ${later}`,
+          "'<p>' + q + '</p>'"), 'server.js');
+        expect(r.flows, later).toContain(6);
+      }
+    });
+
+    it('a later helper handed the response keeps the sink', async () => {
+      const code =
+        "const http = require('http');\n" +
+        "function setHtml(r) { r.setHeader('Content-Type', 'text/html'); }\n" +
+        "http.createServer((req, res) => {\n" +
+        "  const q = new URL(req.url, 'http://x').searchParams.get('q');\n" +
+        "  res.setHeader('Content-Type', 'application/json');\n" +
+        '  setHtml(res);\n' +
+        "  res.end('<p>' + q + '</p>');\n" +
+        '}).listen(8080);\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(7);
+    });
+
+    it('a helper handed the response in the write or in an object keeps the sink', async () => {
+      const cases: [string, string][] = [
+        ['', "render(res, '<p>' + name + '</p>')"],
+        ['setType({ res });', "'<p>' + name + '</p>'"],
+        ["res.attachment(req.query.f);", "'<p>' + name + '</p>'"],
+      ];
+      for (const [later, body] of cases) {
+        const r = await xss(EXPRESS(`res.type('json');\n  ${later}`, body), 'server.js');
+        expect(r.flows, later || body).toContain(6);
+      }
+    });
+
+    it('a spread after the JSON content-type key keeps the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.writeHead(200, { 'Content-Type': 'application/json', ...req.headers });",
+        "'<p>' + q + '</p>'"), 'server.js');
+      expect(r.flows).toContain(5);
+    });
+
+    it('hono c.body with a header object from a variable keeps the sink', async () => {
+      const code =
+        "import { Hono } from 'hono';\nconst app = new Hono();\n" +
+        "app.get('/u', (c) => {\n  const name = c.req.query('name');\n" +
+        "  c.header('Content-Type', 'application/json');\n" +
+        "  const h = { 'content-type': c.req.query('t') };\n" +
+        "  return c.body('<p>' + name + '</p>', 200, h);\n});\n";
+      const r = await xss(code);
+      expect(r.flows).toContain(7);
+    });
+
+    it('an HTML type set through another name for the response keeps the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.setHeader('Content-Type', 'application/json');\n" +
+        "  const out = res;\n" +
+        "  out.setHeader('Content-Type', 'text/html');",
+        "'<p>' + q + '</p>'"), 'server.js');
+      expect(r.flows).toContain(7);
+    });
+
+    it('an HTML type set with a bracket call keeps the sink', async () => {
+      const cases = [
+        "res['setHeader']('Content-Type', 'text/html');",
+        'res["setHeader"]("Content-Type", "text/html");',
+        "res['removeHeader']('Content-Type');",
+        "res[method]('Content-Type', 'text/html');",
+      ];
+      for (const later of cases) {
+        const r = await xss(NODE_HTTP(
+          "res.setHeader('Content-Type', 'application/json');\n  " + later,
+          "'<p>' + q + '</p>'"), 'server.js');
+        expect(r.flows, later).toContain(6);
+      }
+    });
+
+    it('a JSON type set with a bracket call drops the sink', async () => {
+      const r = await xss(NODE_HTTP(
+        "res['setHeader']('Content-Type', 'application/json');", 'JSON.stringify({ q })'), 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
+    it('an HTML type set on a chain off the response keeps the sink', async () => {
+      const cases = [
+        "res.status(200).type('html');",
+        "res.status(200).set('Content-Type', 'text/html');",
+        "res.locals.view.apply(res);",
+      ];
+      for (const later of cases) {
+        const r = await xss(EXPRESS(`res.type('json');\n  ${later}`, "'<p>' + name + '</p>'"), 'server.js');
+        expect(r.flows, later).toContain(6);
+      }
+    });
+
+    it('another name for the response handed to a helper keeps the sink', async () => {
+      const code =
+        "const express = require('express'); const app = express();\n" +
+        "app.get('/u', (req, res) => {\n" +
+        '  const name = req.query.name;\n' +
+        "  res.type('json');\n" +
+        '  const out = res;\n' +
+        '  asHtml(out);\n' +
+        "  res.send('<p>' + name + '</p>');\n" +
+        '});\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(7);
+    });
+
+    it('the response passed through destructuring or wrapping keeps the sink', async () => {
+      const cases = [
+        "const { r } = { r: res };\n  r.setHeader('Content-Type', 'text/html');",
+        "const ctx = { res };\n  ctx.res.setHeader('Content-Type', 'text/html');",
+        "const [r] = [res];\n  r.setHeader('Content-Type', 'text/html');",
+        "const r = (res);\n  r.setHeader('Content-Type', 'text/html');",
+      ];
+      for (const later of cases) {
+        const r = await xss(NODE_HTTP(
+          "res.setHeader('Content-Type', 'application/json');\n  " + later,
+          "'<p>' + q + '</p>'"), 'server.js');
+        expect(r.flows, later).toContain(7);
+      }
+    });
+
+    it('a real HTML response is still reported', async () => {
+      const r = await xss(NODE_HTTP(
+        "res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });",
+        "'<h1>Hello ' + q + '</h1>'"), 'server.js');
+      expect(r.flows).toContain(5);
+    });
+
+    it('hono c.html stays an XSS sink', async () => {
+      const code =
+        "import { Hono } from 'hono';\nconst app = new Hono();\n" +
+        "app.get('/u', (c) => {\n  const name = c.req.query('name');\n  return c.html('<p>' + name + '</p>');\n});\n";
+      const r = await xss(code);
+      expect(r.flows).toContain(5);
+    });
+  });
+});

@@ -1416,6 +1416,408 @@ const REPLACE_ALL_TO_PLACEHOLDER_RE =
 // output context.
 const HTML_CONTENT_TYPE_RE = /text\/html|TEXT_HTML/;
 
+// JS/TS response writers (`res.end`, `res.send`, `res.write`,
+// `c.body`) are XSS sinks because a browser renders their body as HTML. When
+// the handler sets the response's own Content-Type to a non-HTML type first
+// (`res.writeHead(200, {'Content-Type': 'application/json'})`,
+// `res.setHeader(...)`, `res.type('json')`, `c.body(x, 200, {headers})`), the
+// browser does not render the body as markup, so the write is not an XSS sink.
+// A type that a browser can render as a document (HTML, XHTML, SVG, XML) keeps
+// the sink; so does an unset type or one we cannot read.
+const JS_RESPONSE_WRITE_METHODS = new Set(['end', 'send', 'write', 'body']);
+const JS_CONTENT_TYPE_SETTERS = new Set([
+  'writeHead', 'setHeader', 'setHeaders', 'set', 'header', 'append', 'type', 'contentType', 'body',
+]);
+// Calls on the response that leave its Content-Type alone: body writes
+// (Express's `send` / `json` set a type only when none is set), status and
+// cookie writes, header reads and event hooks. Any other call on the response
+// after the type is set may change it (`removeHeader`, `attachment`,
+// `render`, `redirect`, `format`, …).
+const JS_TYPE_KEEPING_METHODS = new Set([
+  'end', 'send', 'write', 'json', 'status', 'cookie', 'clearCookie', 'vary',
+  'get', 'getHeader', 'getHeaders', 'getHeaderNames', 'hasHeader',
+  'on', 'once', 'off', 'flushHeaders', 'setTimeout', 'cork', 'uncork',
+]);
+const JS_CONTENT_TYPE_KEY_RE = /^\s*['"`]content-type['"`]\s*$/i;
+const JS_CONTENT_TYPE_PROP_RE = /['"`]content-type['"`]\s*:\s*([^,}\n]+)/gi;
+const JS_RENDERABLE_TYPE_RE = /html|svg|xml/i;
+const JS_STRING_LITERAL_RE = /^\s*(['"`])([^'"`$]*)\1\s*$/;
+// A static file server picks the type from the served file's extension
+// (`MIME[path.extname(file)]`, `mime.getType(file)`, `mime.lookup(file)`); the
+// body is that file on disk, never request text rendered into a page. Group 1
+// or 2 is the path the type is looked up for.
+const JS_MIME_LOOKUP_RE =
+  /\[\s*(?:[\w$]+\.)?extname\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\]|\b(?:getType|lookup|contentType)\s*\(\s*(?:(?:[\w$]+\.)?extname\s*\(\s*)?([A-Za-z_$][\w$]*)\s*(?:\)\s*)?\)/;
+// What may stand around the lookup: the map or module it is read from and one
+// literal fallback (`TYPES[...] || 'application/octet-stream'`).
+const JS_MIME_LOOKUP_REST_RE =
+  /^\s*(?:[A-Za-z_$][\w$.]*\s*)?(?:(?:\|\||\?\?)\s*(['"`])([^'"`$]*)\1\s*)?$/;
+const JS_FILE_READ_METHODS = 'readFileSync|readFile|createReadStream';
+
+/** Lines of the innermost function passed as an argument that holds `line`. */
+function jsEnclosingCallbackRange(calls: readonly CallInfo[], line: number): [number, number] | null {
+  let best: [number, number] | null = null;
+  for (const call of calls) {
+    for (const arg of call.arguments) {
+      const expr = arg.expression;
+      if (!/^\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/.test(expr)) continue;
+      const start = call.location.line;
+      const end = start + (expr.match(/\n/g)?.length ?? 0);
+      if (line < start || line > end) continue;
+      if (!best || end - start < best[1] - best[0]) best = [start, end];
+    }
+  }
+  return best;
+}
+
+/** The Content-Type expressions one call sets on its receiver. */
+function jsContentTypeExpressions(call: CallInfo): string[] {
+  const args = call.arguments.map(a => a.expression);
+  if (call.method_name === 'type' || call.method_name === 'contentType') {
+    return args.length > 0 ? [args[0]] : [];
+  }
+  if (['setHeader', 'set', 'header', 'append'].includes(call.method_name) &&
+      args.length >= 2 && JS_CONTENT_TYPE_KEY_RE.test(args[0])) {
+    return [args[1]];
+  }
+  const out: string[] = [];
+  for (const a of args) {
+    for (const m of a.matchAll(JS_CONTENT_TYPE_PROP_RE)) out.push(m[1].trim());
+  }
+  return out;
+}
+
+/**
+ * True when the header object or list `expr` may set a Content-Type we cannot
+ * read: a variable, a call, a spread or computed key (after any literal
+ * `content-type` key, since a later key wins), or a raw header list that names
+ * the type or holds a non-literal entry.
+ */
+function jsHeaderValueMayChangeType(expr: string): boolean {
+  const value = expr.trim();
+  if (/^(?:\d+|(['"`])[^'"`$]*\1)$/.test(value)) return false;
+  const headers = /^new\s+Headers\s*\(([\s\S]*)\)$/.exec(value);
+  if (headers) return headers[1]!.trim() !== '' && jsHeaderValueMayChangeType(headers[1]!);
+  if (value.startsWith('{')) {
+    const keys = [...value.matchAll(/['"`]content-type['"`]\s*:/gi)];
+    const tail = keys.length > 0 ? value.slice(keys[keys.length - 1]!.index) : value;
+    return /\.\.\.|[{,]\s*\[/.test(tail);
+  }
+  if (value.startsWith('[')) {
+    return /content-type/i.test(value) || /[[,]\s*[^'"`\s\]]/.test(value);
+  }
+  return true;
+}
+
+/**
+ * True when the call `call` on the response may change its Content-Type to a
+ * value we cannot read, or unset it: `res.writeHead(200, headers)`,
+ * `res.setHeader(name, value)` with a non-literal name, `res.set(headers)`,
+ * `res.setHeaders(map)`, a header object with a spread after its
+ * `content-type` key, `res.removeHeader('Content-Type')`, or any method not
+ * known to leave the type alone.
+ */
+function jsHeaderWriteMayChangeType(call: CallInfo): boolean {
+  const args = call.arguments.map(a => a.expression);
+  switch (call.method_name) {
+    case 'writeHead':
+    case 'body':
+      return args.slice(1).some(jsHeaderValueMayChangeType);
+    case 'setHeader':
+    case 'set':
+    case 'header':
+    case 'append':
+      if (args.length >= 2) return !JS_STRING_LITERAL_RE.test(args[0]!);
+      return args.length === 1 && jsHeaderValueMayChangeType(args[0]!);
+    case 'setHeaders':
+      return args.length > 0 && jsHeaderValueMayChangeType(args[0]!);
+    case 'removeHeader':
+      return args.length === 0 || !JS_STRING_LITERAL_RE.test(args[0]!) || JS_CONTENT_TYPE_KEY_RE.test(args[0]!);
+    case 'type':
+    case 'contentType':
+      return false;
+    default:
+      return !JS_TYPE_KEEPING_METHODS.has(call.method_name);
+  }
+}
+
+/**
+ * True when the call argument `expr` hands over the response `receiver` itself
+ * (`setType(res)`, `send({ res })`), so the callee may change its type. A
+ * member read (`res.locals`) or a function argument does not count.
+ */
+function jsArgumentPassesReceiver(expr: string, receiver: string): boolean {
+  if (/^\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/.test(expr)) return false;
+  const text = expr.replace(/'[^'\n]*'|"[^"\n]*"|`[^`]*`/g, '""');
+  const name = receiver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![\\w$.])${name}(?![\\w$.[]|\\?\\.)`).test(text);
+}
+
+/**
+ * The receiver and method of a call. A bracket call (`res['setHeader'](…)`)
+ * has no receiver in the IR and its whole callee as the method name; read it
+ * as `res` / `setHeader`. A computed name (`res[m](…)`) gives method `''`,
+ * which no method set holds, so it counts as a call that may change the type.
+ */
+function jsCallTarget(call: CallInfo): { receiver: string | null; method: string } {
+  if (call.receiver) return { receiver: call.receiver, method: call.method_name };
+  const m = /^([A-Za-z_$][\w$.]*)\s*(?:\?\.)?\[([\s\S]*)\]$/.exec(call.method_name);
+  if (!m) return { receiver: null, method: call.method_name };
+  const lit = JS_STRING_LITERAL_RE.exec(m[2]!);
+  return { receiver: m[1]!, method: lit ? lit[2]! : '' };
+}
+
+/**
+ * Names that hold the same response as `receiver`: `const out = res`,
+ * `res = out`, and chains of those. A call on one may change the type the
+ * write sends.
+ */
+function jsReceiverAliases(code: string, receiver: string): Set<string> {
+  const aliases = new Set<string>();
+  const queue = [receiver];
+  while (queue.length > 0) {
+    const name = queue.pop()!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const found = [
+      ...code.matchAll(new RegExp(`(?<![\\w$.])([A-Za-z_$][\\w$]*)\\s*=\\s*${name}(?![\\w$.([]|\\s*\\?\\.)`, 'g')),
+      ...code.matchAll(new RegExp(`(?<![\\w$.])${name}\\s*=(?!=)\\s*([A-Za-z_$][\\w$]*)(?![\\w$.([]|\\s*\\?\\.)`, 'g')),
+    ];
+    for (const m of found) {
+      if (m[1] !== receiver && !aliases.has(m[1]!)) {
+        aliases.add(m[1]!);
+        queue.push(m[1]!);
+      }
+    }
+  }
+  return aliases;
+}
+
+/**
+ * How a call's receiver text relates to the response `name`: `'self'` when it
+ * is the response or a chain of calls on it (`res.status(200)`, which returns
+ * the response), `'member'` when it is another chain rooted at it
+ * (`res.locals.x`), `null` when it is not rooted at it.
+ */
+function jsReceiverChainKind(text: string, name: string): 'self' | 'member' | null {
+  if (text === name) return 'self';
+  if (!text.startsWith(name) || !/^\s*(?:\??\.|\[)/.test(text.slice(name.length))) return null;
+  let i = name.length;
+  while (i < text.length) {
+    const seg = /^\s*\??\.\s*[A-Za-z_$][\w$]*\s*\(/.exec(text.slice(i));
+    if (!seg) return 'member';
+    i += seg[0].length;
+    for (let depth = 1; depth > 0; i++) {
+      if (i >= text.length) return 'member';
+      if (text[i] === '(') depth++;
+      else if (text[i] === ')') depth--;
+    }
+  }
+  return 'self';
+}
+
+/** `code` with string, template and comment text blanked, offsets kept. */
+function jsMaskStringsAndComments(code: string): string {
+  return code.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\/|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\[\s\S]|[^`\\])*`/g,
+    m => m.replace(/[^\n]/g, ' '));
+}
+
+/**
+ * Offsets in `code` before `to` where one of `names` (the response or another
+ * name for it) is used as a value after the response is declared: handed to a
+ * call (`asHtml(out)`), wrapped (`{ res }`, `[res]`, `(res)`), or anything
+ * other than a member access, a parameter, an assignment target or a plain
+ * alias (`const out = res`). The value may reach code that changes the type.
+ */
+function jsReceiverEscapes(code: string, names: readonly string[], to: number): number[] {
+  const text = jsMaskStringsAndComments(code.slice(0, to));
+  const esc = (n: string): string => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const uses = [...text.matchAll(new RegExp(`(?<![\\w$.])(?:${names.map(esc).join('|')})(?![\\w$])`, 'g'))];
+  // A parameter list: the `)` that closes it starts a body, arrow or return type.
+  const isParameter = (at: number): boolean => {
+    let depth = 0;
+    for (let i = at; i < text.length; i++) {
+      if (text[i] === '(') depth++;
+      else if (text[i] === ')' && --depth < 0) return /^\s*(?:=>|\{|:)/.test(text.slice(i + 1));
+      else if (depth === 0 && /[;{}]/.test(text[i]!)) return false;
+    }
+    return false;
+  };
+  const declared = uses.filter(m => isParameter(m.index!)).pop()?.index ?? -1;
+  return uses
+    .filter(m => m.index! > declared)
+    .filter(m => {
+      const after = text.slice(m.index! + m[0].length);
+      if (/^\s*(?:\??\.|\[)|^\s*=(?!=)/.test(after)) return false;
+      const before = text.slice(0, m.index!);
+      return !(/(?<![=!<>])=\s*$/.test(before) && /^\s*(?:[;\n]|$)/.test(after));
+    })
+    .map(m => m.index!);
+}
+
+/** Offset in `code` of a call's start (1-based line, 0-based column). */
+function jsCallOffset(lineStarts: readonly number[], call: CallInfo): number {
+  return (lineStarts[call.location.line - 1] ?? 0) + call.location.column;
+}
+
+/**
+ * True when the statement starting at `from` runs on every path to `to`: it
+ * is a plain statement (not the body of a braceless `if` / `else` / loop, nor
+ * an operand of `&&` / `||` / `?:`), and no block that holds it closes before
+ * `to` (so it is not inside an `if`, an early-return branch, or a callback).
+ */
+function jsStatementDominates(code: string, from: number, to: number): boolean {
+  if (from >= to) return false;
+  let b = from - 1;
+  while (b >= 0 && !';{}\n'.includes(code[b]!)) b--;
+  if (!/^\s*(?:await\s+)?$/.test(code.slice(b + 1, from))) return false;
+  if (b >= 0 && code[b] === '\n') {
+    const prev = code.slice(0, b).split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('//')).pop() ?? '';
+    if (/(?:\)|\belse|\bdo|&&|\|\||[?:=,(+\-*/]|=>)$/.test(prev)) return false;
+  }
+  let depth = 0;
+  for (let i = from; i < to; i++) {
+    const ch = code[i]!;
+    if (ch === '\'' || ch === '"' || ch === '`') {
+      for (i++; i < to && code[i] !== ch; i++) if (code[i] === '\\') i++;
+    } else if (ch === '/' && code[i + 1] === '/') {
+      while (i < to && code[i] !== '\n') i++;
+    } else if (ch === '/' && code[i + 1] === '*') {
+      const end = code.indexOf('*/', i + 2);
+      i = end < 0 ? to : end + 1;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}' && --depth < 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * True when the non-literal type `expr` is a mime lookup of the file that
+ * `sinkCall` writes: `MIME[path.extname(file)]`, `mime.getType(file)`, … where
+ * `file` is read from disk into the body (`res.end(fs.readFileSync(file))`).
+ */
+function jsTypeIsServedFileMime(code: string, expr: string, setterAt: number, sinkCall: CallInfo): boolean {
+  let value = expr.trim();
+  if (/^[A-Za-z_$][\w$]*$/.test(value)) {
+    const name = value;
+    const before = code.slice(0, setterAt);
+    const decls = [...before.matchAll(new RegExp(`\\b(?:const|let|var)\\s+${name}\\s*=\\s*([^;\\n]+)`, 'g'))];
+    const writes = before.match(new RegExp(`(?<![\\w$.])${name}\\s*=(?!=)`, 'g'))?.length ?? 0;
+    if (decls.length !== 1 || writes !== 1) return false;
+    value = decls[0]![1]!.trim();
+  }
+  const m = JS_MIME_LOOKUP_RE.exec(value);
+  if (!m) return false;
+  const rest = JS_MIME_LOOKUP_REST_RE.exec(value.slice(0, m.index) + value.slice(m.index + m[0].length));
+  if (!rest || (rest[2] !== undefined && JS_RENDERABLE_TYPE_RE.test(rest[2]))) return false;
+
+  const file = (m[1] ?? m[2])!;
+  const reads = (v: string): RegExp =>
+    new RegExp(`\\b(?:${JS_FILE_READ_METHODS})\\s*\\(\\s*${v}\\b`);
+  return sinkCall.arguments.some(a => {
+    if (reads(file).test(a.expression)) return true;
+    const body = a.expression.trim();
+    if (!/^[A-Za-z_$][\w$]*$/.test(body)) return false;
+    const read = `(?:${JS_FILE_READ_METHODS})\\s*\\(\\s*${file}\\b`;
+    return new RegExp(`\\b(?:const|let|var)\\s+${body}\\s*=\\s*(?:await\\s+)?[\\w$.]*${read}`).test(code) ||
+      new RegExp(`\\b${read}[^;]*?\\(\\s*[\\w$]+\\s*,\\s*${body}\\s*\\)\\s*=>`).test(code) ||
+      new RegExp(`\\b${read}[^;]*?function\\s*\\(\\s*[\\w$]+\\s*,\\s*${body}\\s*\\)`).test(code);
+  });
+}
+
+/**
+ * True when the response written by the xss sink `sinkCall` has an explicit
+ * Content-Type that a browser does not render as a document. Every type set
+ * on that response before the write must be non-renderable, at least one
+ * must be set on every path to the write, and no call after it (on any path)
+ * may change the type: a header write we cannot read, a removal, a method not
+ * known to leave the type alone, a call chained on or through a member of the
+ * response, or the response (or another name for it) handed on or wrapped.
+ */
+function jsResponseTypeIsNotRenderable(code: string, calls: readonly CallInfo[], sinkCall: CallInfo): boolean {
+  const receiver = sinkCall.receiver;
+  if (!receiver) return false;
+  const line = sinkCall.location.line;
+  const range = jsEnclosingCallbackRange(calls, line);
+  const inScope = (c: CallInfo): boolean => range
+    ? c.location.line >= range[0] && c.location.line <= range[1]
+    : (c.in_method ?? null) === (sinkCall.in_method ?? null);
+
+  const lineStarts = [0];
+  for (let i = 0; i < code.length; i++) if (code[i] === '\n') lineStarts.push(i + 1);
+  const sinkAt = jsCallOffset(lineStarts, sinkCall);
+
+  // A helper called inside the write may set the type: `res.end(render(res))`.
+  const aliases = jsReceiverAliases(code, receiver);
+  if (sinkCall.arguments.some(a => [receiver, ...aliases].some(n => jsArgumentPassesReceiver(a.expression, n)))) {
+    return false;
+  }
+
+  // Offsets of the last type set that runs on every path to the write, and of
+  // the last call that may change the type to one we cannot read.
+  let lastSetAt = -1;
+  let lastChangeAt = -1;
+  // The response handed on or wrapped (`asHtml(out)`, `{ res }`, `[res]`,
+  // `(res)`): we cannot follow it, so it may change the type from there.
+  for (const at of jsReceiverEscapes(code, [receiver, ...aliases], sinkAt)) {
+    lastChangeAt = Math.max(lastChangeAt, at);
+  }
+  for (const setter of calls) {
+    if (setter.location.line > line || !inScope(setter)) continue;
+    const setterAt = jsCallOffset(lineStarts, setter);
+    if (setterAt > sinkAt) continue;
+    const target = jsCallTarget(setter);
+    let call = target.receiver === setter.receiver && target.method === setter.method_name
+      ? setter
+      : { ...setter, receiver: target.receiver, method_name: target.method };
+    const recv = call.receiver;
+    if (recv !== null && [...aliases].some(a => jsReceiverChainKind(recv, a) !== null)) {
+      // Another name for the response (`const out = res`): any call on it
+      // that may touch the type, a type set included, keeps the sink.
+      if (!JS_TYPE_KEEPING_METHODS.has(call.method_name)) {
+        lastChangeAt = Math.max(lastChangeAt, setterAt);
+      }
+      continue;
+    }
+    const kind = recv === null ? null : jsReceiverChainKind(recv, receiver);
+    if (kind === 'member') {
+      // A call on a member of the response (`res.locals.x.f()`): we cannot
+      // tell what it touches, so unless it leaves the type alone, keep it.
+      if (!JS_TYPE_KEEPING_METHODS.has(call.method_name)) {
+        lastChangeAt = Math.max(lastChangeAt, setterAt);
+      }
+      continue;
+    }
+    // A call chained on the response (`res.status(200).type('html')`) acts
+    // on the response itself.
+    if (kind === 'self' && recv !== receiver) call = { ...call, receiver };
+    if (call.receiver !== receiver) {
+      // A helper handed the response may set its type: `setJsonType(res)`.
+      if (setter.arguments.some(a => jsArgumentPassesReceiver(a.expression, receiver))) {
+        lastChangeAt = Math.max(lastChangeAt, setterAt);
+      }
+      continue;
+    }
+    // The write itself, or an earlier `c.body`, which is another response.
+    if (call.method_name === 'body' ? setter !== sinkCall : setter === sinkCall) continue;
+    if (jsHeaderWriteMayChangeType(call)) lastChangeAt = Math.max(lastChangeAt, setterAt);
+    if (!JS_CONTENT_TYPE_SETTERS.has(call.method_name)) continue;
+    const types = jsContentTypeExpressions(call);
+    if (types.length === 0) continue;
+    const ok = types.every(expr => {
+      const lit = JS_STRING_LITERAL_RE.exec(expr);
+      if (lit) return !JS_RENDERABLE_TYPE_RE.test(lit[2]);
+      return jsTypeIsServedFileMime(code, expr, setterAt, sinkCall);
+    });
+    if (!ok) return false;
+    if (setter === sinkCall || jsStatementDominates(code, setterAt, sinkAt)) {
+      lastSetAt = Math.max(lastSetAt, setterAt);
+    }
+  }
+  return lastSetAt >= 0 && lastChangeAt < lastSetAt;
+}
+
 // skillsregistry#49 — the classless `fetch` SSRF sink (config-loader) exists for
 // the global Web `fetch` API, but `method: 'fetch'` matches any `.fetch(` call —
 // including SDK/ORM entity lookups like discord.js `client.channels.fetch(id)` /
@@ -2994,6 +3396,14 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       filtered = filtered.filter(sink => {
         if (sink.type !== 'xxe') return true;
         return !jsLibxmljsNoentDisablesXxe(ctx.code, sink.line);
+      });
+
+      // Stage 7c — JS/TS xss: response written with a non-HTML Content-Type
+      //. See JS_RESPONSE_WRITE_METHODS above.
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'xss' || !JS_RESPONSE_WRITE_METHODS.has(sink.method ?? '')) return true;
+        const sinkCall = (callsByLine.get(sink.line) ?? []).find(c => c.method_name === sink.method);
+        return !sinkCall || !jsResponseTypeIsNotRenderable(ctx.code, calls, sinkCall);
       });
     }
 
