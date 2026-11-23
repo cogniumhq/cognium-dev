@@ -26,6 +26,14 @@
     "packages/*/package-lock.json",
     "packages/*/npm-shrinkwrap.json",
     "packages/*/bun.lock",
-    "packages/*/bun.lockb"
+    "packages/*/bun.lockb",
+    "scripts/rc-*",
+    "scripts/bench-gate.mjs",
+    "scripts/bench-fp-gate.mjs",
+    "scripts/bench-fp-waivers.json",
+    "scripts/regex-lint.mjs",
+    "scripts/regex-lint-baseline.json",
+    "cognium.config.json",
+    "packages/*/cognium.config.json"
   ]
 }
