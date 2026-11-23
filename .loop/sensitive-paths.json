@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "tierA": [
+    "release.sh",
+    ".release/",
+    ".release-readiness.json",
+    "scripts/release-*",
+    "scripts/gate-from-base.sh",
+    "scripts/ci-green.sh",
+    "scripts/bench-candidate.mjs",
+    "scripts/branch-check.sh",
+    "scripts/report-rollouts*",
+    "scripts/verify-entrypoints*",
+    "packages/circle-ir/PUBLISHING.md",
+    "packages/cli/RELEASE.md",
+    "packages/*/.npmignore",
+    "packages/circle-ir/scripts/copy-wasm.mjs",
+    "packages/circle-ir/wasm/",
+    "packages/cli/scripts/build.mjs",
+    "packages/cli/src/version.ts",
+    ".github/workflows/",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "bun.lock",
+    "bun.lockb",
+    "packages/*/package-lock.json",
+    "packages/*/npm-shrinkwrap.json",
+    "packages/*/bun.lock",
+    "packages/*/bun.lockb"
+  ]
+}
