@@ -86,7 +86,7 @@ import type { SinkFilterResult } from './sink-filter-pass.js';
 export interface CliMainReflectionSuppressResult {
   /** Whether the fat-jar CLI signal fired for this file. */
   cliMainSignal: boolean;
-  /** Number of reflection `code_injection` sinks dropped. */
+  /** Number of reflection `code_injection` / `deserialization` sinks dropped. */
   droppedCount: number;
 }
 
@@ -336,7 +336,10 @@ export class CliMainReflectionSuppressPass
 
     let droppedCount = 0;
     const kept = sinks.filter((sink) => {
-      if (sink.type !== 'code_injection') return true;
+      const reflectionSink =
+        sink.type === 'code_injection' ||
+        (sink.type === 'deserialization' && sink.method === 'forName');
+      if (!reflectionSink) return true;
       if (!sink.method) return true;
       if (!REFLECTION_SINK_METHODS.has(sink.method)) return true;
       droppedCount++;
