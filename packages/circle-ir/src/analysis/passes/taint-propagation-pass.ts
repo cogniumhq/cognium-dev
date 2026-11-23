@@ -23,6 +23,7 @@ import { buildJavaTaintedVars, buildJavaScriptTaintedVars, buildPythonTaintedVar
 import { parseJavaArrayAccessExpression } from '../java-array-element-keys.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 import { walkBackwardDefs } from '../dfg-walk.js';
+import { ARGV_NO_SHELL_TAG, JS_SPAWN_METHODS, classifyJsSpawnTaint, stripInMethodSuffix } from '../js-spawn-argv.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
 import { HTML_CONTEXT_ENCODER_METHODS } from '../constant-propagation/patterns.js';
 import { javaCanonicalStartsWithAllBare } from '../java-canonical-prefix.js';
@@ -1511,6 +1512,38 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       if (lineSinks.length === 0 || lineSources.length === 0) return true;
       return !lineSinks.every(k => lineSources.some(x => sinkNestedInSourceCall(x, k)));
     });
+
+    // cognium-devE2/E6 — spawn / spawnSync / execFile / execFileSync.
+    // Taint that reaches only the options object (`env: { ...process.env, X: v }`,
+    // `cwd`) is not command injection: drop the flow. With an argument array and
+    // no shell, tainted argv (or a program taken from the process environment)
+    // is argument injection at most: tag the flow so it reports at medium.
+    if ((ctx.language === 'javascript' || ctx.language === 'typescript') && typeof ctx.code === 'string') {
+      const code = ctx.code;
+      const spawnSinks = sinks.filter(k => k.type === 'command_injection' && JS_SPAWN_METHODS.has(k.method ?? ''));
+      if (spawnSinks.length > 0) {
+        finalFlows = finalFlows.filter(f => {
+          if (f.sink_type !== 'command_injection') return true;
+          const sink = spawnSinks.find(k => k.line === f.sink_line);
+          if (!sink) return true;
+          const carriers = new Set<string>();
+          for (const step of f.path) {
+            if (step.variable && !step.variable.startsWith('<')) carriers.add(step.variable);
+          }
+          for (const src of sources) {
+            if (src.line !== f.source_line || src.type !== f.source_type) continue;
+            if (src.variable) carriers.add(src.variable);
+            else if (src.location) carriers.add(stripInMethodSuffix(src.location));
+          }
+          const shape = classifyJsSpawnTaint(code, sink.line, sink.method!, [...carriers], f.source_type === 'env_input');
+          if (shape === 'options-only') return false;
+          if (shape === 'argv-no-shell' && !f.tags?.includes(ARGV_NO_SHELL_TAG)) {
+            f.tags = [...(f.tags ?? []), ARGV_NO_SHELL_TAG];
+          }
+          return true;
+        });
+      }
+    }
 
     return { flows: finalFlows };
   }

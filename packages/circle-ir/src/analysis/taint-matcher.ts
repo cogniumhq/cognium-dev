@@ -5,6 +5,7 @@
  */
 
 import { runsArgvAsCommand } from './arg-executing-programs.js';
+import { SHELL_OPTION_ON } from './js-spawn-argv.js';
 import { jsHelperReturnsNoParam, jsHelperReturnsNumber } from './js-helper-return.js';
 import type { ArgumentInfo, CallInfo, TypeInfo, ImportInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SinkType, SupportedLanguage } from '../types/index.js';
 import { javaWikiTagInheritedContextReceiver } from './passes/language-sources-pass.js';
@@ -1174,6 +1175,10 @@ function isSafeJSChildProcessCall(call: CallInfo, pattern: SinkPattern, language
   const programArg = call.arguments.find(a => a.position === 0);
   if (!programArg) return false;
 
+  // `{ shell: true }` (or any value but `false`) runs the command
+  // line through a shell, so argv is no longer inert.
+  if (call.arguments.some(a => SHELL_OPTION_ON.test(a.expression ?? ''))) return false;
+
   let program: string;
   if (programArg.literal !== null && programArg.literal !== undefined) {
     program = String(programArg.literal).split('/').pop() ?? String(programArg.literal);
@@ -1182,6 +1187,7 @@ function isSafeJSChildProcessCall(call: CallInfo, pattern: SinkPattern, language
     if (!(expr.startsWith('"') || expr.startsWith('`') || expr.startsWith("'"))) {
       return false;  // unknown / variable program — assume dangerous
     }
+    if (expr.startsWith('`') && expr.includes('${')) return false;  // interpolated program
     const stripped = expr.slice(1, -1);
     program = stripped.split('/').pop() ?? stripped;
   }
@@ -1916,6 +1922,19 @@ function isTypedNonDbReceiver(receiver: string | null | undefined, sourceLines?:
     typed = m[1];
   }
   return typed !== undefined && !DB_TYPE_NAME.test(typed) && !/^(?:any|unknown|object)$/.test(typed);
+}
+
+/**
+ * is this receiver exactly an HTTP request object (`req`, `request`,
+ * `c.req`, `ctx.req`, `ctx.request`, `this.req`)? Hono `c.req.query(key)`,
+ * Fastify / Koa `request.query` and friends read a URL parameter; they never
+ * run SQL. Only the whole receiver counts: a longer chain through a request
+ * object (`req.app.get("db")`, `req.app.locals.em`, `c.env.req`) can still
+ * reach a database client.
+ */
+const REQUEST_OBJECT_RECEIVERS = new Set(['req', 'request', 'c.req', 'ctx.req', 'ctx.request', 'this.req']);
+function isRequestObjectReceiver(receiver: string | null | undefined): boolean {
+  return REQUEST_OBJECT_RECEIVERS.has((receiver ?? '').trim());
 }
 
 /**
@@ -2812,6 +2831,20 @@ function findSinks(
           call.method_name === 'exec' &&
           (language === 'javascript' || language === 'typescript') &&
           isRegexReceiver(call.receiver, sourceLines)
+        ) {
+          continue;
+        }
+
+        // `query` on a request object reads a URL parameter
+        // (Hono `c.req.query(key)`); it is a source, never a SQL execute.
+        // Covers the classless `query` sink (its safe-receiver list compares
+        // the whole receiver, so `c.req` slipped past `req`) and the
+        // `Client` / `Pool` / `Connection` rows.
+        if (
+          pattern.type === 'sql_injection' &&
+          call.method_name === 'query' &&
+          (language === 'javascript' || language === 'typescript') &&
+          isRequestObjectReceiver(call.receiver)
         ) {
           continue;
         }
