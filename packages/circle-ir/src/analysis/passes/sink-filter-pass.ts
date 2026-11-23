@@ -1591,6 +1591,68 @@ function jsReceiverAliases(code: string, receiver: string): Set<string> {
   return aliases;
 }
 
+/**
+ * How a call's receiver text relates to the response `name`: `'self'` when it
+ * is the response or a chain of calls on it (`res.status(200)`, which returns
+ * the response), `'member'` when it is another chain rooted at it
+ * (`res.locals.x`), `null` when it is not rooted at it.
+ */
+function jsReceiverChainKind(text: string, name: string): 'self' | 'member' | null {
+  if (text === name) return 'self';
+  if (!text.startsWith(name) || !/^\s*(?:\??\.|\[)/.test(text.slice(name.length))) return null;
+  let i = name.length;
+  while (i < text.length) {
+    const seg = /^\s*\??\.\s*[A-Za-z_$][\w$]*\s*\(/.exec(text.slice(i));
+    if (!seg) return 'member';
+    i += seg[0].length;
+    for (let depth = 1; depth > 0; i++) {
+      if (i >= text.length) return 'member';
+      if (text[i] === '(') depth++;
+      else if (text[i] === ')') depth--;
+    }
+  }
+  return 'self';
+}
+
+/** `code` with string, template and comment text blanked, offsets kept. */
+function jsMaskStringsAndComments(code: string): string {
+  return code.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\/|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\[\s\S]|[^`\\])*`/g,
+    m => m.replace(/[^\n]/g, ' '));
+}
+
+/**
+ * Offsets in `code` before `to` where one of `names` (the response or another
+ * name for it) is used as a value after the response is declared: handed to a
+ * call (`asHtml(out)`), wrapped (`{ res }`, `[res]`, `(res)`), or anything
+ * other than a member access, a parameter, an assignment target or a plain
+ * alias (`const out = res`). The value may reach code that changes the type.
+ */
+function jsReceiverEscapes(code: string, names: readonly string[], to: number): number[] {
+  const text = jsMaskStringsAndComments(code.slice(0, to));
+  const esc = (n: string): string => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const uses = [...text.matchAll(new RegExp(`(?<![\\w$.])(?:${names.map(esc).join('|')})(?![\\w$])`, 'g'))];
+  // A parameter list: the `)` that closes it starts a body, arrow or return type.
+  const isParameter = (at: number): boolean => {
+    let depth = 0;
+    for (let i = at; i < text.length; i++) {
+      if (text[i] === '(') depth++;
+      else if (text[i] === ')' && --depth < 0) return /^\s*(?:=>|\{|:)/.test(text.slice(i + 1));
+      else if (depth === 0 && /[;{}]/.test(text[i]!)) return false;
+    }
+    return false;
+  };
+  const declared = uses.filter(m => isParameter(m.index!)).pop()?.index ?? -1;
+  return uses
+    .filter(m => m.index! > declared)
+    .filter(m => {
+      const after = text.slice(m.index! + m[0].length);
+      if (/^\s*(?:\??\.|\[)|^\s*=(?!=)/.test(after)) return false;
+      const before = text.slice(0, m.index!);
+      return !(/(?<![=!<>])=\s*$/.test(before) && /^\s*(?:[;\n]|$)/.test(after));
+    })
+    .map(m => m.index!);
+}
+
 /** Offset in `code` of a call's start (1-based line, 0-based column). */
 function jsCallOffset(lineStarts: readonly number[], call: CallInfo): number {
   return (lineStarts[call.location.line - 1] ?? 0) + call.location.column;
@@ -1670,7 +1732,8 @@ function jsTypeIsServedFileMime(code: string, expr: string, setterAt: number, si
  * on that response before the write must be non-renderable, at least one
  * must be set on every path to the write, and no call after it (on any path)
  * may change the type: a header write we cannot read, a removal, a method not
- * known to leave the type alone, or a helper handed the response.
+ * known to leave the type alone, a call chained on or through a member of the
+ * response, or the response (or another name for it) handed on or wrapped.
  */
 function jsResponseTypeIsNotRenderable(code: string, calls: readonly CallInfo[], sinkCall: CallInfo): boolean {
   const receiver = sinkCall.receiver;
@@ -1686,22 +1749,30 @@ function jsResponseTypeIsNotRenderable(code: string, calls: readonly CallInfo[],
   const sinkAt = jsCallOffset(lineStarts, sinkCall);
 
   // A helper called inside the write may set the type: `res.end(render(res))`.
-  if (sinkCall.arguments.some(a => jsArgumentPassesReceiver(a.expression, receiver))) return false;
+  const aliases = jsReceiverAliases(code, receiver);
+  if (sinkCall.arguments.some(a => [receiver, ...aliases].some(n => jsArgumentPassesReceiver(a.expression, n)))) {
+    return false;
+  }
 
   // Offsets of the last type set that runs on every path to the write, and of
   // the last call that may change the type to one we cannot read.
   let lastSetAt = -1;
   let lastChangeAt = -1;
-  const aliases = jsReceiverAliases(code, receiver);
+  // The response handed on or wrapped (`asHtml(out)`, `{ res }`, `[res]`,
+  // `(res)`): we cannot follow it, so it may change the type from there.
+  for (const at of jsReceiverEscapes(code, [receiver, ...aliases], sinkAt)) {
+    lastChangeAt = Math.max(lastChangeAt, at);
+  }
   for (const setter of calls) {
     if (setter.location.line > line || !inScope(setter)) continue;
     const setterAt = jsCallOffset(lineStarts, setter);
     if (setterAt > sinkAt) continue;
     const target = jsCallTarget(setter);
-    const call = target.receiver === setter.receiver && target.method === setter.method_name
+    let call = target.receiver === setter.receiver && target.method === setter.method_name
       ? setter
       : { ...setter, receiver: target.receiver, method_name: target.method };
-    if (call.receiver !== null && aliases.has(call.receiver)) {
+    const recv = call.receiver;
+    if (recv !== null && [...aliases].some(a => jsReceiverChainKind(recv, a) !== null)) {
       // Another name for the response (`const out = res`): any call on it
       // that may touch the type, a type set included, keeps the sink.
       if (!JS_TYPE_KEEPING_METHODS.has(call.method_name)) {
@@ -1709,6 +1780,18 @@ function jsResponseTypeIsNotRenderable(code: string, calls: readonly CallInfo[],
       }
       continue;
     }
+    const kind = recv === null ? null : jsReceiverChainKind(recv, receiver);
+    if (kind === 'member') {
+      // A call on a member of the response (`res.locals.x.f()`): we cannot
+      // tell what it touches, so unless it leaves the type alone, keep it.
+      if (!JS_TYPE_KEEPING_METHODS.has(call.method_name)) {
+        lastChangeAt = Math.max(lastChangeAt, setterAt);
+      }
+      continue;
+    }
+    // A call chained on the response (`res.status(200).type('html')`) acts
+    // on the response itself.
+    if (kind === 'self' && recv !== receiver) call = { ...call, receiver };
     if (call.receiver !== receiver) {
       // A helper handed the response may set its type: `setJsonType(res)`.
       if (setter.arguments.some(a => jsArgumentPassesReceiver(a.expression, receiver))) {

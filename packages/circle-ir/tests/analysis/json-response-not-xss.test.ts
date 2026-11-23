@@ -175,6 +175,17 @@ describe('JSON responses are not XSS sinks', () => {
       expect(r.flows).toEqual([]);
     });
 
+    it('a JSON type set on a chain off the response drops the sink', async () => {
+      const r = await xss(EXPRESS("res.status(200).type('json');", 'JSON.stringify({ name })'), 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
+    it('a JSON type set after the response is wrapped still drops the sink', async () => {
+      const r = await xss(EXPRESS(
+        "const ctx = { req, res };\n  log(ctx);\n  res.type('json');", 'JSON.stringify({ name })'), 'server.js');
+      expect(r.flows).toEqual([]);
+    });
+
     it('json helpers (c.json, res.json) are not XSS sinks', async () => {
       const hono =
         "import { Hono } from 'hono';\nconst app = new Hono();\n" +
@@ -429,6 +440,47 @@ describe('JSON responses are not XSS sinks', () => {
       const r = await xss(NODE_HTTP(
         "res['setHeader']('Content-Type', 'application/json');", 'JSON.stringify({ q })'), 'server.js');
       expect(r.flows).toEqual([]);
+    });
+
+    it('an HTML type set on a chain off the response keeps the sink', async () => {
+      const cases = [
+        "res.status(200).type('html');",
+        "res.status(200).set('Content-Type', 'text/html');",
+        "res.locals.view.apply(res);",
+      ];
+      for (const later of cases) {
+        const r = await xss(EXPRESS(`res.type('json');\n  ${later}`, "'<p>' + name + '</p>'"), 'server.js');
+        expect(r.flows, later).toContain(6);
+      }
+    });
+
+    it('another name for the response handed to a helper keeps the sink', async () => {
+      const code =
+        "const express = require('express'); const app = express();\n" +
+        "app.get('/u', (req, res) => {\n" +
+        '  const name = req.query.name;\n' +
+        "  res.type('json');\n" +
+        '  const out = res;\n' +
+        '  asHtml(out);\n' +
+        "  res.send('<p>' + name + '</p>');\n" +
+        '});\n';
+      const r = await xss(code, 'server.js');
+      expect(r.flows).toContain(7);
+    });
+
+    it('the response passed through destructuring or wrapping keeps the sink', async () => {
+      const cases = [
+        "const { r } = { r: res };\n  r.setHeader('Content-Type', 'text/html');",
+        "const ctx = { res };\n  ctx.res.setHeader('Content-Type', 'text/html');",
+        "const [r] = [res];\n  r.setHeader('Content-Type', 'text/html');",
+        "const r = (res);\n  r.setHeader('Content-Type', 'text/html');",
+      ];
+      for (const later of cases) {
+        const r = await xss(NODE_HTTP(
+          "res.setHeader('Content-Type', 'application/json');\n  " + later,
+          "'<p>' + q + '</p>'"), 'server.js');
+        expect(r.flows, later).toContain(7);
+      }
     });
 
     it('a real HTML response is still reported', async () => {
