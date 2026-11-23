@@ -35,6 +35,7 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { LanguageSourcesResult } from './language-sources-pass.js';
 import { JS_TAINTED_PATTERNS } from './language-sources-pass.js';
 import { LIBRARY_API_SURFACE_TAG } from '../library-api-surface-downgrade.js';
+import { SHELL_OPTION_ON, SHELL_PROGRAM } from '../js-spawn-argv.js';
 import { isNonExecutableSourceLine } from '../non-executable-lines.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
 import {
@@ -1703,8 +1704,6 @@ const FETCH_MEMBER_RECEIVER_RE = /[\w$)\]]\s*\.\s*fetch\s*\(/;
 // sink" test. Real `collection.find({ ... })` passes an object literal and is
 // unaffected.
 const NOSQL_ARRAY_METHODS = new Set(['find', 'filter', 'some', 'every', 'findIndex', 'findLast']);
-/** A shell or interpreter that would run its arguments as a command. */
-const SHELL_PROGRAM = /(?:^|[\\/])(?:sh|bash|zsh|dash|ksh|fish|cmd(?:\.exe)?|powershell(?:\.exe)?|pwsh|node|python3?|perl|ruby|php|osascript|env)$/i;
 
 const FUNCTION_FIRST_ARG_RE =
   /\.\s*(?:find|filter|some|every|findIndex|findLast)\s*\(\s*(?:async\s+)?(?:function\b|(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>)/;
@@ -4074,7 +4073,7 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         const fixed = program === 'process.execPath'
           || (literal !== null && !SHELL_PROGRAM.test(literal[2]!) && !runsArgvAsCommand(literal[2]!));  // #1066
         if (!fixed) return true;
-        if (/\bshell\s*:\s*(?!false\b)/.test(stmt)) return true;
+        if (SHELL_OPTION_ON.test(stmt)) return true;
         if (/['"`]-(?:e|p|-eval|-print)['"`]/.test(stmt)) return true;
         return false;
       });
