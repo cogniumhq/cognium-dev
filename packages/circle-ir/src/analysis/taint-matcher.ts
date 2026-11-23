@@ -1919,6 +1919,19 @@ function isTypedNonDbReceiver(receiver: string | null | undefined, sourceLines?:
 }
 
 /**
+ * is this receiver exactly an HTTP request object (`req`, `request`,
+ * `c.req`, `ctx.req`, `ctx.request`, `this.req`)? Hono `c.req.query(key)`,
+ * Fastify / Koa `request.query` and friends read a URL parameter; they never
+ * run SQL. Only the whole receiver counts: a longer chain through a request
+ * object (`req.app.get("db")`, `req.app.locals.em`, `c.env.req`) can still
+ * reach a database client.
+ */
+const REQUEST_OBJECT_RECEIVERS = new Set(['req', 'request', 'c.req', 'ctx.req', 'ctx.request', 'this.req']);
+function isRequestObjectReceiver(receiver: string | null | undefined): boolean {
+  return REQUEST_OBJECT_RECEIVERS.has((receiver ?? '').trim());
+}
+
+/**
  * cognium-dev#1000 — is this receiver named like a navigation object
  * (`router`, `this.router`, `history`, `navigation`, `navigator`, `nav`)?
  * Used to keep `Array.prototype.push` off the `router.push` open-redirect sink
@@ -2812,6 +2825,20 @@ function findSinks(
           call.method_name === 'exec' &&
           (language === 'javascript' || language === 'typescript') &&
           isRegexReceiver(call.receiver, sourceLines)
+        ) {
+          continue;
+        }
+
+        // `query` on a request object reads a URL parameter
+        // (Hono `c.req.query(key)`); it is a source, never a SQL execute.
+        // Covers the classless `query` sink (its safe-receiver list compares
+        // the whole receiver, so `c.req` slipped past `req`) and the
+        // `Client` / `Pool` / `Connection` rows.
+        if (
+          pattern.type === 'sql_injection' &&
+          call.method_name === 'query' &&
+          (language === 'javascript' || language === 'typescript') &&
+          isRequestObjectReceiver(call.receiver)
         ) {
           continue;
         }
