@@ -82,6 +82,22 @@ public class LoaderCli {
     expect(codeInj).toHaveLength(0);
   });
 
+  it('static #162 ReflectiveCliTool: main + forName(args[0]) → no deserialization', async () => {
+    const code = `package com.demo.profile.cli;
+
+public final class ReflectiveCliTool {
+    public static void main(String[] args) throws Exception {
+        Object t = Class.forName(args[0]).getDeclaredConstructor().newInstance();
+        System.out.println(t);
+    }
+}`;
+    const ir = await analyze(code, 'ReflectiveCliTool.java', 'java');
+    const deser = (ir.taint.flows ?? []).filter((f) => f.sink_type === 'deserialization');
+    const codeInj = (ir.taint.flows ?? []).filter((f) => f.sink_type === 'code_injection');
+    expect(deser).toHaveLength(0);
+    expect(codeInj).toHaveLength(0);
+  });
+
   // -------------------------------------------------------------------------
   // Recall guards — reflection findings that must STILL fire
   // -------------------------------------------------------------------------
