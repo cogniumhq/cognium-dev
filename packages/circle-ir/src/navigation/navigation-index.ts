@@ -18,7 +18,10 @@
  *     the receiver as an expression string. The chain is walked left to right,
  *     typing each step from the previous step's declared return type.
  *   - **A constructor.** `new Widget()` arrives as a call named `Widget` with
- *     no receiver. It is bound to `app.Widget.<init>`.
+ *     no receiver. It is bound to `app.Widget.<init>`. An explicit
+ *     `super(…)` or `this(…)` arrives as a constructor call named `super` or
+ *     `this`, naming the superclass or the enclosing type, and binds the same
+ *     way.
  *   - **A nested type's static import.** `import static app.Outer.Inner.make`
  *     names `app.Outer.Inner.make`, which only matches a symbol table that
  *     kept the nesting — hence `TypeInfo.enclosing_type`.
@@ -719,7 +722,14 @@ export class NavigationIndex {
     }
     const bare = name?.replace(/<.*>$/, '').replace(/\[\]$/, '').trim();
     if (!bare) return undefined;
-    return bare.includes('.') ? bare : rec.imports.get(bare) ?? bare;
+    if (bare.includes('.')) return bare;
+    const imported = rec.imports.get(bare);
+    if (imported) return imported;
+    const ownsSimple =
+      (rec.pkg ? this.typesByFqn.has(`${rec.pkg}.${bare}`) : false) ||
+      [...this.typesBySimpleName.get(bare) ?? []].some((t) => t.file === rec.path);
+    if (!ownsSimple && (JAVA_LANG.has(bare) || bare in JDK_SUPERS)) return `java.lang.${bare}`;
+    return bare;
   }
 
   private targetOf(owner: TypeRecord, name: string, overload: Overload | undefined): IndexedTarget {
@@ -945,8 +955,13 @@ export class NavigationIndex {
     };
   }
 
-  /** `new Widget()` → `app.Widget.<init>`, with the constructor chosen like any overload. */
+  /**
+   * `new Widget()` → `app.Widget.<init>`, with the constructor chosen like any
+   * overload. An explicit constructor invocation (`super(…)` / `this(…)`)
+   * binds the same way, to the class the extractor names for it.
+   */
   private bindConstructor(call: CallInfo, rec: FileRecord, depth: number): Binding | undefined {
+    const explicit = isExplicitConstructorInvocation(call);
     const looksCtor =
       call.is_constructor === true ||
       (call.receiver === null &&
@@ -954,12 +969,36 @@ export class NavigationIndex {
         call.receiver_type === call.method_name &&
         /^[A-Z]/.test(call.method_name));
     if (!looksCtor) return undefined;
-    const t = this.resolveTypeRecord(call.receiver_type ?? call.method_name, rec);
+    const rawType = call.receiver_type ?? call.method_name;
+    const simpleCtorName = rawType?.replace(/<.*>$/, '').trim();
+    let t: TypeRecord | undefined;
+    if (explicit) {
+      t = this.invokedConstructorType(call, rec);
+    } else if (simpleCtorName) {
+      const member = this.memberTypeInScope(simpleCtorName, call.in_type, rec);
+      if (member?.type) {
+        t = member.type;
+      } else {
+        const enclFqn =
+          call.in_type != null && call.in_type !== ''
+            ? [rec.pkg, ...call.in_type.split('.')].filter(Boolean).join('.')
+            : this.enclosingTypeOf(call, rec)?.fqn;
+        if (enclFqn) {
+          const owner = this.memberTypeOwner(enclFqn, simpleCtorName);
+          if (owner) t = this.typesByFqn.get(`${owner}.${simpleCtorName}`);
+        }
+      }
+      if (!t) t = this.resolveTypeRecord(rawType, rec);
+    } else {
+      t = this.resolveTypeRecord(rawType, rec);
+    }
     if (!t) return undefined;
     const result: BoundTarget = {
       target: `${t.fqn}.<init>`,
       tier: 'exact',
-      evidence: `object creation of ${t.fqn}, declared at ${t.file}:${t.startLine}`,
+      evidence: explicit
+        ? `${call.method_name}(…) runs a constructor of ${t.fqn}, declared at ${t.file}:${t.startLine}`
+        : `object creation of ${t.fqn}, declared at ${t.file}:${t.startLine}`,
     };
     const ctors = this.declaredOverloads(t, '<init>').map(overload => ({ owner: t, overload }));
     // A type with no declared constructor has the implicit one; a call that
@@ -1070,7 +1109,7 @@ export class NavigationIndex {
       if (P.length === 0) continue;
       const C = P.filter(c => fit.get(c)![phase - 1] === 'yes');
       if (C.length === 0) return { kind: 'ambiguous', candidates: possible };
-      const best = C.find(m => P.every(o => o === m || this.moreSpecific(m, o, phase, self)));
+      const best = C.find(m => P.every(o => o === m || this.moreSpecific(m, o, phase, self, args)));
       if (best) {
         return {
           kind: 'one',
@@ -1103,13 +1142,29 @@ export class NavigationIndex {
     return worst;
   }
 
-  /** `m` is more specific than `o`: each of its parameter types fits the other's. */
-  private moreSpecific(m: Candidate, o: Candidate, phase: number, self?: TypeRecord): boolean {
+  /**
+   * `m` is more specific than `o`: each of its parameter types fits the other's.
+   *
+   * A reference parameter type of `m` that is the argument's own type also
+   * counts where it only possibly fits `o`'s: whenever `o` applies, the
+   * argument's type, which is `m`'s, is a subtype of `o`'s there, so in every
+   * case where `o` competes `m` is the more specific. That settles
+   * `this(ctx, copy, (String) null)` against a `ResultSet` overload when
+   * `copy`'s class has a supertype outside the tree. An argument of a
+   * narrower type than `m`'s parameter is not the same question and stays
+   * undecided.
+   */
+  private moreSpecific(m: Candidate, o: Candidate, phase: number, self?: TypeRecord, args?: ReadonlyArray<TypeRef | null>): boolean {
     if (phase === 3) return false;
     const mp = this.paramRefsFrom(m, self);
     const op = this.paramRefsFrom(o, self);
     if (mp.length !== op.length) return false;
-    return mp.every((t, i) => this.fits(t, op[i], 1) === 'yes');
+    return mp.every((t, i) => {
+      const f = this.fits(t, op[i], 1);
+      if (f === 'yes') return true;
+      const a = args?.[i];
+      return f === 'maybe' && !!a && isArgumentsOwnType(a, t);
+    });
   }
 
   /**
@@ -1948,15 +2003,104 @@ export class NavigationIndex {
     return fqn ? this.typesByFqn.get(fqn) : undefined;
   }
 
-  private resolveTypeName(name: string, rec: FileRecord): string | undefined {
+  /**
+   * The class an explicit constructor invocation constructs.
+   *
+   * `this(…)`: the enclosing type, which the extractor names exactly.
+   *
+   * `super(…)`: the superclass as written, resolved the way Java resolves a
+   * name in the class's `extends` clause.
+   *
+   * 1. A member type of an enclosing type, innermost first: declared there or
+   *    inherited from a supertype in the tree. The class's own members are
+   *    not in scope in its own `extends` clause. A member type hides an
+   *    imported or same-package type with the same name.
+   * 2. An exact name, an import, the same package.
+   * 3. The extractor's qualified name. For an implicitly imported `java.lang`
+   *    type it is outside the tree, so `extends Exception` stays
+   *    `java.lang.Exception` even when some package in the tree declares an
+   *    `Exception`.
+   * 4. A type one of the file's wildcard imports names (`import a.b.*`, or
+   *    `import a.Outer.*` for its member types), when exactly one does.
+   *
+   * Anything else is left unbound. A type nested somewhere else in the file
+   * is not in scope. A type of the same simple name elsewhere in the tree
+   * that no import names may not be the one meant: the name can come from a
+   * wildcard package outside the tree, from `java.lang`, or from a supertype
+   * outside the tree.
+   */
+  private invokedConstructorType(call: CallInfo, rec: FileRecord): TypeRecord | undefined {
+    const name = call.receiver_type?.replace(/<.*>$/, '').trim();
+    if (!name) return undefined;
+    if (call.method_name === 'this') {
+      return call.receiver_type_fqn ? this.typesByFqn.get(call.receiver_type_fqn) : this.resolveTypeRecord(name, rec);
+    }
+    const member = this.memberTypeInScope(name, call.in_type, rec);
+    if (member) return member.type;
+    const scoped = this.resolveTypeName(name, rec, false);
+    if (scoped) return this.typesByFqn.get(scoped);
+    if (call.receiver_type_fqn) return this.typesByFqn.get(call.receiver_type_fqn);
+    const viaWildcard = [...new Set(rec.staticWildcards)].map(w => this.typesByFqn.get(`${w}.${name}`)).filter((t): t is TypeRecord => t !== undefined);
+    return viaWildcard.length === 1 ? viaWildcard[0] : undefined;
+  }
+
+  /**
+   * `name` (`Node`, or `Node.Leaf`) as a member type in scope inside the type
+   * at nesting path `inType` (`Tree.Leaf`) of this file. The types enclosing
+   * it are searched innermost first, the type itself excluded. Each is
+   * searched with its supertypes in the tree, so an inherited member type
+   * counts. Present when the first part of `name` is such a member;
+   * `type` is then the declaration, or undefined when the rest of `name` is
+   * not in the tree. Absent when no enclosing type has that member.
+   */
+  private memberTypeInScope(name: string, inType: string | null | undefined, rec: FileRecord): { type: TypeRecord | undefined } | undefined {
+    if (!inType) return undefined;
+    const dot = name.indexOf('.');
+    const head = dot < 0 ? name : name.slice(0, dot);
+    const rest = dot < 0 ? '' : name.slice(dot);
+    const path = inType.split('.');
+    for (let k = path.length - 1; k >= 1; k--) {
+      const enclosing = [rec.pkg, ...path.slice(0, k)].filter(Boolean).join('.');
+      const owner = this.memberTypeOwner(enclosing, head);
+      if (owner) return { type: this.typesByFqn.get(`${owner}.${head}${rest}`) };
+    }
+    return undefined;
+  }
+
+  /** `fqn`, or the nearest of its supertypes in the tree, that has a member type `name`. */
+  private memberTypeOwner(fqn: string, name: string): string | undefined {
+    const seen = new Set<string>();
+    const queue = [fqn];
+    while (queue.length > 0) {
+      const f = queue.shift()!;
+      if (seen.has(f)) continue;
+      seen.add(f);
+      if (this.typesByFqn.has(`${f}.${name}`)) return f;
+      const t = this.typesByFqn.get(f);
+      const frec = t ? this.files.get(t.file) : undefined;
+      for (const sup of t?.superNames ?? []) {
+        const supFqn = frec ? this.resolveTypeName(sup, frec) : undefined;
+        if (supFqn) queue.push(supFqn);
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * `anywhere`: also a type nested in a type of this file, then a simple name
+   * declared once in the whole tree. Off, only an exact name, an import and
+   * the same package.
+   */
+  private resolveTypeName(name: string, rec: FileRecord, anywhere = true): string | undefined {
     const bare = name.replace(/<.*>$/, '').replace(/\[\]$/, '').trim();
     if (!bare) return undefined;
     if (this.typesByFqn.has(bare)) return bare;
     const imported = rec.imports.get(bare);
     if (imported && this.typesByFqn.has(imported)) return imported;
-    // Same package, including a nested type of a type in this file.
+    // Same package (a qualified `Outer.Inner` of the package included).
     const samePkg = rec.pkg ? `${rec.pkg}.${bare}` : bare;
     if (this.typesByFqn.has(samePkg)) return samePkg;
+    if (!anywhere) return undefined;
     for (const t of rec.types) {
       const nested = `${t.fqn}.${bare}`;
       if (this.typesByFqn.has(nested)) return nested;
@@ -2159,6 +2303,20 @@ export class NavigationIndex {
 }
 
 // ------------------------------------------------------------------ helpers
+
+/**
+ * `p` is exactly the argument's type `a`: the same resolved reference type,
+ * array depth included, with no type variable on either side.
+ */
+function isArgumentsOwnType(a: TypeRef, p: TypeRef): boolean {
+  return !a.prim && !p.prim && !a.typeVar && !p.typeVar && !p.opaque && !a.inferred
+    && a.fqn !== null && a.fqn === p.fqn && a.dims === p.dims;
+}
+
+/** `super(…)` / `this(…)` as the extractor writes it: a constructor call named by the keyword. */
+function isExplicitConstructorInvocation(call: CallInfo): boolean {
+  return call.is_constructor === true && (call.method_name === 'super' || call.method_name === 'this');
+}
 
 function buildFileRecord(f: NavigationFile): FileRecord {
   const pkg = f.ir.meta?.package ?? '';

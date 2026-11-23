@@ -4,18 +4,20 @@
  */
 
 import { readFileSync, existsSync, writeFileSync } from 'fs';
-import { stat, readdir } from 'fs/promises';
-import { join, dirname, extname, resolve, relative, basename } from 'path';
+import { stat, readdir, realpath } from 'fs/promises';
+import { join, dirname, extname, resolve, relative, basename, sep } from 'path';
 import { createRequire } from 'module';
 import { getHeapStatistics } from 'v8';
 import {
-  initAnalyzer, analyze, analyzeProject,
+  initAnalyzer, analyze, analyzeProject, AnalysisTimeoutError,
   setLogLevel, type LogLevel,
   setFindingsInstrumentation,
   type SinkType, type SastFinding, type SupportedLanguage, type TaintPath,
   type MetricValue, type FileMetrics,
   type PassOptions,
   type ProjectProfile,
+  type AnalyzerOptions as CircleAnalyzerOptions,
+  type CircleIR,
   parseNpmDependencies, parseNpmLockDependencies,
   parsePnpmLockDependencies, parseYarnLockDependencies, pnpmLockImporters,
   parsePypiDependencies, parsePyprojectDependencies, parsePoetryLockDependencies,
@@ -33,15 +35,19 @@ import {
 } from '@cognium/project-profile-detect';
 import {
   formatResults, formatJSON, formatSARIF,
+  scanNotifications,
   SINK_SEVERITY, SINK_CWE,
   applyTagSeverityDowngrade,
   type ScanResult, type CrossFileData, type ProjectProfileSummary,
 } from './formatters.js';
 import { version } from './version.js';
 import { buildInfo } from './build-info.js';
-import { parseArgs, showHelp, showVersion } from './utils/args.js';
-import { computeRecheck, parseRecheckOptions } from './recheck.js';
-import { UsageError, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush, writeStdout } from './utils/options.js';
+import { parseArgs, showHelp, showVersion, unknownOptions } from './utils/args.js';
+import { computeRecheck, parseRecheckOptions, recheckExitCode } from './recheck.js';
+import { startFileWatchdog, type FileWatchdog } from './file-watchdog.js';
+import { ScanPool, scanPoolSize, serveScanWorker, decodeScanError } from './scan-pool.js';
+import { isMainThread, workerData } from 'worker_threads';
+import { UsageError, EXIT_ERROR, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush, writeStdout } from './utils/options.js';
 import { writeJson } from './utils/json-stream.js';
 import { spinner, type Spinner } from './utils/spinner.js';
 import { SCAN_SKIPPED_DIRECTORIES, isScanSkippedDirectory, isStructureSkippedDirectory } from './utils/skip-dirs.js';
@@ -510,7 +516,7 @@ function languageFromCliOptions(options: { language?: unknown; l?: unknown }): s
     return resolveScanLanguage((options.language || options.l) as string | undefined);
   } catch (err) {
     console.error(colors.red(`Error: ${(err as Error).message}`));
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 }
 
@@ -588,6 +594,37 @@ interface CollectFilesOptions {
    * no longer applies.
    */
   optedIn?: boolean;
+  /**
+   * S4: paths the walk left out and why (a broken or looping symlink, a link
+   * out of the scan root, a link to a path the walk already covers, an
+   * unreadable directory). The walk appends; the caller reports them.
+   */
+  skipped?: SkippedPath[];
+  /** S4: the scan root's real path, set by the top-level call. */
+  rootReal?: string;
+}
+
+export interface SkippedPath {
+  path: string;
+  reason: 'broken symlink' | 'symlink loop' | 'symlink leaves the scan root' | 'symlink inside the scan root' | 'unreadable';
+}
+
+/**
+ * S4: what to do with a symlink found in the walk. It is never followed: a
+ * target inside the scan root is walked at its real path anyway (so a linked
+ * directory is counted once), a target outside it is not the scan's, and a
+ * broken or looping link is reported instead of aborting the scan.
+ */
+async function classifySymlink(fullPath: string, rootReal: string): Promise<SkippedPath['reason']> {
+  let target: string;
+  try {
+    target = await realpath(fullPath);
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ELOOP' ? 'symlink loop' : 'broken symlink';
+  }
+  return target === rootReal || target.startsWith(rootReal.endsWith(sep) ? rootReal : rootReal + sep)
+    ? 'symlink inside the scan root'
+    : 'symlink leaves the scan root';
 }
 
 /**
@@ -653,10 +690,19 @@ export async function collectFiles(targetPath: string, options: CollectFilesOpti
     // is read in full.
     const optedIn = options.optedIn
       || ((!basePath || basePath === targetPath) && SCAN_SKIPPED_DIRECTORIES.includes(basename(targetPath)));
+    const rootReal = options.rootReal ?? await realpath(targetPath);
     // #1032: name order, not the filesystem's, so the file set and the point
     // where a size ceiling stops reading are the same on every machine.
-    const entries = (await readdir(targetPath, { withFileTypes: true }))
-      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    let dirents;
+    try {
+      dirents = await readdir(targetPath, { withFileTypes: true });
+    } catch (e) {
+      // S4: an unreadable directory below the root is reported, not fatal.
+      if (options.rootReal === undefined) throw e;
+      options.skipped?.push({ path: targetPath, reason: 'unreadable' });
+      return files;
+    }
+    const entries = dirents.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const entry of entries) {
       // Skip test directories if excludeTests is enabled
       if (excludeTests && /^(test|tests|__tests__|spec|__mocks__)$/i.test(entry.name)) continue;
@@ -674,6 +720,11 @@ export async function collectFiles(targetPath: string, options: CollectFilesOpti
         if (reach === 'none') continue;
         childOptedIn = reach === 'names';
       }
+      // S4: a symlink is never followed (see classifySymlink).
+      if (entry.isSymbolicLink()) {
+        if (!entry.name.startsWith('.')) options.skipped?.push({ path: fullPath, reason: await classifySymlink(fullPath, rootReal) });
+        continue;
+      }
 
       // Check if directory matches exclude patterns (e.g., dist/**)
       if (excludePatterns && entry.isDirectory()) {
@@ -684,7 +735,7 @@ export async function collectFiles(targetPath: string, options: CollectFilesOpti
         }
       }
 
-      files.push(...await collectFiles(fullPath, { ...options, basePath: basePath || targetPath, optedIn: childOptedIn }));
+      files.push(...await collectFiles(fullPath, { ...options, basePath: basePath || targetPath, optedIn: childOptedIn, rootReal }));
     }
   }
 
@@ -738,6 +789,8 @@ interface AnalyzeOptions {
   disabledPasses?: string[];
   /** Per-file analysis time limit (ms), circle-ir `fileTimeoutMs` (#1007). 0/absent = off. */
   fileTimeoutMs?: number;
+  /** S3: the hard bound behind `fileTimeoutMs`; its hooks go to circle-ir `onFileStart` / `onFileEnd`. */
+  watchdog?: FileWatchdog;
   /**
    * Per-file project profile resolved by the CLI's
    * `detectProjectProfiles()` (or a forced single profile from
@@ -780,6 +833,20 @@ export function nearestNpmManifests(start: string): AnalyzeOptions['dependencyCo
   return packageJson !== undefined || packageLock !== undefined ? { js: { packageJson, packageLock } } : undefined;
 }
 
+/**
+ * Syntax errors the parser recovered from (circle-ir `parse_status`). The
+ * file was analysed only as far as the parser could read it, so it must not
+ * be reported as cleanly scanned.
+ */
+export function parseErrorsOf(ir: {
+  parse_status?: { success: boolean; error_count: number; error_locations: Array<{ line: number }> };
+}): ScanResult['parseErrors'] {
+  const ps = ir.parse_status;
+  if (!ps || ps.success !== false) return undefined;
+  const lines = [...new Set(ps.error_locations.map(l => l.line))].sort((a, b) => a - b);
+  return { count: Math.max(ps.error_count, lines.length), lines };
+}
+
 async function scanFile(filePath: string, language: string, analyzeOpts?: AnalyzeOptions): Promise<ScanResult> {
   try {
     const code = readFileSync(filePath, 'utf-8');
@@ -788,6 +855,7 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
       disabledPasses: analyzeOpts?.disabledPasses,
       ...(analyzeOpts?.projectProfile !== undefined ? { projectProfile: analyzeOpts.projectProfile } : {}),
       ...(analyzeOpts?.fileTimeoutMs ? { fileTimeoutMs: analyzeOpts.fileTimeoutMs } : {}),
+      ...(analyzeOpts?.watchdog ? { onFileStart: analyzeOpts.watchdog.onFileStart, onFileEnd: analyzeOpts.watchdog.onFileEnd } : {}),
       ...(analyzeOpts?.dependencyContext ? { dependencyContext: analyzeOpts.dependencyContext } : {}),
     });
 
@@ -816,12 +884,14 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
       });
     }
 
-    return { file: filePath, vulnerabilities: dedupeVulnerabilities(vulnerabilities) };
+    const parseErrors = parseErrorsOf(result);
+    return { file: filePath, vulnerabilities: dedupeVulnerabilities(vulnerabilities), ...(parseErrors ? { parseErrors } : {}) };
   } catch (error) {
     return {
       file: filePath,
       vulnerabilities: [],
       error: error instanceof Error ? error.message : 'Unknown error',
+      ...(error instanceof AnalysisTimeoutError ? { errorKind: 'timeout' as const } : {}),
     };
   }
 }
@@ -880,12 +950,99 @@ export function defaultMaxProjectSourceChars(
   }
 }
 
+// ─── #1324: per-file phase on worker threads ────────────────────────────────
+
+const SCAN_WORKER_KIND = 'cognium-dev-scan-worker';
+
+interface ScanWorkerData {
+  kind: typeof SCAN_WORKER_KIND;
+  init: CircleAnalyzerOptions;
+  logLevel?: LogLevel;
+  instrumentFindings: boolean;
+  /** `analyze()` options, without the function-valued ones. */
+  fileOpts: CircleAnalyzerOptions;
+}
+
+interface ScanWorkerTask {
+  code: string;
+  filePath: string;
+  language: SupportedLanguage;
+}
+
+/**
+ * Start every file's per-file analysis on a pool of `--threads` workers, and
+ * return the `analyzeFile` hook that hands `analyzeProject` each file's
+ * pending result in its own order. `null` when the scan runs in-process: one
+ * thread, one file, or the analyzer was not started from known grammar paths.
+ */
+function startScanPool(
+  files: ReadonlyArray<ScanWorkerTask>,
+  projectOpts: CircleAnalyzerOptions,
+  threads: number,
+): { analyzeFile: NonNullable<CircleAnalyzerOptions['analyzeFile']>; close: () => void } | null {
+  const size = scanPoolSize(threads, files.length);
+  if (size <= 1 || !analyzerInitOptions) return null;
+  const { onFileStart: _s, onFileEnd: _e, analyzeFile: _a, ...fileOpts } = projectOpts;
+  const data: ScanWorkerData = {
+    kind: SCAN_WORKER_KIND,
+    init: analyzerInitOptions,
+    ...(appliedLogLevel ? { logLevel: appliedLogLevel } : {}),
+    instrumentFindings: process.env.CIRCLE_IR_INSTRUMENT_FINDINGS === '1',
+    fileOpts,
+  };
+  const inProcess = (t: ScanWorkerTask): Promise<CircleIR> => analyze(t.code, t.filePath, t.language, projectOpts);
+  const pool = new ScanPool<ScanWorkerTask, CircleIR>({
+    size,
+    script: new URL(import.meta.url),
+    workerData: data,
+    runInProcess: inProcess,
+    decodeError: decodeScanError,
+  });
+  const pending = new Map<string, Array<Promise<CircleIR>>>();
+  for (const f of files) {
+    const p = pool.run({ code: f.code, filePath: f.filePath, language: f.language });
+    // Awaited by `analyzeProject` in order; a run that ends early leaves the
+    // rest unawaited, which must not surface as unhandled rejections.
+    p.catch(() => {});
+    const list = pending.get(f.filePath);
+    if (list) list.push(p); else pending.set(f.filePath, [p]);
+  }
+  return {
+    analyzeFile: (code, filePath, language) =>
+      pending.get(filePath)?.shift() ?? inProcess({ code, filePath, language }),
+    close: () => pool.close(),
+  };
+}
+
+/** Worker-thread entry: analyse the files the main thread sends. */
+function runScanWorker(data: ScanWorkerData): void {
+  // The listener is attached before the first await: Bun drops a message that
+  // reaches a worker with no `message` listener yet. Tasks wait for startup.
+  const ready = (async (): Promise<CircleAnalyzerOptions> => {
+    if (data.logLevel) setLogLevel(data.logLevel);
+    if (data.instrumentFindings) setFindingsInstrumentation(true);
+    await initAnalyzer(data.init);
+    // S3: the hard bound watches this thread, which is the one a stuck step blocks.
+    const watchdog = startFileWatchdog(data.fileOpts.fileTimeoutMs ?? 0);
+    return watchdog
+      ? { ...data.fileOpts, onFileStart: watchdog.onFileStart, onFileEnd: watchdog.onFileEnd }
+      : data.fileOpts;
+  })();
+  ready.catch((error: unknown) => {
+    // Startup failed: the pool sees the thread exit and runs its files in-process.
+    console.error(colors.red('Scan worker failed to start:'), error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+  serveScanWorker<ScanWorkerTask, CircleIR>(async (t) => analyze(t.code, t.filePath, t.language, await ready));
+}
+
 async function scanProject(
   files: string[],
   language: string | undefined,
   analyzeOpts?: AnalyzeOptions,
   crossFileBudgetMs?: number,
   maxProjectSourceChars?: number,
+  threads = 1,
 ): Promise<{ results: ScanResult[]; crossFileData: CrossFileData }> {
   // #424: the ceiling has to be applied HERE, not only inside analyzeProject.
   // Reading every file up front materialises the whole project's source before
@@ -915,7 +1072,7 @@ async function scanProject(
     });
   }
 
-  const projectResult = await analyzeProject(filesWithCode, {
+  const projectOpts: CircleAnalyzerOptions = {
     passOptions: analyzeOpts?.passOptions,
     disabledPasses: analyzeOpts?.disabledPasses,
     // 3.89.2 (cli): surface the circle-ir cross-file budget via CLI flag /
@@ -927,8 +1084,18 @@ async function scanProject(
     // #591: `*.properties` from the scan set, for passes that resolve config-held values.
     ...(analyzeOpts?.resources !== undefined && analyzeOpts.resources.size > 0 ? { resources: analyzeOpts.resources } : {}),
     ...(analyzeOpts?.fileTimeoutMs ? { fileTimeoutMs: analyzeOpts.fileTimeoutMs } : {}),
+    ...(analyzeOpts?.watchdog ? { onFileStart: analyzeOpts.watchdog.onFileStart, onFileEnd: analyzeOpts.watchdog.onFileEnd } : {}),
     ...(analyzeOpts?.dependencyContext ? { dependencyContext: analyzeOpts.dependencyContext } : {}),
-  });
+  };
+  // #1324: with more than one thread, the per-file phase runs on a worker pool.
+  // At one thread this is the in-process loop, unchanged.
+  const pool = startScanPool(filesWithCode, projectOpts, threads);
+  let projectResult;
+  try {
+    projectResult = await analyzeProject(filesWithCode, pool ? { ...projectOpts, analyzeFile: pool.analyzeFile } : projectOpts);
+  } finally {
+    pool?.close();
+  }
 
   const results: ScanResult[] = projectResult.files.map(({ file, analysis }) => {
     const vulnerabilities: ScanResult['vulnerabilities'] = (analysis.taint.flows || []).map(flow => ({
@@ -952,7 +1119,8 @@ async function scanProject(
         ...(finding.tags && finding.tags.length > 0 ? { tags: [...finding.tags] } : {}),
       });
     }
-    return { file, vulnerabilities: dedupeVulnerabilities(vulnerabilities) };
+    const parseErrors = parseErrorsOf(analysis);
+    return { file, vulnerabilities: dedupeVulnerabilities(vulnerabilities), ...(parseErrors ? { parseErrors } : {}) };
   });
   // #1007: a file skipped by --file-timeout-ms is reported as an error, never as clean.
   for (const t of projectResult.timed_out_files ?? []) {
@@ -960,6 +1128,14 @@ async function scanProject(
       file: t.file,
       vulnerabilities: [],
       error: `analysis timed out after ${t.elapsed_ms}ms (at ${t.phase}); file skipped`,
+      errorKind: 'timeout',
+    });
+  }
+  for (const f of projectResult.failed_files ?? []) {
+    results.push({
+      file: f.file,
+      vulnerabilities: [],
+      error: `analysis failed: ${f.message}; file skipped`,
     });
   }
 
@@ -976,11 +1152,31 @@ async function scanProject(
       projectSizeBudgetExceeded: readTruncated || projectResult.project_size_budget_exceeded === true,
       filesAnalysed: projectResult.files.length,
       filesTotal: files.length,
+      entryPathDropped: projectResult.entry_path_dropped ?? 0,
     },
   };
 }
 
+/** Write a scan report to the `-o` file, or to stdout. */
+function writeReport(output: string, outputFile: string | undefined): void {
+  if (outputFile) {
+    writeFileSync(outputFile, output);
+    // 3.89.2: status to stderr — keeps stdout consistent across with/without --output.
+    console.error(colors.green(`Results written to ${outputFile}`));
+  } else if (output.trim()) {
+    writeStdout(output + '\n');
+  }
+}
+
 // ─── Shared WASM initialization ──────────────────────────────────────────────
+
+/** #1324: the grammar paths the analyzer was started with, for scan workers. */
+let analyzerInitOptions: CircleAnalyzerOptions | undefined;
+
+async function initAnalyzerRecorded(opts: CircleAnalyzerOptions): Promise<void> {
+  await initAnalyzer(opts);
+  analyzerInitOptions = opts;
+}
 
 async function initWasm(spin: Spinner | null): Promise<void> {
   const isStandalone = import.meta.url.includes('/$bunfs/');
@@ -1018,7 +1214,7 @@ async function initWasm(spin: Spinner | null): Promise<void> {
     }
 
     if (wasmDir) {
-      await initAnalyzer({
+      await initAnalyzerRecorded({
         wasmPath: join(wasmDir, 'web-tree-sitter.wasm'),
         languagePaths: {
           bash: join(wasmDir, 'tree-sitter-bash.wasm'),
@@ -1058,7 +1254,7 @@ async function initWasm(spin: Spinner | null): Promise<void> {
     // a `query(...)` call, reported as sql_injection + missing-await (#409).
     // circle-ir itself switched grammars in 3.24.0 (#5); this explicit map
     // silently overrode that.
-    await initAnalyzer({
+    await initAnalyzerRecorded({
       wasmPath: wasmBasePath + 'web-tree-sitter.wasm',
       languagePaths: {
         bash: wasmBasePath + 'tree-sitter-bash.wasm',
@@ -1211,16 +1407,28 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       process.exit(2);
     }
 
+    const skippedPaths: SkippedPath[] = [];
     const files = await collectFiles(absPath, {
       language: options.language,
       excludeTests: options.excludeTests,
       includePatterns: config?.include,
       excludePatterns: config?.exclude,
       basePath: absPath,
+      skipped: skippedPaths,
     });
+    for (const p of skippedPaths) {
+      if (p.reason !== 'symlink inside the scan root') console.error(colors.yellow(`⚠ Not scanned: ${relative(absPath, p.path) || p.path} (${p.reason})`));
+    }
 
     if (files.length === 0) {
       if (spin) spin.warn('No supported files found');
+      // A JSON or SARIF report, and any -o file, is still written: a CI step
+      // that uploads it must get a valid empty run, not a missing file.
+      if (options.format !== 'text' || options.output) {
+        const empty = options.format === 'json' ? formatJSON([]) : options.format === 'sarif' ? formatSARIF([]) : formatResults([]);
+        writeReport(empty, options.output);
+      }
+      await exitAfterFlush(0);
       return;
     }
 
@@ -1276,6 +1484,10 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     const isDir = (await stat(absPath)).isDirectory();
     const npm = nearestNpmManifests(isDir ? absPath : dirname(absPath));
     if (npm) analyzeOpts.dependencyContext = npm;
+    // S3: `--file-timeout-ms` is checked between phases; the watchdog bounds a
+    // step that never yields (see file-watchdog.ts).
+    const watchdog = startFileWatchdog(options.fileTimeoutMs ?? 0);
+    if (watchdog) analyzeOpts.watchdog = watchdog;
 
     if (isDir) {
       if (spin) spin.text = `Running project analysis on ${files.length} file(s)...`;
@@ -1284,9 +1496,10 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
         excludePatterns: config?.exclude,
         basePath: absPath,
       });
-      const projectScan = await scanProject(files, options.language, analyzeOpts, options.crossFileBudgetMs, options.maxProjectSourceChars);
+      const projectScan = await scanProject(files, options.language, analyzeOpts, options.crossFileBudgetMs, options.maxProjectSourceChars, options.threads);
       results = projectScan.results;
       crossFileData = projectScan.crossFileData;
+      if (skippedPaths.length > 0) crossFileData = { ...crossFileData, skippedPaths: skippedPaths.map(p => ({ path: relative(absPath, p.path) || p.path, reason: p.reason })) };
     } else {
       if (spin) spin.text = `Scanning ${files.length} file(s)...`;
 
@@ -1320,6 +1533,12 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
         if (spin) spin.text = `Scanning... (${processed}/${files.length})`;
       }
     }
+    watchdog?.stop();
+
+    // Files not analysed (errors, timeouts) and files only partly parsed are
+    // counted on the status line too, so JSON and SARIF runs show them.
+    const notAnalysed = results.filter(r => r.error).length;
+    const partlyParsed = results.filter(r => !r.error && r.parseErrors).length;
 
     // #424 — on a truncated run this said `Scanned <discovered> file(s)`,
     // overstating what was actually analysed.
@@ -1327,9 +1546,15 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       const analysed = crossFileData?.projectSizeBudgetExceeded
         ? (crossFileData.filesAnalysed ?? files.length)
         : files.length;
-      spin.succeed(analysed === files.length
+      const line = analysed === files.length
         ? `Scanned ${files.length} file(s)`
-        : `Scanned ${analysed} of ${files.length} file(s) — stopped at the project size ceiling`);
+        : `Scanned ${analysed} of ${files.length} file(s) — stopped at the project size ceiling`;
+      const problems = [
+        notAnalysed > 0 ? `${notAnalysed} not analysed` : '',
+        partlyParsed > 0 ? `${partlyParsed} with syntax errors` : '',
+      ].filter(Boolean).join(', ');
+      if (problems) spin.warn(`${line} (${problems})`);
+      else spin.succeed(line);
     }
 
     // Apply suppressions from config
@@ -1448,6 +1673,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       // Cross-file taint paths are always security findings; exclude them when security isn't requested
       if (crossFileData && !allowedCategories.includes('security')) {
         crossFileData.taintPaths = [];
+        crossFileData.entryPathDropped = 0;
       }
     }
 
@@ -1467,8 +1693,10 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     // have no findings skips BOTH the ceiling warning and the
     // `N of M file(s) analysed` summary, and exits 0 — which is precisely the
     // clean-scan claim over unread files this change exists to prevent.
+    // Likewise a file not fully analysed, a budget cut or a gate drop (`notices`).
+    const notices = scanNotifications(results, crossFileData);
     const truncated = crossFileData?.projectSizeBudgetExceeded === true;
-    const shouldOutput = totalVulns > 0 || crossFilePaths > 0 || errors > 0 || options.verbose || options.output || options.format !== 'text' || truncated;
+    const shouldOutput = totalVulns > 0 || crossFilePaths > 0 || errors > 0 || options.verbose || options.output || options.format !== 'text' || truncated || notices.length > 0;
 
     // 3.106.0 (#169) — assemble the project-profile summary for output and
     // tag each vulnerability with its file's resolved profile.
@@ -1495,14 +1723,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
           output = formatResults(results, options.verbose, crossFileData, profileSummary);
       }
 
-      if (options.output) {
-        const { writeFileSync } = await import('fs');
-        writeFileSync(options.output, output);
-        // 3.89.2: status to stderr — keeps stdout consistent across with/without --output.
-        console.error(colors.green(`Results written to ${options.output}`));
-      } else if (output.trim()) {
-        writeStdout(output + '\n');
-      }
+      writeReport(output, options.output);
 
       // Summary
       if (!options.quiet && options.format === 'text') {
@@ -1528,7 +1749,10 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
           writeStdout(colors.green(`No findings in ${scannedLabel}`) + '\n');
         }
         if (errors > 0) {
-          writeStdout(colors.yellow(`${errors} file(s) had errors during analysis`) + '\n');
+          writeStdout(colors.yellow(`${errors} file(s) had errors during analysis and were not analysed`) + '\n');
+        }
+        if (partlyParsed > 0) {
+          writeStdout(colors.yellow(`${partlyParsed} file(s) had syntax errors; findings in them may be incomplete`) + '\n');
         }
       }
     }
@@ -1539,7 +1763,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
   } catch (error) {
     if (spin) spin.fail('Analysis failed');
     console.error(colors.red(error instanceof Error ? error.message : 'Unknown error'));
-    await exitAfterFlush(error instanceof UsageError ? 1 : 2);
+    await exitAfterFlush(EXIT_ERROR);
   }
 }
 
@@ -1592,13 +1816,18 @@ async function runMetrics(targetPath: string, options: MetricsOptions): Promise<
       process.exit(2);
     }
 
+    const skippedPaths: SkippedPath[] = [];
     const files = await collectFiles(absPath, {
       language: options.language,
       excludeTests: options.excludeTests,
       includePatterns: config?.include,
       excludePatterns: config?.exclude,
       basePath: absPath,
+      skipped: skippedPaths,
     });
+    for (const p of skippedPaths) {
+      if (p.reason !== 'symlink inside the scan root') console.error(colors.yellow(`⚠ Not scanned: ${relative(absPath, p.path) || p.path} (${p.reason})`));
+    }
 
     if (files.length === 0) {
       if (spin) spin.warn('No supported files found');
@@ -1861,7 +2090,11 @@ function applyLogLevel(cliValue: unknown): void {
     return;
   }
   setLogLevel(normalized);
+  appliedLogLevel = normalized;
 }
+
+/** #1324: the level set by `applyLogLevel`, for scan workers. */
+let appliedLogLevel: LogLevel | undefined;
 
 /**
  * Resolve the #145 PR B instrumentation flag from env. Enabled when
@@ -2094,7 +2327,7 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   const manifests = await collectManifestFiles(absPath);
   if (manifests.length === 0) {
     console.error(colors.red('Error: no supported manifests found (package.json/-lock, requirements.txt, pyproject.toml, poetry.lock, pom.xml with dependency-tree.txt/-list.txt, build.gradle, gradle.lockfile, Cargo.toml/.lock, go.mod, *.target)'));
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 
   // A lockfile supersedes its sibling manifest — it pins exact + transitive
@@ -2129,7 +2362,7 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   const effective = usable.filter((m) => !supersededInDir.has(`${dirname(m)}\0${basename(m)}`));
   if (effective.length === 0) {
     console.error(colors.red('Error: no supported manifests found (Maven resolved output needs its pom.xml beside it)'));
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 
   let projectName = options.name;
@@ -2216,6 +2449,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  // An option the command does not take is a usage error, never ignored.
+  const unknown = unknownOptions(command, options);
+  if (unknown.length > 0) {
+    throw new UsageError(
+      `unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map(o => `'${o}'`).join(', ')}${command ? ` for '${command}'` : ''}`,
+    );
+  }
+
   // Handle version command or flag
   if (command === 'version' || options.version || options.V) {
     showVersion(version, buildInfo);
@@ -2239,7 +2480,7 @@ async function main(): Promise<void> {
     if (args.length === 0) {
       console.error(colors.red('Error: metrics command requires a path argument'));
       console.error('\nUsage: cognium-dev metrics <path> [options]');
-      process.exit(1);
+      process.exit(EXIT_ERROR);
     }
 
     const targetPath = args[0];
@@ -2262,16 +2503,16 @@ async function main(): Promise<void> {
     if (args.length === 0) {
       console.error(colors.red('Error: sbom command requires a path argument'));
       console.error('\nUsage: cognium-dev sbom <path> [--format cyclonedx|spdx] [--output <file>]');
-      process.exit(1);
+      process.exit(EXIT_ERROR);
     }
     const rawFormat = ((options.format || options.f || 'cyclonedx') as string).toLowerCase();
     if (rawFormat !== 'cyclonedx' && rawFormat !== 'spdx') {
       console.error(colors.red(`Error: unknown SBOM format '${rawFormat}' (expected 'cyclonedx' or 'spdx')`));
-      process.exit(1);
+      process.exit(EXIT_ERROR);
     }
     if (options['license-map'] === true) {
       console.error(colors.red('Error: --license-map needs a file path'));
-      process.exit(1);
+      process.exit(EXIT_ERROR);
     }
     const sbomOptions: SbomOptions = {
       format: rawFormat as 'cyclonedx' | 'spdx',
@@ -2284,7 +2525,7 @@ async function main(): Promise<void> {
     try {
       await runSbom(args[0], sbomOptions);
     } catch (e) {
-      if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(1); }
+      if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(EXIT_ERROR); }
       throw e;
     }
     return;
@@ -2332,7 +2573,7 @@ async function main(): Promise<void> {
       else writeStdout(payload + '\n');
       if (outputFile) console.error(`Wrote ${outputFile}`);
     } catch (e) {
-      if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(1); }
+      if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(EXIT_ERROR); }
       throw e;
     }
     await exitAfterFlush(0);
@@ -2340,7 +2581,8 @@ async function main(): Promise<void> {
   }
 
   // E20/engine: the deterministic re-check of a code-fix change.
-  // Always JSON; exit 1 when the no-new-high rule fails (with --baseline).
+  // Always JSON; exit 1 when the no-new-high rule or --expect-gone fails,
+  // 3 when a verdict is unknown (partial parse, file not analysed).
   if (command === 'recheck') {
     const target = args[0] ?? '.';
     try {
@@ -2354,7 +2596,7 @@ async function main(): Promise<void> {
       } else {
         writeStdout(payload + '\n');
       }
-      await exitAfterFlush(report.noNewHigh === 'fail' ? 1 : 0);
+      await exitAfterFlush(recheckExitCode(report));
     } catch (e) {
       if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(2); }
       throw e;
@@ -2367,7 +2609,7 @@ async function main(): Promise<void> {
     if (args.length === 0) {
       console.error(colors.red('Error: scan command requires a path argument'));
       console.error('\nUsage: cognium-dev scan <path> [options]');
-      process.exit(1);
+      process.exit(EXIT_ERROR);
     }
 
     const targetPath = args[0];
@@ -2402,17 +2644,21 @@ async function main(): Promise<void> {
   } else {
     console.error(colors.red(`Error: Unknown command '${command}'`));
     console.error('\nRun \'cognium-dev --help\' for usage information');
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 }
 
-// Run the CLI
-main().catch((error) => {
-  // #1006: a bad option is a usage error (exit 1), reported before any scan work.
+const scanWorker = !isMainThread && (workerData as { kind?: unknown } | null)?.kind === SCAN_WORKER_KIND;
+
+// Run the CLI (or, on a #1324 scan worker thread, serve the main thread).
+if (scanWorker) {
+  runScanWorker(workerData as ScanWorkerData);
+} else main().catch((error) => {
+  // #1006: a bad option is a usage error (exit 2), reported before any scan work.
   if (error instanceof UsageError) {
     console.error(colors.red(`Error: ${error.message}`));
     console.error('\nRun \'cognium-dev --help\' for usage information');
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
   console.error(colors.red('Fatal error:'), error.message);
   process.exit(2);

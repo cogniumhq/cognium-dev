@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error — plain .mjs script without types
 import * as snap from '../../scripts/osv-snapshot.mjs';
-import { buildAdvisoryIndex, parseOsvRecord, type OsvRecord } from '../../src/analysis/advisories.js';
+import { buildAdvisoryIndex, matchAdvisories, parseOsvRecord, type OsvRecord } from '../../src/analysis/advisories.js';
+import { parsePnpmLockImporterDependencies } from '../../src/analysis/sbom.js';
 
 const FIXTURE = fileURLToPath(new URL('../fixtures/osv-npm/', import.meta.url));
 const SCRIPT = fileURLToPath(new URL('../../scripts/osv-snapshot.mjs', import.meta.url));
@@ -117,5 +118,76 @@ describe('osv-snapshot', () => {
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
+  });
+
+  describe('match (pnpm lockfile, per importer)', () => {
+    const lib = { parseOsvRecord, buildAdvisoryIndex, matchAdvisories, parsePnpmLockImporterDependencies };
+    const LOCK = readFileSync(fileURLToPath(new URL('../fixtures/js-lockfiles/pnpm-v9-reach.yaml', import.meta.url)), 'utf-8');
+
+    it('reports matches per importer with the snapshot identity', () => {
+      const r = snap.matchPnpmLock(FIXTURE, LOCK, lib);
+      expect(r.snapshot.digest).toBe(snap.snapshotDigest(FIXTURE));
+      expect(r.snapshot.records).toBe(7);
+      const byImporter = Object.fromEntries(
+        r.importers.map((i: { importer: string; matches: Array<{ id: string; package: string; scope: string }> }) => [
+          i.importer,
+          i.matches.map((m) => `${m.id} ${m.package} ${m.scope}`).sort(),
+        ]),
+      );
+      expect(byImporter).toEqual({
+        '.': ['GHSA-35jh-r3h4-6jhm lodash dev', 'GHSA-p6mc-m468-83gw lodash dev'],
+        'packages/api': ['GHSA-c2qf-rxjj-qqgw semver required'],
+        'packages/core': ['GHSA-c2qf-rxjj-qqgw semver required', 'TEST-LA-0002 la-pkg dev'],
+        'packages/web': ['GHSA-c2qf-rxjj-qqgw semver dev'],
+      });
+      const api = r.importers.find((i: { importer: string }) => i.importer === 'packages/api');
+      expect(api.matches[0]).toMatchObject({ version: '7.5.1', direct: false, via: ['@acme/core'], fixedIn: ['7.5.2'] });
+    });
+
+    it('refuses a snapshot that does not verify or does not match the pin', () => {
+      expect(() => snap.matchPnpmLock(FIXTURE, LOCK, lib, 'sha256:' + '0'.repeat(64))).toThrow(/pinned/);
+      const dir = copyFixture();
+      try {
+        writeFileSync(join(dir, 'TEST-PRE-0001.json'), '{"id":"TEST-PRE-0001","modified":"2024-01-01T00:00:00Z"}');
+        expect(() => snap.matchPnpmLock(dir, LOCK, lib)).toThrow(/does not verify/);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('match arguments (fail closed)', () => {
+    const D = 'sha256:' + 'a'.repeat(64);
+    it('accepts --pin <digest> and --pin=<digest> anywhere, and no pin', () => {
+      expect(snap.parseMatchArgs(['snap', 'lock'])).toEqual({ dir: 'snap', lockPath: 'lock' });
+      expect(snap.parseMatchArgs(['snap', 'lock', '--pin', D])).toEqual({ dir: 'snap', lockPath: 'lock', pin: D });
+      expect(snap.parseMatchArgs(['--pin', D, 'snap', 'lock'])).toEqual({ dir: 'snap', lockPath: 'lock', pin: D });
+      expect(snap.parseMatchArgs([`--pin=${D}`, 'snap', 'lock'])).toEqual({ dir: 'snap', lockPath: 'lock', pin: D });
+      expect(snap.parseMatchArgs(['--', '-snap', 'lock'])).toEqual({ dir: '-snap', lockPath: 'lock' });
+    });
+
+    it('refuses a --pin without a well-formed digest', () => {
+      expect(() => snap.parseMatchArgs(['snap', 'lock', '--pin'])).toThrow(/--pin needs/);
+      expect(() => snap.parseMatchArgs(['snap', 'lock', '--pin='])).toThrow(/--pin needs/);
+      expect(() => snap.parseMatchArgs(['--pin', 'snap', 'lock'])).toThrow(/--pin needs/);
+      expect(() => snap.parseMatchArgs(['snap', 'lock', '--pin=sha256:abc'])).toThrow(/--pin needs/);
+      expect(() => snap.parseMatchArgs(['snap', 'lock', '--pin', D, '--pin', D])).toThrow(/more than once/);
+    });
+
+    it('refuses unknown options and a wrong number of paths', () => {
+      expect(() => snap.parseMatchArgs(['snap', 'lock', '--pinned', D])).toThrow(/unknown option/);
+      expect(() => snap.parseMatchArgs(['snap'])).toThrow(/needs <snapshot dir>/);
+      expect(() => snap.parseMatchArgs(['snap', 'lock', 'extra'])).toThrow(/needs <snapshot dir>/);
+    });
+
+    it('the command line refuses a missing pin value without matching', () => {
+      let err = '';
+      try {
+        execFileSync('node', [SCRIPT, 'match', FIXTURE, 'nope.yaml', '--pin'], { stdio: 'pipe' });
+      } catch (e) {
+        err = String((e as { stderr?: Buffer }).stderr ?? '');
+      }
+      expect(err).toMatch(/--pin needs/);
+    });
   });
 });

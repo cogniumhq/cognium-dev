@@ -8,6 +8,335 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+- **`AnalyzerOptions.analyzeFile`: `analyzeProject` can take each file's `CircleIR` from the caller (cognium-dev#1324).** When it is set, the per-file loop awaits `analyzeFile(code, filePath, language)` in place of `analyze()`, still in input order, so a caller can run the per-file work in parallel. Timeout and non-timeout error handling match the built-in `analyze()` path (#1351). Without it, nothing changes.
+- **`ProjectAnalysis.entry_path_dropped` counts the findings that the `require-entry-path` gate removes (cognium-dev#1306).** `applyRequireEntryPath` returns its drop count. `analyzeProject` sets the field when the count is above 0. Results are unchanged.
+
+### Fixed
+
+- **JS/TS: an interprocedural flow takes only a source that can reach the call (#1121).** In `InterproceduralPass` Scenario A, a sink inside a tainted callee was paired with the first source above the call line, anywhere in the file. A callee counts as tainted when its own parameters are speculative `interprocedural_param` sources, so a read in an unrelated function was credited to calls it never reaches (`loadRules()` → `this.saveReport(report, outputDir)`). For JavaScript and TypeScript, the source must now sit in the calling function, in a function that calls it directly or through others, or at module scope. This is the in-file counterpart of the cross-file fix for #1052. Other languages are unchanged. Dogfood: cognium-ai `circle-ir-ai/src/security-scan/scanner.ts:2615/2915/2919/2923` and `skills/bundle-loader.ts:247` (high path_traversal) no longer fire, and neither do 22 `log_injection` flows in `scanner.ts`.
+- **Java: a heap-field source respects a strong update (SecuriBench StrongUpdates3, regression from #1198 in 4.21.0).** `b.value = name; b.value = "abc";` followed by a read of `b.value` reported a source at the tainted write and a flow at the read. The heap-field source is now dropped when a later write of the same field on the same receiver stores a literal, in the same block, with only straight-line code (no braces, jumps, calls or other uses of the receiver) between the two writes, the tainted write alone on its line, every read of the field after it, no later non-literal write (including `+=` and `++`), no method called on the receiver after it (a setter can store tainted data again), and the receiver never passed or copied. Inside a `try` or `catch`, every statement between the two writes must also be one that cannot throw (a local assigned a literal), because an exception there skips the overwrite and a handler, a `finally` or later code can still read the field. A write in one branch, a write through another reference, a read before the overwrite, a tainted write after it, or a division, array access or other throwing statement between the writes inside a `try` keep the taint. Basic29's linked-node reads are unchanged.
+- **TypeScript: Jest manual mocks under `__mocks__/` are entries when Jest is configured via `jest-expo` or `jest.config.*`, not only a direct `jest` dependency (Refs #1288).** Expo apps with a jest config but no `jest` package entry no longer report those mock files as dead product code.
+- **Dead code: module and type containers follow member verdicts (Refs #1288 / cognium-ai#952).** A `dead` module or class is lifted to `may-be-live` when any member is not `dead`; instance fields on a type with a `may-be-live` method are not reported `dead` when dynamic `this` may reach them.
+- **`analyzeProject` continues when one file's analysis throws (cognium-dev#1351).** Non-timeout errors are listed in `ProjectAnalysis.failed_files` and siblings are still analysed, matching the existing timeout path.
+- **Python: Django `include()` prefixes and DRF verbs in `buildPythonGraph()` routes.** Routes inside an inline `include([...])` now carry the enclosing route (`/api/ping/`, not dropped). A project urls module included by another (`include("shop.urls")`, `include(shop_urls)`, the `(module, app_name)` tuple) gets one route per mount chain, with `registeredPath` and `mounts` set, and its unprefixed route is no longer reported. DRF `@api_view([...])` function views take their listed verbs (GET when none), generic views (`ListCreateAPIView`, `RetrieveDestroyAPIView`, …) take the verbs of their bases, and `list`/`retrieve`/`create`/`update`/`partial_update`/`destroy` and the `perform_*` hooks take their verbs, in place of `ANY`. DRF routers (`router.register` + `include(router.urls)`) are not resolved yet.
+- **Python: the call-argument `literal` of a prefixed or triple-quoted string drops the prefix and quotes.** `r'^api/'` gave `r'^api/` and `'''doc'''` gave `''doc''`; they now give `^api/` and `doc`.
+- **JS/TS: a same-file helper that returns a number on every path cleans SQL and command sinks.** `const hours = parseHours(raw)`, where `parseHours` checks a digit regex and a range and returns `Number(raw)` or a literal default, then `` `INTERVAL '${hours}' HOUR` ``, was reported as SQL injection. A helper whose every `return` is a numeric literal, a numeric coercion (`Number`, `parseInt`, `parseFloat`, `Math.*`, unary `+`), a ternary of those, or a local only ever assigned those, now gets the same credit as `Number(x)` at its call sites. A helper that can return its input, a bare `return`, a nested function, or a name declared twice keeps the flow.
+- **Hono: `c.env` bindings are not request data.** In a handler that also reads the request, the context parameter `c` was tainted and `const table = c.env.TABLE` inherited it. A local whose whole initializer is `<id>.env`, a member path below it, or a destructuring of it without defaults, in a file that imports `hono`, is now a taint barrier. An index by a variable (`c.env[q]`) keeps the taint.
+- **JS/TS: more imported Express handler shapes count as route entry points (Refs cognium-dev#1323, follow-up to #1331).** #1331 resolved a handler imported by name and registered by name (`router.get('/run', run)`). `require-entry-path` now also resolves a default export bound under another local name, a handler re-exported through one hop (`export { run } from './handler'` in `index.ts`), a member handler on a namespace or `require` import (`handlers.run`) or a class import (`Controller.run`), and a handler inside an array argument (`router.get('/p', [auth, run])`), which is now recorded in `runtime_registrations`. Before, the gate dropped the high/critical findings in these handlers whenever another JS/TS entry point was in the scan. An imported function that no route registers is still dropped.
+- **TypeScript: generic calls with `typeof import(...)` or `import(...).T` in type arguments no longer mark stable ids partial (cognium-dev#1312).** Benign-parse rules now cover call-site type arguments where tree-sitter leaves an `ERROR` `>() tail after `import` types in expressions and return statements.
+
+## [4.23.0] - 2026-11-19
+
+### Security
+
+- **Java: attacker-controlled `Class.forName(name)` is also a CWE-502 deserialization sink (cognium-dev#1290) (#1292).** The call stayed a CWE-94 code-injection sink only, so yamlbeans-style loaders (`Class.forName(tag, …)` + reflective construction) reported no deserialization finding.
+
+### Fixed
+
+- **Java: XML-factory XXE hardening is now value-checked (#1293 follow-up, refs #1291) (#1293, #1301).** `isInJavaSanitizedMethod`'s `xxe` branch is one shared `isHardenedXmlFactory(body)` used by every factory kind. A `set{Attribute,Property}(…ACCESS_EXTERNAL_{DTD,STYLESHEET,SCHEMA}…)` or the literal `accessExternal*` property URI counts as hardening **only when the value is the empty string** — `ACCESS_EXTERNAL_DTD="all"` (and other non-empty values) no longer clears and stays flagged. `FEATURE_SECURE_PROCESSING` is no longer required, so a lone `ACCESS_EXTERNAL_DTD=""` clears the flow. #1293 first credited the hardened TransformerFactory (angus-mail `text_xml` shape, cognium-dev#1291); #1301 made it value-checked. Existing `disallow-doctype-decl`/`external-*-entities`/`load-external-dtd` setFeature and `SUPPORT_DTD=false` recognizers unchanged. Known limit: method-scoped and textual.
+- **JS: custom SSRF allow-list URL wrappers suppress ssrf (#1244 flow-combo c08) (#1303).** Helpers that parse `new URL(param).hostname`, reject hosts outside a fixed `Set`/`Array` allow-list (`!ALLOWED.has` / `includes`) and return the same parameter are credited at call sites. No-op wrappers and direct sinks unchanged.
+- **Java: an HTML-context encoder no longer clears SQL injection or other non-XSS sinks (#1289).** Every encoder in `HTML_CONTEXT_ENCODER_METHODS` (ESAPI `encodeForHTML`/`HTMLAttribute`/`JavaScript`/`CSS`/`XML`/`XMLAttribute`, OWASP Java Encoder `for*`, Commons `escapeHtml*`/`escapeXml*`/`escapeEcmaScript`, Spring `htmlEscape*`) now cleans only `xss` (and its `external_taint_escape` credit); `sql_injection`, `command_injection` and other sink types are reported on the encoded value. `encodeForSQL` and PreparedStatement binding keep their credit.
+- **JS: `JSON.stringify` is credited for CWE-117 (log_injection) (#1285).** With log_injection fixtures and a recheck test.
+
+## [4.22.0] - 2026-11-16
+
+### Changes
+
+- chore(deps): Bump web-tree-sitter (#1280)
+- circle-ir: deserialization from a cookie (CWE-502) — http_cookie may reach a deserialization sink (#1256)
+- feat(circle-ir): prototype-pollution (CWE-1321) for JS/TS (#1251)
+- feat(circle-ir): missing-auth-middleware (CWE-862) for JS/TS (#1254)
+- feat(circle-ir): hardcoded-secret-argument (CWE-798) for JS/TS (#1253)
+- feat(circle-ir): redos-regex-literal (CWE-1333) for JS/TS (#1250)
+- fix(circle-ir): JS/TS weak crypto through crypto named imports and aliases (#1249)
+- fix(circle-ir): stop JS redirect guard credit after compound assignment (#1274)
+
+## [4.21.1] - 2026-11-15
+
+### Changes
+
+- circle-ir: credit a complete same-site redirect guard in JS/TS (CWE-601), never a '//'-only one (#1257)
+- fix(circle-ir): JS/TS template_injection (CWE-1336) credits a fixed template (#1252)
+
+## [4.21.0] - 2026-11-15
+
+### Changes
+
+- test(java): allow trust_boundary backwards pairings under legacy generateFindings (#1247)
+- fix(java): HTTP-sourced Cookie values report trust_boundary (#1247 S3)
+- fix(circle-ir): self-closing Tycho target location no longer hides the next Maven location
+- fix(java): resolve same-file overloads by arity and argument types; order-independent inter-procedural taint
+- fix(java): resolve FQN Log4j Logger receivers for log_injection (#1247)
+- feat(circle-ir): csrf-samesite-none-session (CWE-352) for JS/TS
+- docs(circle-ir): changelog for the stage-8a guard scope
+- fix(circle-ir): JS stage-8a redirect guard must test the redirected value
+- chore(circle-ir): put #1223 helpers' doc comments back above their functions
+- fix(circle-ir): JS cross-handler req.* name collision (#1223)
+- feat(circle-ir): sensitive-data-in-log (CWE-532) for JS/TS
+- test(java): SecuriBench Basic30 field-sensitive heap regression (#1198)
+- fix(circle-ir): regex-lint budget for #1198 heap-field helpers
+- fix(circle-ir): hoist JAVA_LOCAL_FIELD_ASSIGN_LINE_RE (#1198)
+- fix(circle-ir): Java heap field taint for SecuriBench Basic29 (#1198)
+- chore(circle-ir): share reflection line regexes, bump regex-lint baseline (#1198)
+- fix(circle-ir): Field.set taint into reflectively targeted fields (#1198 S3)
+- fix(circle-ir): scope #1198 field HTTP sources to this.* only (#614)
+- fix(circle-ir): taint Field.get on HTTP-tainted instance fields (#1198)
+- fix(circle-ir): recognize bare-field getters in setter-chain sources (#1198)
+- fix(circle-ir): TS subscribe callback http_body source (#1224)
+- fix(circle-ir): ESAPI println concat FP without dropping qualified sanitizers (#915)
+- fix(java): treat ESAPI encodeForHTML concat operands as sanitized (#915)
+- fix(circle-ir): FQN escapeHtml inner helper gates XSS format (#915)
+- fix(java): List.get on literal slot after addAll merges taint (#476)
+- fix(circle-ir): #1149 IL-22 JSON.parse body→SQL without broad regressions
+- fix(#1149): scan JS taint binds per-assignment; drop require in gate fixture
+- fix(js): JSON.parse(req.body) field flows to SQL sink (#1149)
+- fix(circle-ir): per-index list.get after addAll (Refs #476)
+- chore: CHANGELOG for Collections8 addAll (Refs #476)
+- fix(java): Collections8 addAll list taint merge (Refs #476)
+- fix(circle-ir): narrow #817 shell intake to sync execSync PAT shape
+- fix(circle-ir): cve-intake exported shell handlers keep command_injection (#817)
+- fix(circle-ir): cache_poisoning on the cve-intake parameter shapes, with a built-CLI test (#900)
+- fix(circle-ir): parse libxmljs call args without backtracking regex (#1222)
+- fix(js): libxmljs noent:false drops xxe taint sink (#1222)
+- feat(circle-ir): Maven reactor and Gradle multi-project resolved sets, one per module (#1219)
+- fix(java): gate interprocedural xss when helper returns HtmlUtils.htmlEscape (#915)
+- fix(java): row array literal taints 2-D cells (Refs #476)
+- fix(java): array element flows for n-n index alias (Refs #476)
+- feat(circle-ir): graph-store T6 on facts@2 — producer walk, blastRadius / impactedTests, parity script
+- fix(circle-ir): keep interprocedural_param flows to cache_poisoning sinks (#900)
+- fix(circle-ir,cli): S3 — exponential regexes, a hard bound behind --file-timeout-ms, regex lint in CI
+- test(circle-ir): #1187 acceptance + cross-file positive control
+- fix(circle-ir): drop JS/TS test→production cross-file taint (#1187)
+- fix(js): detect module let on shared top-level lines (#1148)
+- chore(circle-ir): CHANGELOG for #1150
+- fix(rust): keep IL-57 param JSON→yaml deser flows (#1150)
+- fix(java): field-carried Commandline argv at execute (#1199)
+- fix(java): getTheValue pass-through gate for ldap_injection (#1197)
+- feat(circle-ir,cli): facts@2 is the default fact schema (graph-store T5a.1b)
+- fix(circle-ir): Java DFG column on defs/uses for lambda lines (#1196)
+- fix(circle-ir): qualify java.lang receivers on external call sites (#1195)
+- fix(circle-ir): emit declare global block declarations (#1194)
+- fix(circle-ir): recover zx Shell generic call signature parse (#1193)
+- fix(java): member-type-first binding for new Type() (#1192)
+- chore(deps): Bump apache-arrow from 21.1.0 to 21.2.0
+- chore(deps-dev): Bump the dev-tooling group with 2 updates
+- docs(stable-ids): Java and Go block node ids re-key too; columns are UTF-16
+- docs(changelog): node-id re-key also moves TS facts@2 flow rows
+- test(stable-ids): block placement with and without start_column
+- fix(stable-ids): TS/JS node ids as stable as their body id (T-SI1.1)
+- fix(circle-ir): treat export default { handler } as module exports (#818)
+- test(circle-ir): lock non-helper OWASP trustbound shapes (#589)
+- fix(circle-ir): trust_boundary through encoder-only multi-line helpers (#589 S4)
+- fix(circle-ir): exported onLogin keeps static #107 log_injection (#1151)
+- fix(circle-ir): super(…) binds a simple name only through a wildcard import the file has
+- docs(circle-ir): CHANGELOG notes the superclass scoping and CallInfo.in_type
+- fix(circle-ir): super(…) resolves its superclass from the class's scope
+- test(circle-ir): explicit super(…)/this(…) rows in facts@2 too
+- fix(circle-ir): navigation overload selection picks the overload typed as the arguments
+- fix(circle-ir): explicit super(…)/this(…) are Java call sites
+- test(circle-ir): explicit super(…)/this(…) constructor calls in the Java graph (failing)
+- fix(java-graph): review — linear XML read, narrower constructor rooting
+- fix(facts@2): names in registering files are not registration rows
+- feat(java-graph): entries from registering files passed in as text
+- fix(circle-ir): TS type-annotated tainted declaration keeps its xss sinks (#1173)
+- fix(circle-ir): credit a typeof-string reject-guard on a JS/TS nosql filter (#1172)
+- fix(circle-ir): legacy collection update/remove/findAndModify are nosql_injection sinks (#1172)
+- fix(circle-ir): Angular bypassSecurityTrust* fires as an xss sink again (#1171)
+- fix(circle-ir): JS/TS nested-sink rule for #1156 covers every emitter and any source call
+- feat(circle-ir,cli): facts@2 follow-ups — TS graph facts, call.declaring, --facts-scheme (#1139)
+- fix(java): scope log_injection dedupe on gated SLF4J loggers (#468)
+- fix(java): suppress duplicate log_injection on gated SLF4J loggers (#468)
+- fix(circle-ir): inline req.query reaches cache_poisoning Map.set (#900 S2)
+- test(circle-ir): lock static-parity py log_injection (#1151 S2)
+- fix(#900): module-scope Map detection must not match indented locals
+- fix(#900): restore Map.get SQL suppression; add cache_poisoning CLI maps
+- fix(js): add cache_poisoning sink for shared Map writes (#900 S1)
+- test(java): align #387 legacy cookie case with #1152 sink table
+- fix(java): drop trust_boundary on Cookie ctor/setValue (#1152)
+- test(circle-ir): lock static #107 js log_injection shape (#1151)
+- fix(circle-ir): Java callee param seeds — arity keys, qualified calls (#814)
+- fix(circle-ir): Java same-file callee parameter taint seeding
+
+## [Unreleased]
+
+### Fixed
+
+- **JS/TS: a request value used as a regex pattern on the line it is read (`new RegExp(req.query.p)`) reports `redos` (CWE-1333).** `redos` was missing from the request sources' reach map, so the inline flow was never produced; only a value passed through a local reached the sink. The inline flow is emitted only when the request value sits in the sink's pattern argument (a request value as the subject, `req.query.q.match(/x/)` or Java `request.getParameter("x").matches("…")`, does not count). `escapeRegExp` (lodash), `escapeStringRegexp` (`escape-string-regexp`) and `escapeRegex` sanitize `redos`, so escaping the value reads `gone` in `cognium-dev recheck`. Fixtures under `tests/fixtures/redos-request-pattern/`.
+- **JS/TS: weak-hash (CWE-328), weak-crypto (CWE-327) and the weak-password-hash PBKDF2 check now see Node `crypto` APIs reached through a binding other than the receiver `crypto`.** `import { createHash } from 'crypto'` then `createHash('md5')`, an aliased import (`createHash as digestWith`), a destructured `require('crypto')`, a namespace / default / `require` alias (`nodeCrypto.createHash('sha1')`), an inline `require('crypto').createHash('md5')`, and `node:crypto` were not reported. A name counts only when the file binds it to `crypto` / `node:crypto`; the same names imported from another module or declared locally abstain. A TypeScript type-only import (`import type { createHash }`, `import { type createHash }`) binds nothing, and a name the file declares again (a parameter, a local, an inner function that may shadow the import) is not rewritten anywhere in that file. `ImportInfo` gains an optional `is_type_only: true` for TypeScript type-only imports. Fixtures: vulnerable / fixed / near-miss TypeScript files under `tests/fixtures/weak-crypto-named-import/`; `cognium-dev recheck` keys each finding by CWE × declaration × rule, so a fix reads `gone`.
+- **JS/TS: `template_injection` (CWE-1336) credits the fix: a fixed template that names a request variable is no longer a finding.** The detector read the first argument up to the first `,` or `)` and matched tainted names anywhere in it, so `ejs.render('<p>Hello <%= name %></p>', { name })` — the fix — still reported the template injection, and `cognium-dev recheck` read `still-present`. It now takes the whole first argument (balanced, string-aware) and looks only at its code: the text of quoted strings and of template literals is ignored, `${…}` substitutions still count. The same applies to the request-derived locals it tracks, and a destructuring (`const { tpl } = req.body`) now binds its names. Coverage extended to `handlebars.compile`, `pug.render` / `pug.compile` and `nunjucks.renderString` (already `code_injection` CWE-94 sinks; now also CWE-1336). Fixtures: vulnerable / fixed / near-miss TypeScript files under `tests/fixtures/template-injection/`; a CLI test checks the fix reads `gone` and an unchanged file `still-present`.
+- **JS/TS: a complete same-site redirect guard is credited (CWE-601).** `res.redirect(next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\') ? next : '/')` (or the strict regex `/^\/(?![\/\\])/.test(next)`) no longer reports `open_redirect`; `crlf` is unchanged. A guard that rejects only `//` is still reported: `/\evil.example` is read by browsers as `//evil.example`.
+- **JS/TS: deserialization from a cookie (CWE-502).** `serialize.unserialize(req.cookies.x)` (the classic node-serialize RCE arrives in a cookie) now reports `deserialization`: the source-to-sink reach map (`canSourceReachSink`) allowed it from request params, query and body but not from `http_cookie`. `req.signedCookies` is unchanged (its value is integrity-protected by the server's secret).
+- **Java: `trust_boundary` on `new Cookie(name, value)` / `setValue` fires when the value is HTTP-sourced in-method (#1247 `cookie_trusted`), not for bare method parameters (#1152 static #118 / `InsecureCookieTp`).**
+- **Java/Tycho: a self-closing `<location … />` in a `*.target` file no longer hides the Maven location after it.** The location matcher treated `<location type="Target"/>` (or `type="Directory"`) as an opening tag, so its "body" ran on to the next `</location>` and the following `<location type="Maven">` was never read; its dependencies were missing from the census. Self-closing locations are now skipped (#1077 follow-up).
+- **Java: inter-procedural taint chooses overloads by arity and argument types, keeps every candidate when ambiguous, and no longer depends on method order in the file.** Same-file calls bound by method name alone and the last declaration of a name won, so adding an unrelated same-arity overload below a method (SecuriBench Micro `Inter3.f9` with a `void f9(AtomicLong)` after `f9(String)`) hid a live flow into it, and moving a method within its file could drop findings. Now:
+  - each overload is its own node, keyed `pkg.C.m(String)` when the type declares the name more than once (a name declared once keeps `pkg.C.m`), and a call binds to the overloads whose arity fits (varargs included), then to those every known argument type can be passed to (literals, declared locals and parameters, fields, `new T()`; `ArgumentInfo.type` is now filled for calls to a same-file overloaded name without `navigationTypes`). An exact erased match wins; whatever stays ambiguous gets taint on every candidate;
+  - the calls are visited until no parameter gains taint before sinks are reported, a source in another method than the call reaches it wherever that method is declared, and the fallback `external_taint_escape` flow takes its source from the sink's own method when there is one, not from the first source in the file (WebGoat `VerifyAccount`: moving `completed` below its helper dropped its escapes).
+  Other languages are unchanged.
+- **Java: FQN-typed Log4j `Logger` fields resolve `receiver_type_fqn`, restoring `log_injection` on Log4j `${…}` lookup patterns without a `Logger` import (#1247 variant `log4j_pattern`).**
+- **JS/TS: an `if` check on an unrelated value no longer hides an `open_redirect` / `crlf` sink.** Sink-filter stage 8a dropped a redirect or header sink when any `includes` / `startsWith` / `endsWith` / `indexOf` / `test` / `match` / `has` check stood within six lines above it. The check must now test a value the sink call reads (a dotted name in its arguments, e.g. `target` or `req.query.next`). Allow-list and reject guards on that value drop the sink as before; when the sink's call is not found on its line, any guard in the window still does.
+- **Java: SecuriBench Basic29 linked `Node` heap fields (`next.value`, aliased `head.next.value`) reach XSS sinks (#1198).**
+- **TS/Angular: Observable `.subscribe` callback parameters are `http_body` sources (#1224).** HTTP payloads returned through injected services (Juice Shop `restfulXss` shape) now reach `DomSanitizer.bypassSecurityTrust*` sinks.
+- **Java: `println`/`write` string concats whose only dynamic fragment is `ESAPI.encoder().encodeForHTML(...)` no longer emit XSS (#915).**
+- **Java: inner-class helper returning `org.apache.commons.lang.StringEscapeUtils.escapeHtml` no longer carries taint to `PrintWriter.format` / XSS sinks (#915).**
+- **JS: `JSON.parse(req.body)` → field → SQL concat reports `sql_injection` (interop IL-22, #1149).** `req.body` is a taint pattern; only `JSON.parse` (not every `.parse`) propagates const-prop taint; HTTP-anchored virtual sources cover the parse/field chain; assignment scanning skips `name = '…'` inside SQL strings without truncating object-literal RHS.
+
+### Added
+
+- **JS/TS: `prototype-pollution` (CWE-1321).** Three shapes are reported: a recursive merge helper that writes `target[k]` and recurses into `target[k]` (so a `__proto__` key reaches `Object.prototype`), a set-by-path helper that walks an object along `path.split(…)` (or a `keys` / `segments` / `parts` collection) and writes through the cursor, and `obj[a][b] = …` with both keys taken from `req.body` / `req.query` / `req.params`. Precision first: a `__proto__` / `constructor` / `prototype` mention, a membership test or a key-check function on the key, or an `Object.create(null)` target is a guard; shallow copies, deep clones that recurse only on the source, character iteration and maps filled without a walk are not reported. Severity high for request keys, medium for the helpers. Fixtures: vulnerable / fixed / near-miss TypeScript files under `tests/fixtures/prototype-pollution/`. `cognium-dev recheck` reports it keyed by CWE × declaration, so a guard added to the helper reads `gone`. Disable with `disabledPasses: ['prototype-pollution']`.
+- **JS/TS: `missing-auth-middleware` (CWE-862), a state-changing route by id left without the authentication its siblings have.** In one file, a `post` / `put` / `patch` / `delete` route on an Express-style router whose path has a `:param` and which has no middleware at all is reported, severity high, when another route of the same router and resource carries an authentication middleware (`requireAuth`, `isAuthenticated`, `ensureLoggedIn`, `passport.authenticate(...)`, `verifyToken`, `jwt(...)`, …). Precision first: a file with a router-level `.use(<auth>)` is skipped, a role guard alone on the sibling is not evidence, any middleware on the route itself (it may be the guard) and handlers that check `req.user` / `req.session` or answer 401 / 403 abstain, and `get` routes and routes without a `:param` are not considered. Fixtures: vulnerable / fixed / near-miss TypeScript files under `tests/fixtures/missing-auth-middleware/`. `cognium-dev recheck` reports it keyed by CWE × declaration, so adding the middleware reads `gone`. Disable with `disabledPasses: ['missing-auth-middleware']`.
+- **JS/TS: `hardcoded-secret-argument` (CWE-798), a string literal passed as an API's key, secret or password.** `jwt.sign(payload, 'literal')`, `jwt.verify`, `createHmac(alg, 'literal')`, `createCipheriv(alg, 'literal', iv)`, `session({ secret: 'literal' })`, `cookieParser('literal')`, `cookieSession({ keys: ['literal'] })`, `expressjwt({ secret })`, `new JwtStrategy({ secretOrKey })`, `mysql.createPool({ password })`, `new Pool({ password })` (pg), `new Sequelize(db, user, 'literal')` and `nodemailer.createTransport({ auth: { pass } })` are reported as `hardcoded-credential`, severity high, when the callee is bound to that package by `import` / `require`. The line-based `scan-secrets` layers need a length / entropy gate and a prefixed keyword, so they missed `password: 'Winter2024!'` and `secret: 'keyboard cat'`; here the argument position is the evidence. Abstains on non-literals (`process.env.*`, config reads, template substitutions), placeholders, unbound look-alike names and test paths. Fixtures: vulnerable / fixed / near-miss TypeScript files under `tests/fixtures/hardcoded-secret-argument/`; `cognium-dev recheck` keys the finding CWE-798 × declaration, so moving the secret to the environment reads `gone`. Disable with `disabledPasses: ['hardcoded-secret-argument']`.
+- **JS/TS: `redos-regex-literal` (CWE-1333), a request value matched against a regex that backtracks exponentially.** `RE.test(x)` / `RE.exec(x)` / `x.match(RE)` / `matchAll` / `search` / `replace` / `replaceAll` / `split`, where `RE` is a regex literal (or a `const` bound to one) with a group repeated without bound whose body can repeat an unbounded part on its own (`^([a-z0-9]+)*@x\.com$`, `^(\w+\s?)*$`) and something mandatory after it, and `x` is a `req.query` / `body` / `params` / `headers` / `cookies` value or a local defined from one (up to three hops), is reported, severity medium. Precision first: bodies with another required part (`(\d+,)*`), overlapping alternations, polynomial shapes, backreferences, the `v` flag, groups nested more than 100 deep or a source over 10,000 characters (no stack overflow on a pathological literal), derived values (`.length`, function results) and values not from the request do not match. The regex structure is read by a hand-written parser, not a regex. Fixtures: vulnerable / fixed / near-miss TypeScript files under `tests/fixtures/redos-regex-literal/`. `cognium-dev recheck` reports it keyed by CWE × declaration, so rewriting the regex reads `gone`. Complements the `redos` taint sink (`new RegExp(<request value>)`). Disable with `disabledPasses: ['redos-regex-literal']`.
+
+- **JS/TS: `csrf-samesite-none-session` (CWE-352), a session cookie sent cross-site with no CSRF defence.** An Express `session({...})` / `cookieSession({...})` mounted with `sameSite: 'none'` (or `false`) in a file that registers state-changing routes and has no CSRF token middleware or origin / referer check is reported at the session line, severity high. Only the explicit opt-out is decidable from one file (unset `sameSite` means the browser's `Lax` default applies; a token middleware may live in another module), so: any `csrf` / `csurf` / `xsrf` / `lusca` text, an origin / referer read, a computed `sameSite`, `'lax'` / `'strict'`, or no state-changing route abstain. Fixtures under `tests/fixtures/csrf-samesite-none-session/`. `cognium-dev recheck` reports it keyed by CWE × declaration, so `sameSite: 'lax'` reads `gone`. Disable with `disabledPasses: ['csrf-samesite-none-session']`.
+
+- **JS/TS: `sensitive-data-in-log` (CWE-532), a secret-named value written to a log call.** A password, client secret, API key, access / refresh / ID / session token, private key or `Authorization` value that reaches `console.*`, a `logger` / `log` / `*Logger` method, or a bare `log` / `logLine` / `logError`-style function unchanged (a reference, a template substitution, a `+` operand, an object-literal value, an array element, `JSON.stringify` / `String`) is reported, severity medium. Precision first: any other call around the value (masking, hashing, slicing), a member read past it (`.length`), `typeof` / `!` / ternaries, derived names (`passwordHash`, `apiKeyId`, `tokenCount`), flag-like names (`hasPassword`), a bare `token`, and non-logger receivers do not match. Fixtures: vulnerable / fixed / near-miss TypeScript files under `tests/fixtures/sensitive-data-in-log/`. `cognium-dev recheck` reports it keyed by CWE × declaration, so a fix that removes the secret from the log reads `gone`. Disable with `disabledPasses: ['sensitive-data-in-log']`.
+
+- **Regression test for SecuriBench Basic30 field-sensitive heap taint (`d.value2` only, not `d.value1`) (#1198 S5).**
+
+- **Resolved Java dependency sets per module (E02, #1219): `parseMavenModuleDependencies(output)` and `parseGradleProjectDependencies(files)`.** A reactor `mvn dependency:tree` / `dependency:list` prints one tree (or list) per module; `parseMavenResolvedDependencies` merges them into one set and keeps only the first of equal entries, so a later module lost its own copy, `direct` and `via`. `parseMavenModuleDependencies` returns one set per module (`groupId:artifactId`, version and packaging from the tree's root line; from list output, the plugin header's module name), each read as `parseMavenResolvedDependencies` reads it. `parseGradleProjectDependencies` groups a multi-project build's lockfiles into one set per project directory: `<project>/gradle.lockfile`, else the older `<project>/gradle/dependency-locks/<configuration>.lockfile` files (a coordinate is `dev` only when every configuration that resolved it is a test one); `buildscript-gradle.lockfile` and other files are ignored. Per-module sets let an advisory match say which modules it reaches, as `parsePnpmLockImporterDependencies` does for pnpm importers. Additive: the flat parsers, `collectDependencies` and scans are unchanged.
+- **Graph-store T6 on `facts@2`, walked by the producer: `T6Graph` and `t6RowsFromArrow`.** From the relations a store loads (`decl`, `call`, `ref`, `entries`), `T6Graph` answers blast radius, reach from declared entries and impacted tests, each with a `strong` / `weak` tier, with the semantics of the consumer's T6 rule program edge for edge (`call` strong unless `inferred`, `ref` weak, `contains`, `loads_parent`, module loads). It is the answer a store running those rules must give. `t6RowsFromArrow` reads the columns from `facts@2` Arrow IPC (optional `apache-arrow`). `facts@2` carries no `field` / `import` edges, entry `constructors` or unresolved sites, so each answer is a lower bound where those could add a path.
+- **`blastRadius(input, changed, graph?)` and `impactedTests(input, changed, graph?)`** on the reach core (`graph-facts`), and `ReachGraph` exported from the package root: the declarations that reach a changed one, and the `test` entries that are changed or reach one, over the reach core's edges walked backwards. Pass a `ReachGraph` to reuse it (and its reverse index) across changes.
+- **`AnalyzerOptions.onFileStart` / `onFileEnd`**: called when `analyze()` starts and ends a file (also when it throws; markup files call them again per extracted script, same path). A caller can bound a file's time from outside the analysing thread, which `fileTimeoutMs` cannot do for one synchronous step (S3). Omitted: no effect.
+
+### Fixed
+
+- **Java: `addAll` copies per-index list taint; `List.get` on a literal slot stays tainted when the list also holds tainted elements (SecuriBench Collections8, #476).**
+- **JS: exported cve-intake shell handlers keep `command_injection` flows (#817).** Module-exported functions whose parameters reach `child_process.exec*` are treated like the existing `cache_poisoning` intake exception so single-file CLI scans match the cve-intake-b gate. Built-CLI regression tests pin flow-combo c04 Java xpath and PAT-CVE-2021-21315 JS; the ts-rust-parity `format_string` rust cell is still open (literal `"{}"` format string; engine reports `xss`).
+- **JS: `cache_poisoning` (CWE-524) on the cve-intake parameter shapes (#900).** Three changes:
+  - A local whose initializer wraps over several lines now links the uses on its continuation lines, as Java (#597) and Go (#267) already did. A parameter inside a multi-line object literal (`const doc = {\n  issuer: 'https://' + host,\n};`) now reaches the later `cache.set('oidc-discovery', doc)`. Uses inside a function, arrow function or class in the value are not linked.
+  - `cache.fetch(key, () => value)` (a read-through cache) is a `cache_poisoning` sink on the callback argument.
+  - A cache write whose key names the viewer (`viewer`, `user`, `currentUser`, `session`, `principal`, `account`, `actor` and their `…Id` forms, or `req.user` / `ctx.session`) is a per-viewer entry, not a shared one, and is not a sink. Names inside the key's string text do not count.
+  - A built-CLI test on the byte-exact intake fixtures sits beside the CLI's tests (`packages/cli/tests/gates-nightly/`).
+- **JS/TS: a same-named local in one handler no longer taints `req.query.*` (or `request.*` / `ctx.*`) in another via identifier matching (#1223).** Request-proxy property names are ignored for cross-function variable pairing; export-style handlers get function scopes from the source when `types[].methods` is empty.
+- **JS: libxmljs `parseXml` / `parseXmlString` with `noent: false` (or default-safe inline options) no longer emits flow-backed `xxe` (#1222).**
+- **S3: eight regexes backtracked exponentially, and a crafted Go line could hold `analyze()` for hours.** A line of an `if` with many `||` disjuncts and no `!map[key]` (the Go map allow-list guard) doubled the time with every disjunct: about 4 s at 112 bytes and 39 s at 124 bytes, past any `fileTimeoutMs` because the step is synchronous. Fixed by removing the overlap that let two quantifiers take the same characters:
+  - the Go map allow-list guard: the whitespace after each `||` is taken by the next disjunct, not by a second quantifier (same matches);
+  - the quoted-string matcher `(?:\\.|(?!\1).)*` (secret scanning, f-string detection, string stripping in taint propagation; 5 sites): a backslash is now only the start of an escape (`[^\\\n\r\u2028\u2029]` instead of `.`), so an unterminated literal that ends in a lone backslash before a quote no longer matches;
+  - the C# interpolated-string matcher (`project-callee-escape-gate`): a `{…}` hole cannot contain `{`, and a lone `{` is one that does not open such a hole;
+  - the leading-comment skip before a `new RegExp(` template argument: a block comment ends at its first `*/`.
+- **JS: module-scope `let`/`var` on a shared top-level line (variant stored xss) links store-then-read flows across handlers (#1148).**
+- **Rust: interop IL-57 parameter → `serde_json::from_str` → `serde_yaml::from_str` reports deserialization without `speculativeParamSources` (#1150).**
+- **JS: caller-controlled parameters may reach `cache_poisoning` sinks on the default path (cve-intake `oidc_discovery_cache` shape; #900).**
+- **Java: 2-D row assigned from `{ tainted, … }` array literal taints row cells (`matrix@0[0]`); SecuriBench Arrays10 (#476).**
+- **Java: inner-class helper that only returns `HtmlUtils.htmlEscape(param)` no longer carries taint to `getWriter().format(...)` / XSS sinks (#915).**
+
+### Changed
+- **`facts@2` is the default fact schema (graph-store T5a.1b).** `buildJavaGraph(files, { emitFacts: 'arrow' })` now writes the twelve `facts@2` relations; `factsScheme: 'facts@1'` still writes the eight `facts@1` relations, byte for byte as before. The graph JSON is unchanged, and nothing is written without `emitFacts`. A caller that reads `facts@1` from `emitFacts` alone must now pass `factsScheme: 'facts@1'`.
+
+### Fixed
+- fix(java): field-carried command argv via constructor + addArgument reaches ProcessBuilder at execute (#1199)
+- fix(java): getTheValue pass-through gate for ldap_injection (#1197)
+- fix(circle-ir): Java DFG defs and uses carry column so same-line lambda node ids stay in the method body (#1196)
+
+### Tests
+- test(circle-ir): lock non-helper OWASP trustbound session shapes for #589 S5 (#589)
+
+## [4.20.0] - 2026-11-06
+
+### Changes
+
+- feat(circle-ir): facts@2 for TypeScript/JavaScript graphs (`tsGraphFact2Set`) and `call.declaring` on TS polymorphic rows (`via === to`); opt-in, facts@1 unchanged (#1139)
+- test(circle-ir): lock static-parity py log_injection shape for gates #107 (#1151 S2)
+- fix(circle-ir): settle linked workspace packages once per scope for a shortest via (#1158 review)
+- fix(circle-ir): skip inline parse-args path_traversal FP (#1156) (#1160)
+- fix(circle-ir): scope Java method-local CP taint to declaring method (#814 S1) (#1155)
+- fix(circle-ir): strongest scope through link diamonds, shortest via, fail-closed --pin (#1157 review) (#1158)
+- feat(circle-ir): per-importer pnpm reach and offline snapshot match (#1005) (#1157)
+- fix(circle-ir): credit JS path allow-list helper before readFileSync (#1146) (#1153)
+- fix(circle-ir): drop redos when RegExp uses escapeRegExp on tainted input (#1147)
+- fix(circle-ir): JS/TS .length of a tainted value carries no taint across a cross-file call (#1137) (#1142)
+- fix(circle-ir): JS/TS branch-only file read does not taint helper return (#1136) (#1144)
+- fix(circle-ir): cap env_input SSRF severity at medium (#1138) (#1143)
+- fix(circle-ir): JS/TS callee summary and property-vs-local for cross-file sinks (#1120 follow-up) (#1135)
+- fix(java): an encoder inside a same-file static helper sanitizes the cross-file path (#915) (#1126)
+- fix(java): a property read only in a branch condition does not taint a helper's return (#914) (#1125)
+- fix(circle-ir): JS/TS Node stream closed with end() is not a resource leak (#1122) (#1123)
+- fix(circle-ir): PEP 508 spec ends at line continuation, options and comments (#1127)
+- fix(circle-ir): caller-body cross-file sinks respect argPositions (#1120) (#1134)
+- fix(circle-ir): Nest decoratorPath undefined for non-literal args (#1129) (#1140)
+- fix(csharp): constant-caller gate covers CommandText then Execute*() (#636) (#1117)
+- fix(csharp): credit a Uri(...).Host == literal guard for open_redirect (#946) (#1116)
+- fix(circle-ir): PyPI matcher: epochs, PEP 440 versions-list equality, declared ranges (#1127)
+- fix(rust): SSRF on a fixed host passed through a const (#922) (#1115)
+- feat(circle-ir): PyPI advisory matching (PEP 440 order, PEP 503 names) (#1119)
+- fix(circle-ir): Java InputStream.read(buf) is not a file_input source (#1113) (#1118)
+- feat(circle-ir): facts@2 schema file, ids@0.1 file kind and opt-in Java emission (graph-store T5a.1) (#1111)
+- fix(circle-ir): OWASP xss FPs through an inner-class helper (#915 slice) (#1104)
+- fix(circle-ir): OWASP getTheParameter cmdi through static helper (#1107 S1) (#1109)
+- fix(circle-ir): check fileTimeoutMs after each extraction phase (#1007) (#1103)
+- fix(java-graph): getSuperclass() walk through a variable bounds forName (#1092 follow-up) (#1108)
+- fix(java): List-carried taint survives a trailing line comment (#1105) (#1106)
+- fix(circle-ir): two more benign TS parse recoveries are not partial (#1004)
+- fix(circle-ir): a Map receiver .get() is not a db_input source (#985) (#1101)
+- #1092: read only the local in scope at the Class.forName (#1100)
+- fix(graph-facts): Class.forName registrations: scope by from, resolve local constants, bound by use (#1092) (#1096)
+- test(java): #914 S7 ThingFactory constant cmdi regression (#914) (#1099)
+- fix(ts): literal-only local Map reads not plugin_param sources (#985 S2) (#1098)
+- fix(circle-ir): JS/TS callee sink built from literals is not reached by a tainted argument (dogfood 2026-11-02) (#1097)
+- fix(circle-ir): X[]::new / Ext::new method references no longer name every constructor (#1093) (#1095)
+- fix(java): stop env_input mis-tag on derived locals before getProperty (#914 S6) (#1094)
+- fix(java): #1035 XXE pass — comment-safe #173 and chained DocumentBuilder.parse (#1090)
+- fix(circle-ir): SBOM reads maven-dependency-plugin artifactItems and Tycho *.target Maven locations (#1077) (#1089)
+- fix(java): pickScopedSource matches sink tainted var (#914 S5) (#1088)
+- fix(java): getTheValue pass-through gate for cmdi/path on instance helpers (#914 S4) (#1087)
+- fix(java): getTheValue map-helper sqli FPs on per-file analyze (#913 S5) (#1086)
+- chore(deps-dev): Bump @types/node (#1083)
+- fix(java): getTheValue pass-through gate for sql_injection (#913 S4) (#1082)
+- fix(java): stop exec cwd getProperty pairing as command_injection (#914 S3) (#1081)
+- agent: trust_boundary pass-through gate for getTheValue-only callers (#917 S4) (#1080)
+- fix(circle-ir): Python list-form subprocess keeps the sink when argv[0] is a shell or runs its argv (#1072) (#1078)
+- fix(circle-ir): better-sqlite3 / sqlite3 db.prepare(sql) is a sql_injection sink (#1073) (#1075)
+- fix(circle-ir): JS cross-file flow needs the carried value to reach the sink's arguments (#1076)
+- facts@1: flow filled on fixed-width ids@0.1 node ids (stable-ids 1a); multi-level native key sort
+- fix(circle-ir): an OSV affected[] entry without package is skipped, not a crash (#1067) (#1069)
+- fix(circle-ir): prepared-statement .get/.all/.run take bound parameters, not SQL (#1074)
+- facts@1: reconciled contract (sets, no nulls, hex, di), unique keys, columnar emitter
+- fix(circle-ir): a fixed program that runs its argv as a command keeps the command_injection sink (#1066) (#1071)
+- facts@1 schema (proposed) and Arrow emission behind emitFacts / --facts-arrow
+- fix(circle-ir): js-yaml load on js-yaml >= 4 or with a safe schema is not a deserialization sink (#1068)
+
+## [Unreleased]
+
+### Added
+- **`parsePnpmLockImporterDependencies(pnpmLock)`: one dependency set per pnpm workspace importer (#1005, dependency tool T-DT3.8 library half).** Each set holds only what that importer reaches, following `link:` workspace packages (their production and optional dependencies; a dev link makes everything behind it `dev`), with `scope` (the strongest way the importer reaches the package, also through diamond-shaped workspace links), `direct` and a shortest `via` path within that scope. Pass each set to `matchAdvisories` to name the projects an advisory reaches. Additive: `parsePnpmLockDependencies` and `collectDependencies` are unchanged.
+- **`scripts/osv-snapshot.mjs match <snapshot> <pnpm-lock.yaml> [--pin sha256:…]`** (not published): verifies the offline snapshot against its `PROVENANCE` and the pin, then reports advisory matches per importer. `--pin` (or `--pin=`) without a well-formed `sha256:` digest, an unknown option or a wrong number of paths is refused. Reads two local inputs; no network.
+- **java-graph: entries from registering files passed in as text** (`buildJavaGraph(files, { registrationFiles })`). Classes a runtime instantiates, and methods it calls, because a file outside Java source names them had no entry, so reach and dead code saw them as unreached. The library reads no files: the caller passes them, and `registrationFileKind(path)` says which paths count.
+  - **OSGi Declarative Services** (`OSGI-INF/*.xml`): each component's `implementation` class is an `osgi-ds` entry. The methods the runtime calls by name are entries too: `activate` / `deactivate` / `modified` on the component and `bind` / `unbind` / `updated` on its references (`declared`), and the default `activate` / `deactivate` when the class has them (`conventional`). A member is looked up in the class, then its in-tree superclasses. `provide` interfaces are contracts, not entries.
+  - **`META-INF/MANIFEST.MF`**: `Bundle-Activator` is a `lifecycle` entry. With the new `exportedPackages` option (off by default; a library's surface) the public top-level types of each `Export-Package` package are `export` entries.
+  - **Eclipse `plugin.xml` / `fragment.xml`**: every `class` attribute inside an `<extension>` (any `:data` suffix dropped) is an `extension-point` entry; the evidence names the point.
+  - **Servlet `web.xml` / `web-fragment.xml`**: `servlet-class` is a `route` (method `ANY`, its `servlet-mapping` URL patterns as paths), `filter-class` a middleware `route` (`USE`), `listener-class` a `lifecycle` entry.
+  - A class entry is on the type, a member entry on the method. The evidence is the registration form (`OSGI-INF implementation`, `Bundle-Activator`, `plugin.xml <point>`, `web.xml servlet-class` …), never a path or line, so it is the `facts@1` `source` and a moved registration keeps its key. The rows fit `facts@1` `entries` with no schema change (`osgi-ds` and `extension-point` were already in its vocabulary).
+  - A name the tree does not declare is a `manifest-unresolved` registration with the file and line, never dropped; reach does not attach these to declarations. Such a name has no enclosing declaration, so `facts@2` does not write it as a `registration` row (that relation is keyed by the body holding the site; before, `javaGraphFact2Set` / `tsGraphFact2Set` threw on a registration outside the graph's source files). It stays in the graph's `unresolvedRegistrations`. The rows fit `facts@2` `entries` as they fit `facts@1`.
+  - `EntryKind` gains `osgi-ds` and `extension-point`; both are roots by default. New exports: `registrationFileKind`, `scanRegistrations` and their types. `MANIFEST.MF` header names are matched case-insensitively. In `plugin.xml`, only `class` attributes are read (not `contributorClass`, `defaultHandler` and the like).
+  - A small tolerant XML reader (`src/navigation/xml-scan.ts`, no new dependency) does the parsing. It is linear in its input: an end tag that names no open element is skipped without a scan, and nesting deeper than `XML_MAX_DEPTH` (256) stops the read. It tolerates unquoted attribute values, `/ >`, junk inside a tag, and quotes inside comments of a DOCTYPE subset; it expands no entity beyond the predefined five and character references.
+
+### Changed
+- **Reach: a Java entry can name the constructors its runtime runs** (`TsEntry.constructors`), and reach roots them one `contains` step from the entry's type. A class a registering file names, and a `META-INF/services` class, carry the constructors their runtime calls to instantiate them: the public no-arg constructor, or, when the class declares none (constructor injection), its public constructors. A class with no declared constructor names none (its implicit one has no declaration). `Class.forName` entries load the class and name no constructor, as before. **Answers change:** the public no-arg constructors of service-file classes are now `live`. `walkFrom` roots take an optional `from` (and the function an optional `rootIndex`); `deadCode`'s test walk roots the same way.
+
+### Fixed
+- **Stable ids: TypeScript/JavaScript node ids are now as stable as their body id.** `assignNodeIds` places a node in the innermost declaration that encloses it. CFG blocks, and most TS/JS DFG defs and uses, had a line but no column, so on a line shared with a callback (`const ys = xs.map((x) => {`) the enclosing function's nodes went into the callback. Reformatting a body keeps its body id, but it could still re-key its node ids, for example by moving a callback onto the line of the statement that holds it.
+  - **IR (additive):** CFG blocks carry an optional `start_column`, on every block built from a statement or a function body, in every language. TS/JS DFG defs and uses always carry `column`. Java and C# defs and uses are unchanged.
+  - `assignNodeIds` places a block by its start line and column when it has one, as it already did for calls, defs and uses.
+  - **TS/JS DFG: a lone arrow parameter without parentheses is a param def.** `x => x + 1` now gives the same `param` def as `(x) => x + 1` (the arrow's `parameter` field was passed in but only a parameter list was read). Uses of `x` in such a callback now reach that def instead of an outer `x` or nothing, as they already did with parentheses.
+  - **Ids change (once), from `assignNodeIds`:**
+    - TS/JS node ids (blocks, defs and uses) on such shared lines, and in callbacks with a lone unparenthesized parameter, are re-keyed. So are the TypeScript `facts@2` `flow` rows built from them.
+    - Java and Go `cfg_blocks` node ids are re-keyed where a body shares a line with a nested function. These are the other languages with stable ids whose blocks gained `start_column`. A Java method holding a lambda or an anonymous class, or a one-line Go function with a `func` literal, used to have its own blocks placed in the nested function. They are now placed in the method, which is correct.
+    - Declaration and body ids do not change. Java `facts@1` and `facts@2` bytes do not change either: they key only defs and uses, and the Java DFG gains no columns.
+- **Java: encoder-only helpers that assign an HTML encoder to a local then return it keep `trust_boundary` on session writes (#589 S4).** `String bar = escapeHtml(param); return bar;` in a same-file inner class or static helper is treated like a direct encoder call for sanitizer scope, so OWASP BenchmarkJava trustbound cases through `Test.doSomething` recover CWE-501 without dropping XSS credit on HTML output sinks.
+- **java-graph / navigation: explicit `super(…)` and `this(…)` constructor invocations are call sites.** They produced neither a `call` nor an `unresolved` row, so a superclass constructor reached only through its subclasses' constructors had no caller, and dead code and reach treated it, and every class called only that way, as uncalled. Under `navigationTypes` the call extractor now emits each invocation as a constructor call named as written (`super` / `this`) at its own position, naming the class whose constructor runs: the enclosing class's superclass as written (`Object` when it names none) or the enclosing type. The superclass name is resolved the way Java scopes it: a member type of an enclosing class, declared there or inherited from a supertype in the tree, comes before an imported or same-package type of the same name (the class's own members are not in scope in its `extends` clause). `CallInfo.in_type` (new, optional) carries the class that holds the invocation. The navigation index binds it like `new T(…)`, choosing the overload from the arguments: `exact` to that constructor, to the type when it declares none, `overload-ambiguous` when the arguments do not decide, and `external` (with `receiver`, e.g. `java.lang.Exception`) when the superclass is outside the tree. `outer.super(…)`, nested classes, enums and records are covered. An implicit `super()` is written nowhere, so it adds no row (`facts@1` `call` rows are sites in the source, each with the name written there). The default IR (no `navigationTypes`), which the SAST passes read, is unchanged. **Answers change:** more `call` and `unresolved` rows in the Java graph and its `facts@1` relations; superclass constructors and the classes behind them move from dead or may-be-live to live where a subclass constructor is reached.
+- **navigation: an overload whose parameter types are the arguments' own types wins over one the arguments only possibly fit.** `this(ctx, copy, (String) null)` with overloads `(Properties, Rec, String)` and `(Properties, ResultSet, String)` was `overload-ambiguous` when `Rec` has a supertype outside the tree, because `Rec` might be a `ResultSet`. But wherever the `ResultSet` overload applies, `Rec` is a `ResultSet` and the `Rec` overload is the more specific one, so the most-specific test now counts a reference parameter type identical to the argument's own resolved type. An argument of a narrower type than the parameter is a different question and stays ambiguous. Applies to every call the index binds (`new`, method calls, `super(…)` / `this(…)`); the SAST resolver is untouched.
+- **JS/TS: the #1156 nested-sink rule now covers every emitter and any source call (#1156 follow-up).** #1160 skipped `.parse(...)`-wrapped sinks only in inline colocation, so `const deps = parser.parse(fs.readFileSync(abs, 'utf-8')).map(...)` (variable-bound, the dogfood `bom/index.ts` shape) and `out.push(...parser.parse(fs.readFileSync(abs)))` still reported a same-line high `path_traversal`. `TaintPropagationPass` now drops a same-line flow when every sink of its type on the line is a call inside the parentheses of a source call of its source type, whichever emitter produced it. The flow stays when the source is nested in the sink (`fs.readFileSync(req.query.p)`) and when a sink call on the line sits outside the source call. Other languages are unchanged.
+- **Java: const-prop seeds callee parameters from same-file tainted actuals (#814 S2).** Fixpoint overlay so a helper declared above the caller still sees taint on its formals when passed tainted arguments (`foo(x)`, `this.foo(x)`; `simpleName#arity` keys; ambiguous same-arity overloads with different parameter lists skip seeding).
+- **JS/TS: no bogus same-line `io_input` → `path_traversal` when `readFileSync` is only nested inside a `.parse(...)` argument (#1156).** Inline colocation skipped for that shape; nested `JSON.parse` inside `readFileSync` args unchanged.
+- **Java: method-scoped bare-name taint for const-prop (#814 S1, partial).** Const-prop no longer exports an unscoped alias for method-local tainted names (class fields still expose a bare name for cross-method reads per #614). Stops handler locals from tainting a same-named `@sanitizer` parameter via bare-name collision (`Validator.ok(ch)` shape).
+- **JS/TS: no `path_traversal` when a helper returns `path.resolve(input)` after a multi-root or single-root allow-list guard with throw/return on failure (#1146).** Credits same-file helpers that canonicalize then check `startsWith(root)` or `ROOTS.some((root) => r === root || r.startsWith(root + path.sep))` before returning the path used at `readFileSync`.
+- **JS/TS: no `redos` when `new RegExp` is built only from string literals plus `escapeRegExp` (or `escapeRe` / `escapeRegex`) on tainted input (#1145).** Concatenation and template forms whose only dynamic segment is a metacharacter escaper produce a literal pattern, not catastrophic backtracking from tainted regex structure.
+- **Cross-file: JS/TS helpers whose file read only steers a branch (#1136).** Extends the #914 branch-only source rule to JavaScript/TypeScript (including inline `readFileSync` in an `if` condition) so cross-file chaining no longer treats the read as tainting the helper's return.
+- **Severity: `env_input` → SSRF / open-redirect capped at medium (#1138, decision A).** Operator-controlled `process.env` / getenv values into `fetch` or redirect sinks stay reported but no longer gate at `--severity high`.
+- **Cross-file caller-body sinks honor `argPositions` and the sink call only (#1120).** Step 2c of `findInterproceduralTaintPaths` (and field-binding caller-body sinks) no longer credits every argument on the sink line; only dangerous arguments on the matching sink call are matched, aligning with `jsParamReachesSinkArgs`.
+
+### Added
 - **`facts@2`: the successor fact schema, opt-in** (`schemas/facts@2.json`, mirror `src/facts/schema2.ts`, locked by `tests/facts/schema2.test.ts`). `facts@1` stays the default and is unchanged, byte for byte; `facts@2` is written only under `buildJavaGraph(files, { emitFacts: 'arrow', factsScheme: 'facts@2' })`, or through `javaGraphFact2Set` and `facts2ToArrow` (Java only; graph-store plan T5a.1). Against `facts@1`:
   - **Stable file key.** Every relation that names a file carries `file` = `digest128(["ids@0.1", "file", path])` (fixed16, `factsFileKey`) instead of the dense `file_id`. This is the new `file` kind of `ids@0.1` (`fileId` / `fileIdBytes` in `stable-ids`, printed as 26 base32 characters like every other id), so adding, removing or moving a file re-keys only that file's rows.
   - **Relative site positions.** `call`, `unresolved` and the new `ref` and `registration` carry `rel_line` (the site's line minus the start line of the declaration whose body holds it) and `col`, and no file. Declaration positions move out of `decl` into the new `decl_pos` (`line`, `end_line`, `col`, `end_col`). A line shift inside a body moves no `call` or `unresolved` row.
@@ -18,7 +347,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `JavaGraph.facts` is now typed `FactsArrow | Facts2Arrow`; without `factsScheme` it holds the `FactsArrow` it held before.
 
 ### Fixed
-- **JS/TS: an interprocedural flow takes only a source that can reach the call (#1121).** In `InterproceduralPass` Scenario A, a sink inside a tainted callee was paired with the first source above the call line, anywhere in the file. A callee counts as tainted when its own parameters are speculative `interprocedural_param` sources, so a read in an unrelated function was credited to calls it never reaches (`loadRules()` → `this.saveReport(report, outputDir)`). For JavaScript and TypeScript, the source must now sit in the calling function, in a function that calls it directly or through others, or at module scope. This is the in-file counterpart of the cross-file fix for #1052. Other languages are unchanged. Dogfood: cognium-ai `circle-ir-ai/src/security-scan/scanner.ts:2615/2915/2919/2923` and `skills/bundle-loader.ts:247` (high path_traversal) no longer fire, and neither do 22 `log_injection` flows in `scanner.ts`.
+- **JS/TS: `.length` of a tainted value carries no taint across a cross-file call (#1137).** `updateMetrics(id, { files_analyzed: results.length })` no longer hands `results`' `file_input` origin to the callee's `Object.assign` sink. An argument that also uses the value itself (`data.length + data`) still does. The same JS/TS property rule as #1120 now applies to callee-parameter arguments too (`opts.report` is not the local `report`).
+- **JS/TS: a callee's parameter summary counts only the sink call's dangerous arguments, and a property is not the tainted local (#1120 follow-up to #1134).** In `fs.writeFileSync(file, JSON.stringify(data))` inside a callee, the parameter `data` is written, not used as a path, so it no longer marks the parameter as reaching a `path_traversal` sink. In caller-body sinks, `args.output` is no longer taken for the tainted local `output`; a spread `...output` still is.
+- **PyPI advisory matching: epochs, `versions` lists and declared ranges (#1127).** Three silent mistakes in the PyPI matcher added in #1119:
+  - **An epoch version now matches.** The concrete-version check ran before the PyPI rule and rejected the `!`, so `1!0.5` never matched an advisory `introduced: 0, fixed: 1!1.0`, and `0!2.0` never matched where `2.0` did. `AdvisoryEcosystem` gains an optional `isConcrete`; PyPI allows the `!`.
+  - **A `versions` list is compared by PEP 440 equality** (new optional `AdvisoryEcosystem.sameVersion`). A list holding `1.0rc1` now matches `1.0c1` and `1.0.0rc1`, and one holding `2.0` matches `2.0.0` and `2`. This is the equality the supply-chain pack's own re-match uses. Maven and npm keep OSV's exact string equality.
+  - **`parsePypiDependencies` / `parsePyprojectDependencies` keep a declared range verbatim**, as the `Dependency.version` contract says and as npm and Poetry already do: `flask>=2.0` is version `>=2.0`, not `2.0`, so a lower bound is never matched as if it were installed. One exact pin (`==2.0`, `===2.0`) is still the bare version `2.0`. `name (>=1.0)` reads as `>=1.0`; a direct reference (`name @ https://…`) is `unknown`. **Answers change:** a PyPI range spec is no longer a purl version when it has more than one clause (`requests>=2.28,<3` → `pkg:pypi/requests`), and its SBOM `version` is the spec.
+  - A requirement ends at a marker (`;`), or at whitespace followed by a line continuation (`\`), an option (`--hash=…`, `--global-option=…`) or a comment (`#`), before whitespace is removed. So a `pip-compile --generate-hashes` line (`a==1.0 \`) and `a==1.0 --hash=sha256:…` still read as the pin `1.0`, with purl `pkg:pypi/a@1.0`, as before.
+  - `comparePep440` compares numbers as digit strings, so numbers above 2^53 order exactly (`99999999999999999999.1` > `99999999999999999998.1`). `parsePep440` still returns JavaScript numbers.
+  - Not changed: OSV `limit` events are still ignored by `rangeIntervals` for every ecosystem (older shared behaviour).
+- **Java: an encoder inside a same-file static helper sanitizes the cross-file path through it (#915).** OWASP xss-04 `bar = doSomething(request, param)`, where `private static String doSomething(...)` returns `ESAPI.encoder().encodeForHTML(param)` through a local, and `param` comes from `SeparateClassRequest.getTheParameter` in another file. The project phase's caller-body path walked `param → bar` through the call and reported xss at `getWriter().format(...)`. `javaHelperStopsCallerPath` now also stops at a same-file helper whose every `return` is a string literal, a sanitizer call covering the sink type, or a local assigned exactly once from one (read from `ir.taint.sanitizers`). A raw return on any path, an encoded value with the raw value appended, a reassigned local, or the caller sinking the raw value keeps the path. OWASP BenchmarkJava: xss FP 2 → 0 of 209, TP 246 unchanged, FN lists identical.
+- **Java: a system property read only in a branch condition does not taint a helper's return (#914).** OWASP `Utils.getOSCommandString(append)` reads `String osName = System.getProperty("os.name")` only in `if (osName.indexOf("Windows") != -1)`, to choose between `"cmd.exe /c " + append` and `append`. The project phase marked the method `returnsSource` (any real source in the body), so every `exec(... getOSCommandString(...) ...)` got a cross-file `env_input` → command_injection path. In `findInterproceduralTaintPaths` step 2a, a callee whose every real source is a local declared from the source and then only read inside `if`/`while` conditions no longer returns a source. A property that is returned, used as data or copied to another local keeps the path. OWASP BenchmarkJava (CLI scan, `bench/sast/score-owasp.mjs`): cmdi FP 60 → 1 of 125, TP 126 unchanged, FN lists identical in every category.
+- **JS/TS: a Node stream closed with `end()` is no longer a resource leak (#1122).** `ResourceLeakPass` now also accepts `end()` as a release in JavaScript and TypeScript (`Writable.end()` closes the stream once it is flushed), and compares the receiver without a trailing `!` / `?`, so `ws.end()`, `ws?.end()` and `writeStream!.end(() => resolve())` all count. A stream that is never ended or closed is still reported, and other languages are unchanged. Dogfood: cognium-ai `circle-ir-ai/src/agents/mastra/swarm.ts:429` (high CWE-772) no longer fires.
 - **C#: constant-caller gate covers `CommandText` + `Execute*()` (#636).** Juliet CWE-89 builds the query with `cmd.CommandText = "…" + data;` and then calls `cmd.ExecuteScalar()` / `ExecuteNonQuery()` with no argument. The per-file flow then starts at the property write, seeded on `cmd`, not on the parameter. The gate looked the flow's variable up as a parameter, found none, and kept it, so every CWE-89 `GoodG2BSink` in `_51`–`_54` still fired (27 cases per variant). When the seeded variable is not a parameter, the gate now drops the flow only when the enclosing method has at least one seeded parameter and each of them is constant at every in-project caller (the same `callersConstant` rules). A tainted caller, a method with no in-project caller, or one tainted seeded parameter among several keeps the flow.
 - **C#: `open_redirect` behind a host-equality guard (#946).** A redirect whose target's host is compared against a constant now earns the same credit as the `ssrf` host guard: `var host = new Uri(input, UriKind.RelativeOrAbsolute).Host; return host == "app.example.com" ? Redirect(input) : Redirect("/home");`. Three changes in `csharp-sanitizer-credit.ts`:
   - `open_redirect` takes the `host` guard kind;
@@ -57,7 +397,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Java XXE (#1035): #173 empty-DocumentBuilder suppression no longer drops a live `.parse(...)` when `newDocument()` appears only in a comment.** File-level #173 heuristics run on comment-stripped source and treat any `.parse(` as parse evidence.
 
 ### Added
-- **PyPI advisory matching: `buildAdvisoryIndex(records, 'PyPI')`, `comparePep440()`, `parsePep440()`, `normalizePypiName()`.** PyPI versions are ordered by PEP 440: epoch, release with trailing zeros ignored, dev-only before pre-releases, `a` < `b` < `rc` < release < post, and local versions after their public version. The alternate spellings PEP 440 allows are normalised. Package names are compared after PEP 503 normalisation, on both the record and the dependency side. A PyPI index matches only `pypi` dependencies with a valid PEP 440 version. Callers pass exact versions (`poetry.lock`, `==` pins): `parsePypiDependencies` keeps only the version of a specifier's first clause (`>=4` reads as `4`), so declared requirements are not resolved versions.
+- **PyPI advisory matching: `buildAdvisoryIndex(records, 'PyPI')`, `comparePep440()`, `parsePep440()`, `normalizePypiName()`.** PyPI versions are ordered by PEP 440: epoch, release with trailing zeros ignored, dev-only before pre-releases, `a` < `b` < `rc` < release < post, and local versions after their public version. The alternate spellings PEP 440 allows are normalised. Package names are compared after PEP 503 normalisation, on both the record and the dependency side. A PyPI index matches only `pypi` dependencies with a valid PEP 440 version. A dependency matches with an exact version only (`poetry.lock`, `==` pins); a declared range such as `>=4` keeps its spec and never matches (#1127).
 - **`facts@1` (opt-in).** The fact relations circle-ir owes a graph store, as Arrow columns in canonical order keyed by `ids@0.1`: `schemas/facts@1.json` defines the eight relations (`files`, `decl`, `call`, `unresolved`, `flow`, `imports`, `entries`, `moved`) with column types, sort keys and chunking; `src/facts/` mirrors it in TypeScript with a total row comparator. `buildJavaGraph(files, { emitFacts: 'arrow' })` adds `graph.facts` — one Arrow IPC file per relation plus a manifest — as a post-pass over the finished `java-graph@0.1`; two runs give byte-identical files. Off by default: without the option the graph is exactly what it was. Needs the new optional dependency `apache-arrow` (pinned 21.1.0, loaded on first use, external to the browser and core bundles). `moved` is empty from one snapshot.
   - **`flow` filled (stable-ids decision 1a, 2026-11-01).** An `ids@0.1` node id has a fixed-width form: `digest128([ids@0.1, node, <body_id>, <kind>, <ordinal>])` — the enclosing declaration's printed body id, the node kind (`block`, `def`, `use`, `call`) and its per-body ordinal — so it fits a `fixed16` column like every other id (`nodeIdBytes`, `nodeIdBytesOfPrinted`, `printedNodeId`; `schemas/facts@1.json` `node_id` carries the inputs and a test vector). The post-pass writes one `def-use` row per DFG use with a reaching definition in its file, `from_id` the definition's node, `to_id` the use's; an edit to one method re-keys only that method's rows. `taint` rows are not written yet. `JavaFactsInput.dfg` carries the file's DFG; `buildJavaGraph` passes the IR it already has.
   - **Contract** (the graph-store reconciliation of 2026-11-01, decisions 1–11): ids and hashes are 128-bit `FixedSizeBinary(16)`; relations are **sets** — exact duplicates are dropped after the canonical sort and counted per relation in the manifest (`duplicates_dropped`); **no nulls** — `unresolved.receiver` is the empty string when unknown and `decl.body_hash` all-zero bytes when the engine derived none; the entry kind `bean` is written as `di`; schema metadata keys `facts` (`facts@1`), `ids`, `engine`, `parser`; the manifest's file-byte `blake3` is hex.
@@ -642,6 +982,9 @@ trustbound each gain true positives from the switch fix. On Juliet Java 1.3
 ## [Unreleased]
 
 ### Fixed
+- **JS/TS: Angular `DomSanitizer.bypassSecurityTrust*` fires as an `xss` sink again (#1171).** It is registered as the sink (#184), but it was also on the JS XSS sanitizer list, so sink-filter Stage 7 dropped every such sink on its own line. It is off the sanitizer list now. Real sanitizers on the line (DOMPurify, `escapeHtml`, …) still suppress, and a literal argument is still not a flow.
+- **JS/TS: legacy MongoDB collection `update` / `remove` / `findAndModify` are `nosql_injection` sinks (#1172).** `db.reviewsCollection.update({ _id: req.body.id }, …)` (the legacy driver, MarsDB or NeDB, e.g. Juice Shop's noSqlReviews challenge) was reported only as `external_taint_escape`. The new entries are scoped to the `Collection` class on the filter argument, so crypto `hash.update(x)` and other bare `update` calls are not sinks. A new sink-filter stage (15h2) drops a JS/TS `nosql_injection` sink when every request-derived reference in its filter argument is first rejected by `if (typeof <ref> !== 'string') { …; return }` (the publisher's correct fix for Juice Shop noSqlReviews). That guard rules out an operator object. An `&&` condition, a guard on another field, or a guard that does not reject are not credited.
+- **TS: a type-annotated tainted declaration keeps its xss sinks (#1173).** In `let q: string = <source>`, the JS/TS forward-taint scan tracked the type (`string`) instead of `q`, so sink-filter Stage 7 dropped every xss sink fed by an annotated declaration (e.g. Angular `this.route.snapshot.queryParams` into `innerHTML`). The scan now skips the annotation, the same shape the assignment scan already uses. An arrow-typed initializer is not mistaken for one.
 
 - **#541: the serde data formats that #484 silently uncovered are registered
   again.** 4.9.28 removed the classless `from_str` / `from_slice`

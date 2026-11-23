@@ -3,10 +3,19 @@
  *
  * Today's CFG blocks, DFG defs and uses and call sites carry sequential ids
  * per file, so an edit anywhere shifts every id after it. Here each IR node
- * is assigned to the innermost declaration whose span encloses it, and its
- * index counts only the nodes of the same array inside that same body. An
- * edit to one function therefore leaves every other function's node ids
- * unchanged, and the index is safe because a body id names one body version.
+ * is assigned to the innermost declaration whose span encloses its start
+ * position, and its index counts only the nodes of the same array inside that
+ * same body. An edit to one function therefore leaves every other function's
+ * node ids unchanged, and the index is safe because a body id names one body
+ * version.
+ *
+ * A node is placed by line and column wherever the IR gives a column (calls,
+ * CFG blocks, JavaScript/TypeScript defs and uses). That is what keeps node
+ * ids as stable as the body id: a callback written on the same line as code of
+ * its enclosing function is told apart from that code, so reformatting a body
+ * — which keeps its body id — keeps its node ids too. A node with a line only
+ * goes to the innermost declaration on that line (a CFG block: enclosing all
+ * of its lines).
  */
 
 import type { CFG, CallInfo, DFG } from '../types/index.js';
@@ -202,13 +211,14 @@ export class NodeIdWriter {
  * Node ids parallel to the IR arrays: `<body_id>/b<n>` for CFG blocks,
  * `/d<n>` and `/u<n>` for DFG defs and uses, `/c<n>` for call sites, where
  * `n` counts that kind inside that body in array order. Positions are
- * matched by line and, where the IR carries one, column; a CFG block goes to
- * the innermost declaration that encloses all of its lines.
+ * matched by line and, where the IR carries one, column (a CFG block by its
+ * `start_line` and `start_column`); a CFG block without a column goes to the
+ * innermost declaration that encloses all of its lines.
  */
 export function assignNodeIds(file: StableIdFile, ir: NodeIdSource): StableNodeIds {
   const loc = new Locator(file);
   return {
-    cfg_blocks: keyAll(file, ir.cfg?.blocks ?? [], 'block', b => loc.range(b.start_line, b.end_line)),
+    cfg_blocks: keyAll(file, ir.cfg?.blocks ?? [], 'block', (b, at) => (b.start_column === undefined ? loc.range(b.start_line, b.end_line) : at(b.start_line, b.start_column))),
     dfg_defs: keyAll(file, ir.dfg?.defs ?? [], 'def', (d, at) => at(d.line, d.column)),
     dfg_uses: keyAll(file, ir.dfg?.uses ?? [], 'use', (u, at) => at(u.line, u.column)),
     calls: keyAll(file, ir.calls ?? [], 'call', (c, at) => at(c.location.line, c.location.column)),

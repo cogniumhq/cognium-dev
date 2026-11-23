@@ -74,13 +74,18 @@ npm run typecheck
 success "Typecheck passed"
 
 # ── Bump both packages in sync ──────────────────────────────────────────────────
+# --workspaces-update=false: inside a workspace, `npm version` also reifies the
+# tree. Right after the lib bump circle-ir is X+1 while packages/cli still pins
+# circle-ir exactly to X, so npm installs circle-ir@X from the registry into
+# packages/cli/node_modules/circle-ir and the CLI build guard (cognium-dev#383)
+# refuses the nested copy. The root lockfile is synced once below instead.
 info "Bumping circle-ir ($BUMP)..."
-(cd "$LIB_DIR" && npm version "$BUMP" --no-git-tag-version >/dev/null)
+(cd "$LIB_DIR" && npm version "$BUMP" --no-git-tag-version --workspaces-update=false >/dev/null)
 NEW_VERSION=$(node -p "require('./$LIB_DIR/package.json').version")
 success "circle-ir: $LIB_OLD → $NEW_VERSION"
 
 info "Bumping cognium-dev to $NEW_VERSION..."
-(cd "$CLI_DIR" && npm version "$NEW_VERSION" --no-git-tag-version --allow-same-version >/dev/null)
+(cd "$CLI_DIR" && npm version "$NEW_VERSION" --no-git-tag-version --allow-same-version --workspaces-update=false >/dev/null)
 success "cognium-dev: $CLI_OLD → $NEW_VERSION"
 
 # ── Update CLI's circle-ir dep ──────────────────────────────────────────────────

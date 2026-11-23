@@ -213,6 +213,12 @@ Found 2 vulnerability(ies) in 1 file(s)
 
 Use `-v` flag to see all scanned files including clean ones.
 
+**Incomplete analysis is never silent:** a file that was not analysed (an analysis error, or `--file-timeout-ms`) prints `[ERROR]`, and a file with syntax errors prints `[PARTIAL]`, because the parser could not read the code around them. Both are counted on the final status line and in the summary. JSON has `summary.errors`, `summary.filesWithParseErrors`, `results[].parse_errors` and `summary.executionSuccessful`. SARIF lists each case, and an exceeded budget, in `runs[0].invocations[0].toolExecutionNotifications`, each with a level, the file location and a `properties.reason`. `executionSuccessful` is `false` when a file was not analysed or a budget cut the analysis short.
+
+In a directory scan, the `require-entry-path` gate drops high and critical security findings that no entry point reaches. The number dropped is printed in text output, given as `summary.entryPathDropped` in JSON and as a SARIF `note`, together with the flag that keeps them (`--disable-pass require-entry-path`).
+
+A scan that finds no supported files still writes its JSON or SARIF report, to stdout or to `-o`. The SARIF run is valid, has no results and carries a `no-files` notification, so a CI step that uploads it does not fail on a missing file.
+
 ### Output streams (stdout vs stderr)
 
 `cognium-dev` follows the standard CLI convention: machine-readable payload on **stdout**, diagnostics on **stderr**.
@@ -291,7 +297,7 @@ Found 1 security finding(s) in 1 file(s)
 Also found 2 code quality finding(s) in 1 file(s)
 ```
 
-**Exit codes:** The CLI exits `1` only when **security** findings are present (so CI pipelines gate on vulnerabilities without being blocked by documentation or style findings). Quality-only scans exit `0`.
+**Exit codes:** The CLI exits `1` only when **security** findings are present (so CI pipelines gate on vulnerabilities without being blocked by documentation or style findings). Quality-only scans exit `0`. Usage and configuration errors exit `2` (see [Exit Codes](#exit-codes)).
 
 Filter to security findings only: `cognium-dev scan ./src --category security`
 
@@ -440,8 +446,10 @@ fi
 | Code | Meaning |
 |------|---------|
 | 0 | No security findings (quality-only findings do not trigger exit 1) |
-| 1 | One or more security vulnerabilities found |
-| 2 | Error during analysis |
+| 1 | One or more security vulnerabilities found (`recheck`: the no-new-high rule failed) |
+| 2 | The scan did not run as asked: a usage error (unknown option, bad value, missing path argument), a configuration error (malformed `cognium.config.json`, invalid `severity`), or an error during analysis |
+
+`1` means findings and nothing else. Up to 4.23.0 a usage error also exited `1`, so a mistyped option looked like a scan with findings; it now exits `2`. A scan that leaves files unanalysed still exits by its findings: check `summary.executionSuccessful` (JSON) or `invocations[0].executionSuccessful` (SARIF).
 
 Use exit codes in CI/CD to fail builds when security vulnerabilities are detected:
 

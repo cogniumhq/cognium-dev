@@ -127,12 +127,14 @@ describe('applyRequireEntryPath — drop policy', () => {
     const finding = makeFinding('/src/Helper.java', 5);
     const ir = makeIR('/src/Helper.java', [type], [], [finding]);
 
-    applyRequireEntryPath([
+    const dropped = applyRequireEntryPath([
       { file: '/src/StubController.java', analysis: stubIR },
       { file: '/src/Helper.java', analysis: ir },
     ]);
 
     expect(ir.findings).toBeUndefined();
+    // The drop is counted, so a caller can report it.
+    expect(dropped).toBe(1);
   });
 
   it('preserves reachable H+C finding via @RestController', () => {
@@ -147,11 +149,12 @@ describe('applyRequireEntryPath — drop policy', () => {
     const controllerIR = makeIR('/src/Controller.java', [controller], [call]);
     const serviceIR = makeIR('/src/Service.java', [service], [], [finding]);
 
-    applyRequireEntryPath([
+    const dropped = applyRequireEntryPath([
       { file: '/src/Controller.java', analysis: controllerIR },
       { file: '/src/Service.java', analysis: serviceIR },
     ]);
 
+    expect(dropped).toBe(0);
     expect(serviceIR.findings).toBeDefined();
     expect(serviceIR.findings).toHaveLength(1);
     const annotated = serviceIR.findings![0];
@@ -300,11 +303,12 @@ describe('applyRequireEntryPath — preserve policy', () => {
     const finding = makeFinding('/src/Helper.java', 5);
     const ir = makeIR('/src/Helper.java', [helper], [], [finding]);
 
-    applyRequireEntryPath(
+    const dropped = applyRequireEntryPath(
       [{ file: '/src/Helper.java', analysis: ir }],
       { disabledPasses: ['require-entry-path'] },
     );
 
+    expect(dropped).toBe(0);
     expect(ir.findings).toHaveLength(1);
     expect(ir.findings![0].entryPath).toBeUndefined();
     expect(ir.findings![0].entryPathTier).toBeUndefined();
@@ -406,12 +410,13 @@ describe('applyRequireEntryPath — taint.flows[] gate', () => {
     const ir = makeIR('/src/Helper.java', [helper], []);
     ir.taint = { sources: [], sinks: [], flows: [makeFlow('ssrf', 5)] };
 
-    applyRequireEntryPath([
+    const dropped = applyRequireEntryPath([
       { file: '/src/StubController.java', analysis: stubIR },
       { file: '/src/Helper.java', analysis: ir },
     ]);
 
     expect(ir.taint.flows).toEqual([]);
+    expect(dropped).toBe(1);
   });
 
   it('preserves H+C SSRF flow reachable from @RestController', () => {

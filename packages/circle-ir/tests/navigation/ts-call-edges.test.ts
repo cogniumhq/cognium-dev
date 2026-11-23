@@ -27,6 +27,10 @@ function edges(g: TsCallGraph): string[] {
 function unresolved(g: TsCallGraph): string[] {
   return g.unresolved.map(u => `${u.methodName}: ${u.reason}`);
 }
+function references(g: TsCallGraph): string[] {
+  const q = new Map(g.files.flatMap(f => f.decls.map(d => [d.id, d.qualified_name] as const)));
+  return g.references.map(r => `${q.get(r.from)} -> ${q.get(r.to)}`);
+}
 function accounted(g: TsCallGraph): void {
   const key = (s: { file: string; line: number; col: number }, n: string) => `${s.file}:${s.line}:${s.col}:${n}`;
   const seen = new Set([...g.edges.map(e => key(e.site, e.methodName)), ...g.unresolved.map(u => key(u.site, u.methodName))]);
@@ -255,6 +259,70 @@ describe('more shapes', () => {
       'go2: unknown', // the module is in the tree; the name is not
     ]);
     accounted(g);
+  });
+});
+
+describe('#1340 CommonJS exports member references', () => {
+  it('records exports.run and module.exports.run as references to the export', async () => {
+    const cjs = [
+      'function run() { return 1; }',
+      "exports.run = run;",
+      "process.on('exit', exports.run);",
+    ].join('\n');
+    const cjsNamed = [
+      'exports.x = function () { return 2; };',
+      "module.exports.y = function y() { return 3; };",
+      "setTimeout(module.exports.y, 0);",
+    ].join('\n');
+    const g1 = await buildTsCallGraph(src({ 'lib/exit.js': cjs }));
+    expect(references(g1)).toEqual(expect.arrayContaining(['p/lib/exit -> p/lib/exit:run']));
+    const g2 = await buildTsCallGraph(src({ 'lib/hooks.js': cjsNamed }));
+    expect(references(g2)).toEqual(expect.arrayContaining(['p/lib/hooks -> p/lib/hooks:y']));
+  });
+});
+
+describe('#1336 Function.prototype call/apply/bind', () => {
+  const calc = `export class Calc {
+  b(n: number): number { return n + 2; }
+  e(n: number): number { return n + 5; }
+  f(n: number): number { return n + 6; }
+}`;
+  const tests = [
+    'import { Calc } from "./calc";',
+    'export function viaCall() { const k = new Calc(); return k.b.call(k, 1); }',
+    'export function viaApply() { const k = new Calc(); return k.e.apply(k, [1]); }',
+    'export function viaBind() { const k = new Calc(); const h = k.f.bind(k); return h(1); }',
+  ].join('\n');
+
+  it('resolves call/apply to method edges and bind to a method reference', async () => {
+    const g = await buildTsCallGraph(src({ 'src/calc.ts': calc, 'src/calc.test.ts': tests }));
+    expect(edges(g)).toEqual(expect.arrayContaining([
+      'p/calc.test:viaCall -> p/calc:Calc.b [exact]',
+      'p/calc.test:viaApply -> p/calc:Calc.e [exact]',
+      'p/calc.test:viaBind -> p/calc:Calc [exact]',
+    ]));
+    expect(references(g)).toEqual(expect.arrayContaining(['p/calc.test:viaBind -> p/calc:Calc.f']));
+    expect(unresolved(g).filter(u => /^(call|apply|bind):/.test(u))).toEqual([]);
+  });
+});
+
+describe('class heritage', () => {
+  it('records extends in-tree and external with reference edges (Refs #1343)', async () => {
+    const g = await buildTsCallGraph(src({
+      'src/base.ts': "import { LitElement } from 'lit';\nexport class BaseElement extends LitElement {}\n",
+      'src/button.ts': "import { html } from 'lit';\nimport { BaseElement } from './base';\nexport class Button extends BaseElement {\n  update(c: unknown) { super.update(c); }\n  render() { return html`<b></b>`; }\n}\n",
+    }));
+    const q = new Map(g.files.flatMap(f => f.decls.map(d => [d.id, d.qualified_name] as const)));
+    const byClass = (name: string) => g.heritage.find(h => q.get(h.class)?.endsWith(`:${name}`));
+    const baseHeritage = byClass('BaseElement');
+    const buttonHeritage = byClass('Button');
+    expect(baseHeritage?.extends).toEqual({ kind: 'external', name: 'LitElement', module: 'lit' });
+    expect(buttonHeritage?.extends).toEqual({ kind: 'in-tree', to: expect.any(String) });
+    expect(q.get(buttonHeritage!.extends!.kind === 'in-tree' ? buttonHeritage!.extends!.to : '')).toBe('p/base:BaseElement');
+    expect(references(g)).toEqual(expect.arrayContaining(['p/button:Button -> p/base:BaseElement']));
+    // S2 (#1343): `super.update` must appear as an edge or unresolved site, not vanish.
+    // Inherited `update` lives on external LitElement → unresolved, not silent.
+    expect(unresolved(g)).toEqual(expect.arrayContaining(['update: external']));
   });
 });
 

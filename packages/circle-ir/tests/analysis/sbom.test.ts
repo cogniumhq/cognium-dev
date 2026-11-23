@@ -98,10 +98,61 @@ describe('SBOM manifest parsing', () => {
     const byName = Object.fromEntries(deps.map((d) => [d.name, d]));
     expect(Object.keys(byName).sort()).toEqual(['Flask', 'django', 'requests', 'urllib3', 'uvicorn']);
     expect(byName['Flask'].purl).toBe('pkg:pypi/Flask@2.3.0');
-    expect(byName['requests'].version).toBe('2.28'); // first comparator clause
+    expect(byName['requests'].version).toBe('>=2.28,<3'); // a range is kept verbatim (#1127)
+    expect(byName['requests'].purl).toBe('pkg:pypi/requests'); // and is no purl version
     expect(byName['urllib3'].version).toBe('unknown'); // no version → purl carries no @
     expect(byName['urllib3'].purl).toBe('pkg:pypi/urllib3');
     expect(byName['uvicorn'].purl).toBe('pkg:pypi/uvicorn@0.23.2'); // extras stripped
+  });
+
+  it('keeps a PEP 508 range verbatim and makes only an exact pin a bare version (#1127)', () => {
+    const req = [
+      'a>=2.0',
+      'b ~= 1.4',
+      'c==2.0.*',
+      'd!=1.5',
+      'e (>=1.0, <2)',
+      'f==1!2.0',
+      'g===2.0',
+      'h == 3.1',
+      'i[x] >= 1 ; python_version < "3.9"',
+      'j @ https://example.com/j-1.0.whl',
+    ].join('\n');
+    const v = Object.fromEntries(parsePypiDependencies(req).map((d) => [d.name, d.version]));
+    expect(v).toEqual({
+      a: '>=2.0', b: '~=1.4', c: '==2.0.*', d: '!=1.5', e: '>=1.0,<2',
+      f: '1!2.0', g: '2.0', h: '3.1', i: '>=1', j: 'unknown',
+    });
+  });
+
+  it('ends a requirement at a line continuation, an option, a marker or a comment (#1131 review)', () => {
+    // What `pip-compile --generate-hashes` writes, plus option, marker and comment shapes.
+    const req = [
+      'a==1.0',
+      'b==1.0 \\',
+      '    --hash=sha256:abc \\',
+      '    --hash=sha256:def',
+      'c == 1.0 \\',
+      'd==1.0 --hash=sha256:abc',
+      'e==1.0 --global-option="x"',
+      'f==1.0 ; python_version >= "3.8"  # pinned',
+      'g==1.0;python_version>="3.8"',
+      'h>=1.0, <2 \\',
+      'i==1.0\\',
+    ].join('\n');
+    const deps = parsePypiDependencies(req);
+    const v = Object.fromEntries(deps.map((d) => [d.name, [d.version, d.purl]]));
+    expect(v).toEqual({
+      a: ['1.0', 'pkg:pypi/a@1.0'],
+      b: ['1.0', 'pkg:pypi/b@1.0'],
+      c: ['1.0', 'pkg:pypi/c@1.0'],
+      d: ['1.0', 'pkg:pypi/d@1.0'],
+      e: ['1.0', 'pkg:pypi/e@1.0'],
+      f: ['1.0', 'pkg:pypi/f@1.0'],
+      g: ['1.0', 'pkg:pypi/g@1.0'],
+      h: ['>=1.0,<2', 'pkg:pypi/h'],
+      i: ['1.0', 'pkg:pypi/i@1.0'],
+    });
   });
 
   it('parses pom.xml with groupId:artifactId names and scope mapping', () => {
@@ -168,7 +219,7 @@ describe('SBOM manifest parsing', () => {
     ].join('\n');
     const deps = parsePyprojectDependencies(toml);
     const byName = Object.fromEntries(deps.map((d) => [d.name, d]));
-    expect(byName['flask'].purl).toBe('pkg:pypi/flask@2.0');
+    expect(byName['flask'].version).toBe('>=2.0'); // a lower bound, not the installed version (#1127)
     expect(byName['requests'].version).toBe('2.28.1');
     expect(byName['pytest'].scope).toBe('optional');
   });

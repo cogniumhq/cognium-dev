@@ -95,9 +95,18 @@ function detectLanguageFromTree(tree: Tree, cache?: NodeCache): 'javascript' | '
 export interface CallExtractionOptions {
   /**
    * Java only: give each argument its static type and start position
-   * (`ArgumentInfo.type` / `.location`), which overload selection needs.
+   * (`ArgumentInfo.type` / `.location`), which overload selection needs, and
+   * extract explicit constructor invocations (`super(…)`, `this(…)`) as
+   * constructor calls named `super` / `this`.
    */
   navigationTypes?: boolean;
+  /**
+   * Java only: method names the file declares more than once (overloads).
+   * A call to one of these names gets `ArgumentInfo.type` even without
+   * `navigationTypes`, so inter-procedural taint can pick the overload by
+   * argument types. Calls to other names are unchanged.
+   */
+  overloadedMethodNames?: ReadonlySet<string>;
 }
 
 export function extractCalls(
@@ -144,8 +153,14 @@ export function extractCalls(
   // Find all method invocations
   const invocations = getNodesFromCache(tree.rootNode, 'method_invocation', cache);
   const typed = options.navigationTypes === true;
+  const overloaded = options.overloadedMethodNames;
   for (const inv of invocations) {
-    calls.push(extractCallInfo(inv, context, typed));
+    const info = extractCallInfo(inv, context, typed);
+    if (!typed && overloaded?.has(info.method_name)) {
+      const argsNode = inv.childForFieldName('arguments');
+      if (argsNode) addArgumentTypes(argsNode, info.arguments);
+    }
+    calls.push(info);
   }
 
   // Find object creation expressions (constructor calls)
@@ -154,6 +169,15 @@ export function extractCalls(
     const callInfo = extractObjectCreation(creation, context, typed);
     if (callInfo) {
       calls.push(callInfo);
+    }
+  }
+
+  // Explicit constructor invocations (`super(…)`, `this(…)`): navigation
+  // only, so the default IR the SAST passes read is unchanged.
+  if (typed) {
+    for (const inv of getNodesFromCache(tree.rootNode, 'explicit_constructor_invocation', cache)) {
+      const callInfo = extractExplicitConstructorInvocation(inv, context);
+      if (callInfo) calls.push(callInfo);
     }
   }
 
@@ -1443,6 +1467,25 @@ function stripGenerics(type: string): string {
 }
 
 /**
+ * Resolve a declared type from a field, local, or parameter. When the
+ * declaration uses a fully-qualified name (no import for `Logger`), keep the
+ * FQN so class-scoped sink patterns (e.g. Log4j `Logger.info`) match.
+ */
+function resolveDeclaredJavaType(
+  rawType: string,
+  context: ResolutionContext,
+): { simpleName: string | null; fqn: string | null } {
+  const bare = stripGenerics(rawType.trim());
+  if (bare.includes('.')) {
+    const simple = bare.substring(bare.lastIndexOf('.') + 1);
+    if (/^[A-Z][A-Za-z0-9_]*$/.test(simple)) {
+      return { simpleName: simple, fqn: bare };
+    }
+  }
+  return resolveFqn(bare, context);
+}
+
+/**
  * Resolve the receiver expression to its declared simple type and (if
  * available) fully-qualified name. Returns `{ simpleName: null, fqn: null }`
  * for receivers that cannot be statically resolved — dynamic dispatch,
@@ -1463,7 +1506,7 @@ function resolveReceiverType(
   if (receiver.startsWith('this.')) {
     const fieldName = receiver.substring('this.'.length);
     const fieldType = context.fieldTypes.get(fieldName);
-    if (fieldType) return resolveFqn(stripGenerics(fieldType), context);
+    if (fieldType) return resolveDeclaredJavaType(fieldType, context);
     return { simpleName: null, fqn: null };
   }
 
@@ -1479,9 +1522,10 @@ function resolveReceiverType(
   const ctorMatch = receiver.match(/^new\s+([A-Za-z_$][\w$.]*)\s*[<(]/);
   if (ctorMatch) {
     const ctorClass = ctorMatch[1];
-    const simple = ctorClass.includes('.')
-      ? ctorClass.substring(ctorClass.lastIndexOf('.') + 1)
-      : ctorClass;
+    if (ctorClass.includes('.')) {
+      return resolveDeclaredJavaType(ctorClass, context);
+    }
+    const simple = ctorClass;
     return resolveFqn(simple, context);
   }
 
@@ -1491,7 +1535,7 @@ function resolveReceiverType(
     context.paramTypes.get(receiver) ??
     context.fieldTypes.get(receiver);
   if (declaredType) {
-    return resolveFqn(stripGenerics(declaredType), context);
+    return resolveDeclaredJavaType(declaredType, context);
   }
 
   // Receiver starts with uppercase letter — likely a static class reference.
@@ -1762,6 +1806,97 @@ function extractObjectCreation(node: Node, context: ResolutionContext, typed = f
   };
 }
 
+/** The Java declarations that name a type; the nesting path counts each one, as the type extractor's does. */
+const JAVA_TYPE_DECLARATIONS = new Set(['class_declaration', 'interface_declaration', 'enum_declaration', 'record_declaration']);
+
+/**
+ * An explicit constructor invocation (`super(…)`, `this(…)`, `outer.super(…)`)
+ * as a constructor call named as written, `super` or `this`, so the
+ * navigation index binds it like `new T(…)`, choosing the overload from the
+ * arguments. `receiver_type` is the class whose constructor runs: for
+ * `super`, the enclosing class's superclass as written (`Object` when it names
+ * none); for `this`, the enclosing type's nesting path (`Outer.Inner`), which
+ * with the package is its `receiver_type_fqn`. `in_type` is that nesting path
+ * in both cases: the navigation index resolves a superclass name from that
+ * scope (a member type of an enclosing type comes first). Null outside a
+ * constructor of a named type, and for `super(…)` in an enum or a record,
+ * which cannot have one.
+ *
+ * An implicit `super()` is not extracted: it is written nowhere, so it has no
+ * site and no name.
+ */
+function extractExplicitConstructorInvocation(node: Node, context: ResolutionContext): CallInfo | null {
+  const kind = node.childForFieldName('constructor')?.type;
+  if (kind !== 'super' && kind !== 'this') return null;
+  const ctor = findAncestor(node, 'constructor_declaration');
+  let decl: Node | null = ctor?.parent ?? null;
+  while (decl && !JAVA_TYPE_DECLARATIONS.has(decl.type)) decl = decl.parent;
+  if (!decl) return null;
+
+  const path: string[] = [];
+  for (let p: Node | null = decl; p; p = p.parent) {
+    if (!JAVA_TYPE_DECLARATIONS.has(p.type)) continue;
+    const n = p.childForFieldName('name');
+    if (n) path.unshift(getNodeText(n));
+  }
+  if (path.length === 0) return null;
+
+  let simpleName: string;
+  let fqn: string | null;
+  if (kind === 'this') {
+    simpleName = path.join('.');
+    fqn = context.packageName ? `${context.packageName}.${simpleName}` : simpleName;
+  } else {
+    if (decl.type !== 'class_declaration') return null;
+    const written = decl.childForFieldName('superclass')?.namedChildren.find(c => c !== null && c.type !== 'annotation' && c.type !== 'marker_annotation');
+    simpleName = written ? writtenTypeName(getNodeText(written)) : 'Object';
+    fqn = writtenTypeFqn(simpleName, context);
+  }
+
+  const argsNode = node.childForFieldName('arguments');
+  return {
+    method_name: kind,
+    receiver: null,
+    receiver_type: simpleName,
+    receiver_type_fqn: fqn,
+    arguments: argsNode ? extractArguments(argsNode, true) : [],
+    location: {
+      line: node.startPosition.row + 1,
+      column: node.startPosition.column,
+    },
+    in_method: findEnclosingMethod(node),
+    in_type: path.join('.'),
+    is_constructor: true,
+    resolved: true,
+    resolution: { status: 'resolved', target: `${simpleName}.<init>` },
+  };
+}
+
+/** A type as written, without type arguments, annotations or spaces: `a.Outer<T>.Inner<U>` → `a.Outer.Inner`. */
+function writtenTypeName(text: string): string {
+  let out = text.replace(/@[\w$.]+(?:\([^()]*\))?/g, '');
+  for (let prev = ''; prev !== out;) {
+    prev = out;
+    out = out.replace(/<[^<>]*>/g, '');
+  }
+  return out.replace(/\s+/g, '');
+}
+
+/**
+ * The qualified name of a type as written, when the file says it: a simple
+ * name through `resolveFqn`; a dotted name whose first part is lower case as
+ * written (a package); a dotted name whose first part `resolveFqn` qualifies
+ * (`Map.Entry` with `import java.util.Map`). Null otherwise.
+ */
+function writtenTypeFqn(name: string, context: ResolutionContext): string | null {
+  const dot = name.indexOf('.');
+  if (dot < 0) return resolveFqn(name, context).fqn;
+  const head = name.slice(0, dot);
+  if (/^[a-z_]/.test(head)) return name;
+  const outer = resolveFqn(head, context).fqn;
+  return outer ? `${outer}${name.slice(dot)}` : null;
+}
+
 /**
  * Extract arguments from an argument_list node.
  */
@@ -1797,6 +1932,21 @@ function extractArguments(argsNode: Node, typed = false): ArgumentInfo[] {
   }
 
   return args;
+}
+
+/**
+ * Give each argument its static type (`ArgumentInfo.type`) and nothing else:
+ * the overload-selection input for a call to a same-file overloaded method
+ * when `navigationTypes` is off.
+ */
+function addArgumentTypes(argsNode: Node, args: ArgumentInfo[]): void {
+  let position = 0;
+  for (let i = 0; i < argsNode.childCount; i++) {
+    const child = argsNode.child(i);
+    if (!child || child.type === '(' || child.type === ')' || child.type === ',') continue;
+    const arg = args[position++];
+    if (arg) arg.type = javaStaticType(child);
+  }
 }
 
 const NUMERIC_RANK: Record<string, number> = { byte: 1, short: 2, char: 2, int: 3, long: 4, float: 5, double: 6 };
@@ -2751,7 +2901,9 @@ function extractPythonLiteral(node: Node): string | null {
           return null;
         }
       }
-      return text.replace(/^['"]|['"]$/g, '').replace(/^f['"]|['"]$/g, '');
+      // Drop the prefix (`r`, `b`, `f`, `rb`, …) and the quotes, single or triple.
+      const m = /^[rRbBuUfF]{0,2}("""|'''|"|')([\s\S]*)\1$/.exec(text);
+      return m ? m[2] : text;
     }
     return text;
   }

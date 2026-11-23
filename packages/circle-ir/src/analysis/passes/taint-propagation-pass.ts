@@ -19,7 +19,7 @@ import type { SinkFilterResult } from './sink-filter-pass.js';
 import { findJavaSpringReturnXSSSinks } from './language-sources-pass.js';
 import { expressionFullyWrappedBySanitizer, identifierOutsideSanitizerCalls, identifierOutsideSanitizerCallsInText, propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP, constPropScopedVar } from '../constant-propagation.js';
-import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks, findJavaWikiPluginReturnXSSSinks } from './language-sources-pass.js';
+import { buildJavaTaintedVars, buildJavaScriptTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks, findJavaWikiPluginReturnXSSSinks } from './language-sources-pass.js';
 import { parseJavaArrayAccessExpression } from '../java-array-element-keys.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 import { walkBackwardDefs } from '../dfg-walk.js';
@@ -463,6 +463,24 @@ function goConstantHelperCalleeFromLines(lines: string[], lineNumber: number): s
   return null;
 }
 
+/**
+ * Whether `step` is a variable produced by an HTML-context encoder
+ * that does not clean `sinkType` (#589 `sanitizedVarUncovered`, scoped
+ * `method:var`; a bare name looks up only its own method).
+ */
+function encoderLeavesSinkUncovered(
+  constProp: ConstantPropagatorResult,
+  graph: PassContext['graph'],
+  step: { variable: string; line: number },
+  sinkType: string,
+): boolean {
+  const unc = constProp.sanitizedVarUncovered;
+  if (!unc || unc.size === 0) return false;
+  if (step.variable.includes(':')) return !!unc.get(step.variable)?.has(sinkType);
+  const method = methodAtLine(graph, step.line);
+  return !!unc.get(method ? `${method}:${step.variable}` : step.variable)?.has(sinkType);
+}
+
 function makeConstPropVeto(
   constProp: ConstantPropagatorResult,
   graph: PassContext['graph'],
@@ -470,7 +488,13 @@ function makeConstPropVeto(
   code: string | undefined,
   language?: string,
   sanitizers?: SinkFilterResult['sanitizers'],
-): (step: { variable: string; line: number }, sourceLine: number, sinkLine: number, sinkType?: string) => boolean {
+): (
+  step: { variable: string; line: number },
+  sourceLine: number,
+  sinkLine: number,
+  sinkType?: string,
+  encodedUpstream?: boolean,
+) => boolean {
   const lines = typeof code === 'string' ? code.split('\n') : [];
   const selfReassign = new Map<string, number[]>();
   const escape = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -498,7 +522,21 @@ function makeConstPropVeto(
     const use = (graph.usesByLine.get(line) ?? []).find(u => u.variable === v && u.def_id != null);
     return use ? graph.defById.get(use.def_id!) : undefined;
   };
-  return (step, sourceLine, sinkLine, sinkType) => {
+  return (step, sourceLine, sinkLine, sinkType, encodedUpstream) => {
+    // cognium-dev#1198 — heap-field stamped sources are not in constProp.tainted.
+    if (
+      step.variable.includes('.') &&
+      sources.some(
+        (s) =>
+          s.variable === step.variable &&
+          s.line >= sourceLine &&
+          s.line <= sinkLine &&
+          typeof s.location === 'string' &&
+          s.location.includes('heap field read'),
+      )
+    ) {
+      return false;
+    }
     const method = methodAtLine(graph, step.line);
     const blockLine = defLineForUse(graph, step.variable, step.line);
     const fpLookup = constPropFlowLookup(
@@ -511,6 +549,11 @@ function makeConstPropVeto(
     const r = isFalsePositive(constProp, step.line, fpLookup);
     if (!r.isFalsePositive) return false;
     if (r.reason !== 'variable_not_tainted') return true;
+    // An earlier step is the output of an HTML-context encoder
+    // that does not clean this sink type (`sql = "…" + encodeForHTML(p)`).
+    // const-prop's "not tainted" for a value derived from it is that encoder's
+    // credit, which does not apply here.
+    if (encodedUpstream) return false;
     if (
       r.reason === 'variable_not_tainted' &&
       language === 'java' &&
@@ -683,8 +726,13 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     const verifiedFlows = propagationResult.flows.filter(flow => {
       if (constProp.unreachableLines.has(flow.sink.line)) return false;
 
+      // Once the path passes a variable whose HTML-context encoder
+      // leaves this sink type uncovered, later steps are not vetoed as
+      // "not tainted" (see `encodedUpstream` in makeConstPropVeto).
+      let encodedUpstream = false;
       for (const step of flow.path) {
-        if (isVetoed(step, flow.source.line, flow.sink.line, flow.sink.type)) return false;
+        if (isVetoed(step, flow.source.line, flow.sink.line, flow.sink.type, encodedUpstream)) return false;
+        if (!encodedUpstream) encodedUpstream = encoderLeavesSinkUncovered(constProp, graph, step, flow.sink.type);
       }
 
       if (isCorrelatedPredicateFP(constProp, flow)) return false;
@@ -917,6 +965,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
         ctx.code,
         types,
         graph,
+        ctx.language,
       ) ?? [];
     for (const f of collectionFlows) {
       if (flowKeys.has(flowKey(f))) continue;
@@ -1338,6 +1387,26 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       });
     }
 
+    // cognium-dev #1152 / #1247 — Java `new Cookie(…, value)` trust_boundary only
+    // when `value` is HTTP-sourced in the same method. Method parameters such as
+    // `InsecureCookieTp.set(..., String sid)` are not CWE-501 session-trust writes.
+    const javaCookieTrustSinkLines = new Set<number>();
+    for (const s of sinks) {
+      if (
+        s.type === 'trust_boundary' &&
+        (s.method === 'Cookie' || s.method === 'setValue')
+      ) {
+        javaCookieTrustSinkLines.add(s.line);
+      }
+    }
+    if (javaCookieTrustSinkLines.size > 0) {
+      finalFlows = finalFlows.filter(f => {
+        if (f.sink_type !== 'trust_boundary') return true;
+        if (!javaCookieTrustSinkLines.has(f.sink_line)) return true;
+        return typeof f.source_type === 'string' && f.source_type.startsWith('http_');
+      });
+    }
+
     // cognium-dev #49 — final dedup on (source_line, sink_line, sink_type).
     // The DFG propagator and the four supplementary detectors each emit
     // independently; merge-time dedup at the supplement seams is partial
@@ -1430,6 +1499,19 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       });
     }
 
+    // cognium-dev #1156: `parser.parse(fs.readFileSync(abs))`. When every sink
+    // of the flow's type on the line is a call nested inside the arguments of a
+    // source call of the flow's source type, the sink runs first and the
+    // source's result never reaches it. Applied to the flows of every emitter;
+    // JavaScript and TypeScript only for now.
+    if (ctx.language === 'javascript' || ctx.language === 'typescript') finalFlows = finalFlows.filter(f => {
+      if (f.source_line !== f.sink_line) return true;
+      const lineSinks = sinks.filter(k => k.line === f.sink_line && k.type === f.sink_type);
+      const lineSources = sources.filter(x => x.line === f.source_line && x.type === f.source_type);
+      if (lineSinks.length === 0 || lineSources.length === 0) return true;
+      return !lineSinks.every(k => lineSources.some(x => sinkNestedInSourceCall(x, k)));
+    });
+
     return { flows: finalFlows };
   }
 }
@@ -1503,7 +1585,7 @@ function isMongoValueBoundFilter(sinkCode: string, sinkMethod: string, sourceVar
   const body = firstArg.slice(1, -1).trim();
   if (!body) return false;
   // Strip string literals so `$` inside string values doesn't false-trip.
-  const stripped = body.replace(/(['"`])(?:\\.|(?!\1).)*\1/g, '""');
+  const stripped = body.replace(/(['"`])(?:\\.|(?!\1)[^\\\n\r\u2028\u2029])*\1/g, '""');
   // Spread / rest disqualifies (opaque subset).
   if (/\.\.\./.test(stripped)) return false;
   // Any `$<word>:` key is an operator → not value-bound.
@@ -1576,15 +1658,55 @@ function isInJavaSanitizedMethod(
     return true;
   }
   if (sinkType === 'xxe') {
-    // DocumentBuilderFactory / SAXParserFactory / XMLInputFactory hardening.
-    // Any one of these features suffices per the OWASP XXE cheatsheet.
-    const setFeatureRe =
-      /\.setFeature\s*\(\s*"(?:[^"]*disallow-doctype-decl|[^"]*external-general-entities|[^"]*external-parameter-entities|[^"]*load-external-dtd)"/;
-    if (setFeatureRe.test(body)) return true;
-    // setProperty variant for XMLInputFactory: `XMLInputFactory.SUPPORT_DTD`.
-    if (/\.setProperty\s*\([^,]*SUPPORT_DTD[^,]*,\s*false\s*\)/.test(body)) return true;
-    return false;
+    return isHardenedXmlFactory(body);
   }
+  return false;
+}
+
+/**
+ * cognium-dev#1291 / #1293 follow-up — does this Java method body harden an XML
+ * factory against XXE? One table shared by every factory kind (DocumentBuilder,
+ * SAXParser, XMLInputFactory, TransformerFactory, SchemaFactory, XMLReader).
+ *
+ * Hardened when ANY of these appears in the body:
+ *   1. setFeature("…disallow-doctype-decl | external-general-entities |
+ *      external-parameter-entities | load-external-dtd", …) — a string literal.
+ *   2. setProperty(…SUPPORT_DTD…, false) — XMLInputFactory.
+ *   3. set{Attribute,Property}(…ACCESS_EXTERNAL_{DTD,STYLESHEET,SCHEMA}…, "")
+ *      or the literal "http://javax.xml.XMLConstants/property/accessExternal…"
+ *      URI, with the value argument checked to be the EMPTY STRING. Covers both
+ *      the direct `tf.setAttribute(NAME, "")` form and a wrapper call such as
+ *      angus-mail's `setAttribute(tf, NAME, "")`.
+ *
+ * FEATURE_SECURE_PROCESSING is deliberately NOT accepted: on its own it does not
+ * stop external entity or DTD resolution (JAXP). A non-empty access value such
+ * as "all" or "file" is NOT hardening and must not match (#1293 regression: it
+ * cleared `ACCESS_EXTERNAL_DTD="all"` because it never checked the value).
+ *
+ * Limits (unchanged from the prior recognizer): matching is textual and
+ * method-scoped — it does not verify the hardened factory is the one used at the
+ * sink, and an occurrence inside a comment or a log string is not excluded (the
+ * accessExternal* URI itself contains "//", so cheap comment-stripping would
+ * corrupt it).
+ */
+function isHardenedXmlFactory(body: string): boolean {
+  // (1) Feature flags that disable DTD / external-entity processing.
+  const setFeatureRe =
+    /\.setFeature\s*\(\s*"(?:[^"]*disallow-doctype-decl|[^"]*external-general-entities|[^"]*external-parameter-entities|[^"]*load-external-dtd)"/;
+  if (setFeatureRe.test(body)) return true;
+  // (2) XMLInputFactory SUPPORT_DTD = false.
+  if (/\.setProperty\s*\([^,]*SUPPORT_DTD[^,]*,\s*false\s*\)/.test(body)) return true;
+  // (3) External-access lockdown set to the empty string. The name (XMLConstants
+  // constant or literal property URI) is matched only when the value argument is
+  // the empty string, so a non-empty value like "all"/"file" is not credited.
+  // A permissive value on ANY external-access attribute (e.g. ACCESS_EXTERNAL_DTD
+  // = "all" alongside ACCESS_EXTERNAL_STYLESHEET = "") vetoes the credit — the
+  // open vector is still exploitable, so the method is not treated as hardened.
+  const accessName =
+    '(?:ACCESS_EXTERNAL_(?:DTD|STYLESHEET|SCHEMA)\\b|"https?:\\/\\/javax\\.xml\\.XMLConstants\\/property\\/accessExternal(?:DTD|Stylesheet|Schema)")';
+  const emptyExternalAccessRe = new RegExp(`${accessName}\\s*,\\s*""`);
+  const permissiveExternalAccessRe = new RegExp(`${accessName}\\s*,\\s*"[^"]+"`);
+  if (emptyExternalAccessRe.test(body) && !permissiveExternalAccessRe.test(body)) return true;
   return false;
 }
 
@@ -1748,11 +1870,16 @@ function detectJsModuleScopeFlows(
 
   const lines = code.split('\n');
   const moduleVars = new Set<string>();
+  const moduleDeclRe =
+    /(?:^|;)\s*(?:export\s+)?(?:let|var|const)\s+([A-Za-z_$][\w$]*)\b/g;
   for (const line of lines) {
     const stripped = line.replace(/\s+$/, '');
     if (!stripped || /^[ \t]/.test(line)) continue;
-    const m = stripped.match(/^(?:export\s+)?(?:let|var|const)\s+([A-Za-z_$][\w$]*)\b/);
-    if (m) moduleVars.add(m[1]);
+    let m: RegExpExecArray | null;
+    moduleDeclRe.lastIndex = 0;
+    while ((m = moduleDeclRe.exec(stripped)) !== null) {
+      moduleVars.add(m[1]);
+    }
   }
   if (moduleVars.size === 0) return flows;
 
@@ -1979,6 +2106,7 @@ function detectCollectionFlows(
   code?: string,
   types?: CircleIR['types'],
   graph?: PassContext['graph'],
+  language?: string,
 ): CircleIR['taint']['flows'] {
   const taintedVars = constProp.tainted;
   const unreachableLines = constProp.unreachableLines;
@@ -1993,12 +2121,25 @@ function detectCollectionFlows(
   }
 
   const javaDerivedVars =
-    typeof code === 'string'
+    language === 'java' && typeof code === 'string'
       ? buildJavaTaintedVars(
           code,
           new Set(sources.map(s => s.variable).filter((v): v is string => Boolean(v))),
         )
       : undefined;
+  // Stamp qualified sources (#1198 heap-field reads) — seeds are not
+  // present in the derived-only map returned by `buildJavaTaintedVars`.
+  if (javaDerivedVars) {
+    for (const s of sources) {
+      if (
+        s.variable?.includes('.') &&
+        typeof s.location === 'string' &&
+        s.location.includes('heap field read')
+      ) {
+        javaDerivedVars.set(s.variable, s.line);
+      }
+    }
+  }
 
   for (const sink of sinks) {
     if (unreachableLines.has(sink.line)) continue;
@@ -2012,9 +2153,27 @@ function detectCollectionFlows(
           continue;
         }
         if (arg.variable) {
-          const varName = arg.variable;
+          const expr = arg.expression ?? '';
+          let varName = arg.variable;
+          // cognium-dev#1198 — Tree-sitter sink args carry the innermost
+          // identifier (`value` in `next.value`); `buildJavaTaintedVars` keys
+          // the qualified field path instead.
+          if (
+            language === 'java' &&
+            expr.includes('.') &&
+            !expr.startsWith('this.') &&
+            (javaDerivedVars?.has(expr) ||
+              sources.some(
+                (s) =>
+                  s.variable === expr &&
+                  typeof s.location === 'string' &&
+                  s.location.includes('heap field read'),
+              ))
+          ) {
+            varName = expr;
+          }
           let scopedName = varName;
-          if (call.in_method) {
+          if (call.in_method && !varName.includes('.')) {
             const blockLine = graph
               ? defLineForUse(graph, varName, call.location.line)
               : call.location.line;
@@ -2030,7 +2189,6 @@ function detectCollectionFlows(
           // Bare `name` that is a field read (no local of that name in this
           // method) still counts as a field use — Inter4-style. A shadowing
           // local declaration in the method does not.
-          const expr = arg.expression ?? '';
           const explicitField = isFieldUseExpression(
             expr, varName, enclosingTypeNamesAt(types, call.location.line),
           );
@@ -2042,6 +2200,19 @@ function detectCollectionFlows(
           let argTainted = isTaintedInMethod(
             taintedVars, varName, scopedName, fieldNames, isFieldUse,
           );
+          if (
+            language === 'java' &&
+            !argTainted &&
+            javaDerivedVars?.has(varName) &&
+            sources.some(
+              (s) =>
+                s.variable === varName &&
+                typeof s.location === 'string' &&
+                s.location.includes('heap field read'),
+            )
+          ) {
+            argTainted = true;
+          }
           if (mapKeyRead && mapKeyRead.map === varName) {
             argTainted = isMapLiteralKeyTainted(
               constProp, varName, mapKeyRead.key, call.in_method,
@@ -2174,6 +2345,15 @@ function detectCollectionFlows(
   return flows;
 }
 
+/** cognium-dev#476 — `array[n-n]` in SecuriBench stores index as `0` but sink arg is `n-n`. */
+function normalizeJavaArrayIndexKey(indexKey: string): string {
+  const trimmed = indexKey.trim();
+  if (/^\d+$/.test(trimmed)) return trimmed;
+  const sameVarDiff = trimmed.match(/^([A-Za-z_]\w*)\s*-\s*\1$/);
+  if (sameVarDiff) return '0';
+  return trimmed;
+}
+
 function detectArrayElementFlows(
   calls: CircleIR['calls'],
   sources: CircleIR['taint']['sources'],
@@ -2204,9 +2384,13 @@ function detectArrayElementFlows(
         const arrayAccess = parseJavaArrayAccessExpression(arg.expression);
         if (arrayAccess) {
           const { base, arrayName, indexKey, displayVar } = arrayAccess;
+          const resolvedIndex = normalizeJavaArrayIndexKey(indexKey);
           const taintedIndices = taintedArrayElements.get(arrayName);
           if (taintedIndices) {
-            const isTainted = taintedIndices.has(indexKey) || taintedIndices.has('*');
+            const isTainted =
+              taintedIndices.has(resolvedIndex) ||
+              taintedIndices.has(indexKey) ||
+              taintedIndices.has('*');
             if (isTainted) {
               // Sprint 13 #70 — method-scoped source picker (see detectCollectionFlows).
               const source = pickScopedSource(
@@ -2289,7 +2473,7 @@ function shouldGateCSharpPatPermsLibraryParamFlow(
 
 /** Parameter names referenced as identifiers inside a compound sink argument (#685). */
 function compoundArgParamNames(expression: string, paramNames: Iterable<string>): string[] {
-  const stripped = expression.replace(/(['"`])(?:\\.|(?!\1).)*\1/g, (m) => ' '.repeat(m.length));
+  const stripped = expression.replace(/(['"`])(?:\\.|(?!\1)[^\\\n\r\u2028\u2029])*\1/g, (m) => ' '.repeat(m.length));
   const matched: string[] = [];
   for (const raw of paramNames) {
     const name = raw.startsWith('*') ? raw.slice(1) : raw;
@@ -3334,6 +3518,146 @@ function argsReferenceTaintedVar(
   );
 }
 
+/** Index of the `)` that closes the `(` at `openParenIndex`, or -1. Respects strings. */
+function matchingCloseParen(lineText: string, openParenIndex: number): number {
+  let depth = 0;
+  let inStr: '"' | '\'' | '`' | null = null;
+  let esc = false;
+  for (let i = openParenIndex; i < lineText.length; i++) {
+    const ch = lineText[i]!;
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (ch === '\\' && (inStr === '"' || inStr === '\'')) { esc = true; continue; }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || ch === '\'' || ch === '`') { inStr = ch; continue; }
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * cognium-dev#1223 — `req.query.url` contains the token `query`, which must not
+ * pair with a tainted local named `query` in another function. True when every
+ * occurrence of `ident` in `expr` is only as `(req|request|ctx).ident`.
+ */
+function jsBareIdentOnlyAsRequestProxy(expr: string, ident: string): boolean {
+  const escaped = ident.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`\\b${escaped}\\b`, 'gu');
+  let hits = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(expr)) !== null) {
+    hits++;
+    const before = expr.slice(0, m.index);
+    if (!/(?:\breq|\brequest|\bctx)\.\s*$/.test(before)) return false;
+  }
+  return hits > 0;
+}
+
+/**
+ * cognium-dev#1223 — when `types[].methods` is empty (common for
+ * `module.exports.foo = function` handlers), derive function line ranges from
+ * the source so the #472-style same-function gate still applies.
+ */
+function buildJsTsFunctionRangesFromSource(code: string): Array<[number, number]> {
+  const lines = code.split('\n');
+  const ranges: Array<[number, number]> = [];
+  const startPatterns = [
+    /\bfunction\b/,
+    /(?:^|\s)(?:module\.)?exports\.\w+\s*=\s*(?:async\s+)?function\b/,
+    /(?:^|\s)(?:module\.)?exports\.\w+\s*=\s*(?:async\s+)?\([^)]*\)\s*=>/,
+    /(?:^|\s)(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?function\b/,
+    /(?:^|\s)(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\([^)]*\)\s*=>/,
+  ];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.trimStart().startsWith('//')) continue;
+    if (!startPatterns.some((re) => re.test(line))) continue;
+    const startLine = i + 1;
+    let depth = 0;
+    let started = false;
+    for (let j = i; j < lines.length; j++) {
+      for (const ch of lines[j]!) {
+        if (ch === '{') {
+          depth++;
+          started = true;
+        } else if (ch === '}') depth--;
+      }
+      if (started && depth === 0) {
+        ranges.push([startLine, j + 1]);
+        break;
+      }
+    }
+  }
+  return ranges;
+}
+
+/**
+ * cognium-dev#1156 — `io_input` at `*.parse(...)` has no `method` tag; `location` is
+ * like `parser.parse() in m`. When `path_traversal` (`readFileSync`, …) appears only
+ * inside that `.parse(` argument list on the same line, inline colocation must not
+ * pair them — the nested sink runs before the parse returns.
+ */
+function sinkNestedInJsTsParseArgs(lineText: string, sinkMethod: string | undefined): boolean {
+  if (!lineText || !sinkMethod?.length) return false;
+  const needle = `${sinkMethod}(`;
+  let i = 0;
+  while (i < lineText.length) {
+    const k = lineText.indexOf('parse', i);
+    if (k === -1) return false;
+    if (k > 0 && /[\w$]/.test(lineText[k - 1]!)) {
+      i = k + 5;
+      continue;
+    }
+    if (lineText.slice(k, k + 5) !== 'parse') {
+      i = k + 1;
+      continue;
+    }
+    const openParen = k + 5;
+    if (lineText[openParen] !== '(') {
+      i = k + 5;
+      continue;
+    }
+    const closeIdx = matchingCloseParen(lineText, openParen);
+    if (closeIdx === -1) {
+      i = k + 5;
+      continue;
+    }
+    const argSpan = lineText.slice(openParen + 1, closeIdx);
+    if (argSpan.includes(needle)) return true;
+    i = closeIdx + 1;
+  }
+  return false;
+}
+
+/**
+ * For a source and a `redos` sink on the same line: the source's expression
+ * (`req.query.p` from `req.query.p in handler`) is inside a call argument at
+ * one of the sink's pattern positions. Sources tagged with an LHS variable
+ * (`re = RegExp(...)`) carry no expression and do not qualify.
+ */
+function redosColocatedInPatternArg(
+  source: CircleIR['taint']['sources'][number],
+  sink: CircleIR['taint']['sinks'][number],
+  calls: CircleIR['calls'],
+): boolean {
+  if (source.variable) return false;
+  const loc = source.location ?? '';
+  const at = loc.indexOf(' in ');
+  const expr = (at >= 0 ? loc.slice(0, at) : loc).trim();
+  if (expr.length < 3) return false;
+  const positions = sink.argPositions && sink.argPositions.length > 0 ? sink.argPositions : [0];
+  return calls.some(c =>
+    c.location.line === sink.line &&
+    c.method_name === sink.method &&
+    c.arguments.some(a => positions.includes(a.position) && (a.expression ?? '').includes(expr)));
+}
+
 function detectExpressionScanFlows(
   calls: CircleIR['calls'],
   sources: CircleIR['taint']['sources'],
@@ -3374,7 +3698,14 @@ function detectExpressionScanFlows(
   const csFnRanges = methodRanges(['csharp']);
   const csFnStart = (line: number): number => enclosingStart(csFnRanges, line);
 
-  const jsFnRanges = methodRanges(['javascript', 'typescript']);
+  let jsFnRanges = methodRanges(['javascript', 'typescript']);
+  if (
+    jsFnRanges.length === 0 &&
+    typeof code === 'string' &&
+    (language === 'javascript' || language === 'typescript')
+  ) {
+    jsFnRanges = buildJsTsFunctionRangesFromSource(code);
+  }
   const jsFnStart = (line: number): number => enclosingStart(jsFnRanges, line);
   // cognium-dev#548 — names declared as class fields. A field is the one kind
   // of variable whose value legitimately crosses from one method to another, so
@@ -3571,6 +3902,68 @@ function detectExpressionScanFlows(
               if (!downCov.has(t)) { downCov.add(t); changed = true; }
             }
           }
+        }
+      }
+    }
+  }
+
+  // JS/TS body-parse chains (#1149 IL-22): virtual sources for variables
+  // derived from `JSON.parse(req.body)` without widening to all jsTaintedVars.
+  if (
+    (language === 'javascript' || language === 'typescript') &&
+    typeof code === 'string'
+  ) {
+    const httpTypes = new Set([
+      'http_body',
+      'http_query',
+      'http_param',
+      'http_header',
+      'http_cookie',
+    ]);
+    const httpAnchor = sourcesWithVar.find((s) => httpTypes.has(s.type));
+    if (httpAnchor) {
+      const lines = code.split('\n');
+      const chainVars = new Set<string>();
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]!;
+        if (/\bJSON\.parse\b/.test(line) && /\b(?:req|request)\.body\b/.test(line)) {
+          const bind = line.match(/(?:const|let|var)\s+(\w+)\s*=/);
+          if (bind?.[1]) chainVars.add(bind[1]);
+        }
+      }
+      let expanded = true;
+      while (expanded) {
+        expanded = false;
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i]!;
+          for (const seed of chainVars) {
+            const prop = line.match(
+              new RegExp(`(?:const|let|var)\\s+(\\w+)\\s*=\\s*${seed}\\.`),
+            );
+            const alias = line.match(
+              new RegExp(`(?:const|let|var)\\s+(\\w+)\\s*=\\s*\\b${seed}\\b`),
+            );
+            const lhs = prop?.[1] ?? alias?.[1];
+            if (lhs && !chainVars.has(lhs)) {
+              chainVars.add(lhs);
+              expanded = true;
+            }
+          }
+        }
+      }
+      if (chainVars.size > 0) {
+        const derivedLines = buildJavaScriptTaintedVars(code, language);
+        const existingVars = new Set(sourcesWithVar.map((s) => s.variable));
+        for (const varName of chainVars) {
+          if (!varName || existingVars.has(varName)) continue;
+          const originLine = derivedLines.get(varName);
+          if (originLine === undefined) continue;
+          sourcesWithVar.push({
+            ...httpAnchor,
+            variable: varName,
+            line: originLine,
+          });
+          existingVars.add(varName);
         }
       }
     }
@@ -4395,6 +4788,25 @@ function detectExpressionScanFlows(
             if (srcFn !== -1 && sinkFn !== -1 && srcFn !== sinkFn) continue;
           }
 
+          // cognium-dev#1223 — cross-function name collision on request proxies:
+          // `req.query` must not match a local `query` in another handler.
+          if (
+            jsFnRanges.length > 0 &&
+            source.variable &&
+            !complex
+          ) {
+            const srcFn = jsFnStart(source.line);
+            const sinkFn = jsFnStart(sink.line);
+            if (
+              srcFn !== -1 &&
+              sinkFn !== -1 &&
+              srcFn !== sinkFn &&
+              jsBareIdentOnlyAsRequestProxy(expr, source.variable)
+            ) {
+              continue;
+            }
+          }
+
           // cognium-dev#752: GraphQL resolver args are seeded by name only; scope
           // them to the resolver (or factory) they came from so a same-named
           // local in another recorded function does not inherit the seed.
@@ -4605,6 +5017,22 @@ function detectExpressionScanFlows(
       // Drop flows tagged constant / SPI (see sourceSemanticsAllowed
       // JSDoc for the per-sink policy).
       if (!sourceSemanticsAllowed(source, sink.type)) continue;
+      // A colocated request value reaches a `redos` sink only as the pattern
+      // argument: `new RegExp(req.query.p)`, not `req.query.p.match(/x/)` or
+      // Java `request.getParameter("x").matches("[a-z]+")`.
+      if (sink.type === 'redos' && !redosColocatedInPatternArg(source, sink, calls)) continue;
+      // cognium-dev#1156 — sink nested only inside `.parse(` args (same line).
+      const colocLineText = (sink as { code?: string }).code ?? '';
+      if (
+        colocLineText &&
+        (language === 'javascript' || language === 'typescript') &&
+        source.type === 'io_input' &&
+        typeof (source as { location?: string }).location === 'string' &&
+        (source as { location: string }).location.includes('.parse()') &&
+        sinkNestedInJsTsParseArgs(colocLineText, sink.method)
+      ) {
+        continue;
+      }
       // Variable-scan handoff — if the source carries an LHS-bound
       // variable AND that identifier is textually present in the RHS of
       // the sink's own source-line code, the variable-scan path is
@@ -4760,6 +5188,14 @@ function pickScopedSource(
     return null;
   };
 
+  // cognium-dev#1198 — stamped heap-field sources (`next.value`) must win over
+  // RHS-derived anchor resolution (#515), which would otherwise credit `name`.
+  if (language === 'java' && taintedVar?.includes('.')) {
+    const byQualified = sources.filter((s) => s.variable === taintedVar);
+    const pickQualified = closestPreceding(byQualified);
+    if (pickQualified) return pickQualified;
+  }
+
   // cognium-dev#515 — derived locals must credit the RHS read, not an earlier
   // decoy source in the same method (alias entries can still carry a stale anchor).
   if (
@@ -4842,4 +5278,41 @@ function pickScopedSource(
   //    preceding the sink (e.g. synthetic same-line sources).
   if (guardUnrelatedSources && taintedVar) return undefined;
   return sources[0];
+}
+
+/**
+ * cognium-dev #1156: true when every call to the sink's method on the sink line
+ * sits inside the argument list of a call to the source's method on that line,
+ * as in `parser.parse(fs.readFileSync(abs))`. The inner call runs first and the
+ * outer call consumes its result, so the source's value cannot reach the sink.
+ * When the source text or a sink call outside every source call can't be
+ * found, it returns false and the flow is kept.
+ */
+function sinkNestedInSourceCall(
+  source: { location?: string; line: number },
+  sink: { method?: string; code?: string; line: number },
+): boolean {
+  if (source.line !== sink.line || !sink.method || !sink.code) return false;
+  const srcMethod = /([A-Za-z_$][\w$]*)\s*\(\)\s+in\b/.exec(source.location ?? '')?.[1];
+  if (!srcMethod || srcMethod === sink.method) return false;
+  // Blank string literals so parentheses inside them don't count.
+  const text = sink.code.replace(/(["'`])(?:\\.|(?!\1)[^\\])*\1/g, m => m[0] + ' '.repeat(m.length - 2) + m[0]);
+  const callStarts = (name: string): number[] => {
+    const re = new RegExp(`(?<![\\w$])${name.replace(/\$/g, '\\$')}\\s*\\(`, 'g');
+    const out: number[] = [];
+    for (let m = re.exec(text); m; m = re.exec(text)) out.push(m.index + m[0].length - 1);
+    return out;
+  };
+  const ranges: Array<[number, number]> = [];
+  for (const open of callStarts(srcMethod)) {
+    let depth = 0;
+    for (let i = open; i < text.length; i++) {
+      if (text[i] === '(') depth++;
+      else if (text[i] === ')' && --depth === 0) { ranges.push([open, i]); break; }
+    }
+  }
+  if (ranges.length === 0) return false;
+  const sinks = callStarts(sink.method);
+  if (sinks.length === 0) return false;
+  return sinks.every(pos => ranges.some(([a, b]) => pos > a && pos < b));
 }

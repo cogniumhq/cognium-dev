@@ -37,7 +37,10 @@ import { JS_TAINTED_PATTERNS } from './language-sources-pass.js';
 import { LIBRARY_API_SURFACE_TAG } from '../library-api-surface-downgrade.js';
 import { isNonExecutableSourceLine } from '../non-executable-lines.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
-import { identifierOutsideSanitizerCalls } from '../taint-propagation.js';
+import {
+  identifierOutsideSanitizerCalls,
+  identifierOutsideSanitizerCallsInConcatOperand,
+} from '../taint-propagation.js';
 import { parseJavaArrayAccessExpression } from '../java-array-element-keys.js';
 import {
   resolveIdentifierType,
@@ -69,7 +72,9 @@ const JS_XSS_SANITIZERS = [
   /\bencodeURI\s*\(/,
   /\bcreateSafeHTML\s*\(/,
   /\btrustAsHtml\s*\(/,      // Angular
-  /\bbypassSecurityTrust/,   // Angular
+  // Not `bypassSecurityTrust*` (#1171): it switches Angular's sanitizer off and is
+  // registered as the xss sink itself (config-loader, #184), so listing it here
+  // filtered every such sink out on its own line.
 ];
 
 // ---------------------------------------------------------------------------
@@ -913,9 +918,14 @@ export function synthesizeCrossFileArgvWrapperFlows(
         ir.types,
         projectGraph,
       );
-      if (!isArgvContainerType(t)) continue;
+      const assembledLocal =
+        wrapperMethod != null
+        && javaAssembledArgvLocalFromInstanceFields(wrapperMethod, sinkLine, ir.types, lines);
+      const typedArgv = isArgvContainerType(t);
+      if (!typedArgv && !assembledLocal) continue;
       if (
-        sameFileCallerPassesShellArgv(varName, wrapperMethod, sinkLine, ir.types, ir.calls, lines)
+        typedArgv
+        && sameFileCallerPassesShellArgv(varName, wrapperMethod, sinkLine, ir.types, ir.calls, lines)
       ) {
         continue;
       }
@@ -931,7 +941,7 @@ export function synthesizeCrossFileArgvWrapperFlows(
         pos < 0
         && wrapperMethod
         && javaFieldArgvAtSink(projectGraph, ir.types, varName, wrapperMethod, sinkLine);
-      if (pos < 0 && !fieldArgv) continue;
+      if (!assembledLocal && pos < 0 && !fieldArgv) continue;
 
       const relatedCalleeFiles = javaRelatedCalleeFiles(projectGraph, fa.file, hostType);
       const shellArgvCtx: ShellArgvLookupContext = { projectGraph, sourceLinesByFile };
@@ -941,7 +951,22 @@ export function synthesizeCrossFileArgvWrapperFlows(
         if (!ctx) return;
         const setterName = `set${varName.charAt(0).toUpperCase()}${varName.slice(1)}`;
         let shellProof = false;
-        if (pos >= 0) {
+        if (assembledLocal && hostType) {
+          if (!wrapperMethod || !wrapperMethodMatchesTarget(wrapperMethod, targetMethod)) return;
+          const callerMethod = ctx.types
+            .flatMap(ty => ty.methods)
+            .find(mm => call.location.line >= mm.start_line && call.location.line <= mm.end_line);
+          if (!callerMethod) return;
+          shellProof = javaCallerReceiverConstructedWithShell(
+            call,
+            hostType,
+            callerMethod.start_line,
+            callerMethod.end_line,
+            ctx.lines,
+            ctx.types,
+            shellArgvCtx,
+          );
+        } else if (pos >= 0) {
           if (!wrapperMethod || !wrapperMethodMatchesTarget(wrapperMethod, targetMethod)) return;
           if (call.arguments.length <= pos) return;
           shellProof = callArgumentIsShellArgv(call, pos, ctx.types, ctx.lines, shellArgvCtx);
@@ -1050,6 +1075,99 @@ export function synthesizeCrossFileArgvWrapperFlows(
   }
 }
 
+/** cognium-dev#1199 — local `argv` list built from instance fields before ProcessBuilder. */
+function javaAssembledArgvLocalFromInstanceFields(
+  wrapperMethod: string,
+  sinkLine: number,
+  types: ReadonlyArray<TypeInfo>,
+  sourceLines: string[],
+): boolean {
+  const method = types
+    .flatMap(t => t.methods)
+    .find(mm => mm.name === wrapperMethod && sinkLine >= mm.start_line && sinkLine <= mm.end_line);
+  if (!method) return false;
+  let sawAddExec = false;
+  let sawAddAll = false;
+  const addExecRe = /\bargv\s*\.\s*add\s*\(\s*(?:this\.)?\w+\s*\)/;
+  const addAllRe = /\bargv\s*\.\s*addAll\s*\(\s*(?:this\.)?\w+\s*\)/;
+  for (let l = method.start_line; l < sinkLine && l <= method.end_line; l++) {
+    const line = sourceLines[l - 1] ?? '';
+    if (addExecRe.test(line)) sawAddExec = true;
+    if (addAllRe.test(line)) sawAddAll = true;
+  }
+  return sawAddExec && sawAddAll;
+}
+
+function javaIsConstructorCallToType(
+  targetMethod: string,
+  call: CallInfo,
+  hostTypeName: string,
+): boolean {
+  if (targetMethod.includes('<init>') && targetMethod.includes(hostTypeName)) return true;
+  return call.method_name === hostTypeName && (call.receiver === null || call.receiver === undefined);
+}
+
+/** cognium-dev#1199 — `recv.execute()` only counts when `recv` was `new HostType("sh", …)` above. */
+function javaCallerReceiverConstructedWithShell(
+  call: CallInfo,
+  hostTypeName: string,
+  methodStart: number,
+  methodEnd: number,
+  sourceLines: string[],
+  types: ReadonlyArray<TypeInfo>,
+  shellArgvCtx?: ShellArgvLookupContext,
+): boolean {
+  const recv = call.receiver?.trim();
+  if (!recv || recv === 'this') return false;
+  const ctorRe = new RegExp(
+    `\\b${escapeReSf(hostTypeName)}\\s+${escapeReSf(recv)}\\s*=\\s*new\\s+${escapeReSf(hostTypeName)}\\s*\\(\\s*([^)]+)\\)`,
+  );
+  for (let l = methodStart; l < call.location.line && l <= methodEnd; l++) {
+    const line = (sourceLines[l - 1] ?? '').trim();
+    const m = ctorRe.exec(line);
+    if (
+      m
+      && javaExpressionLooksLikeShellArgv(m[1]!.trim(), l, types, sourceLines, shellArgvCtx)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function projectCallerPassesShellForAssembledArgv(
+  hostTypeName: string,
+  wrapperMethod: string,
+  getCallerContext: (file: string) => { types: TypeInfo[]; calls: CallInfo[]; lines: string[] } | undefined,
+  forEachCrossFileCall: (cb: (callerFile: string, call: CallInfo, targetMethod: string) => void) => void,
+  shellArgvCtx: ShellArgvLookupContext,
+): boolean {
+  let found = false;
+  forEachCrossFileCall((callerFile, call, targetMethod) => {
+    if (!wrapperMethod || !wrapperMethodMatchesTarget(wrapperMethod, targetMethod)) return;
+    const ctx = getCallerContext(callerFile);
+    if (!ctx) return;
+    const callerMethod = ctx.types
+      .flatMap(t => t.methods)
+      .find(mm => call.location.line >= mm.start_line && call.location.line <= mm.end_line);
+    if (!callerMethod) return;
+    if (
+      javaCallerReceiverConstructedWithShell(
+        call,
+        hostTypeName,
+        callerMethod.start_line,
+        callerMethod.end_line,
+        ctx.lines,
+        ctx.types,
+        shellArgvCtx,
+      )
+    ) {
+      found = true;
+    }
+  });
+  return found;
+}
+
 /** cognium-dev#626 — drop argv-wrapper flows with no shell-argv caller (incl. cross-file). */
 export function filterJavaArgvWrapperFlowsWithoutShellCaller(
   fileAnalyses: Array<{ file: string; analysis: { meta: { language: string }; calls: CallInfo[]; types: TypeInfo[]; taint: { flows?: CircleIR['taint']['flows'] } } }>,
@@ -1106,11 +1224,36 @@ export function filterJavaArgvWrapperFlowsWithoutShellCaller(
         ir.types,
         projectGraph,
       );
-      if (!isArgvContainerType(t)) return true;
       const hostType = ctorCall.in_method
         ? javaHostTypeAtSink(ir.types, ctorCall.in_method, flow.sink_line)
         : undefined;
       const relatedCalleeFiles = javaRelatedCalleeFiles(projectGraph, fa.file, hostType);
+      if (!isArgvContainerType(t)) {
+        if (
+          ctorCall.in_method
+          && hostType
+          && javaAssembledArgvLocalFromInstanceFields(
+            ctorCall.in_method,
+            flow.sink_line,
+            ir.types,
+            lines,
+          )
+        ) {
+          const shellArgvCtx: ShellArgvLookupContext = { projectGraph, sourceLinesByFile };
+          return projectCallerPassesShellForAssembledArgv(
+            hostType,
+            ctorCall.in_method ?? '',
+            getCallerContext,
+            cb => {
+              for (const calleeFile of relatedCalleeFiles) {
+                forEachCrossFileCall(calleeFile, cb);
+              }
+            },
+            shellArgvCtx,
+          );
+        }
+        return true;
+      }
       return projectCallerPassesShellArgvForWrapper(
         varName,
         ctorCall.in_method,
@@ -1481,7 +1624,7 @@ function regExpTemplateArgument(code: string, lines: string[], line: number): st
   const text = lines[line - 1] ?? '';
   let offset = 0;
   for (let i = 0; i < line - 1; i++) offset += lines[i].length + 1;
-  const argument = /^(?:\s|\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*`((?:\\.|[^`\\])*)`(?=\s*[,)])/;
+  const argument = /^(?:\s|\/\/[^\n]*(?:\n|$)|\/\*(?:[^*]|\*(?!\/))*\*\/)*`((?:\\.|[^`\\])*)`(?=\s*[,)])/;
   for (const start of text.matchAll(/new\s+RegExp\s*\(/g)) {
     // The literal must be the whole first argument: `` `…` + text `` is not constant.
     const m = argument.exec(code.slice(offset + start.index! + start[0].length));
@@ -1492,6 +1635,64 @@ function regExpTemplateArgument(code: string, lines: string[], line: number): st
 
 /** A group that holds an unbounded quantifier and is itself quantified: `(a+)+`, `(x*)*`, `(\w{2,})+`, `(a+){2,}`. */
 const NESTED_QUANTIFIER_RE = /\([^()]*(?:[+*]|\{\d+,\d*\})[^()]*\)\s*[+*{]/;
+
+/** Named helpers that escape regex metacharacters before `new RegExp` (cognium-dev#1145). */
+const JS_REGEXP_ESCAPE_CALL_RE =
+  /^escape(?:RegExp|Re|Regex)\s*\(\s*[A-Za-z_$][\w$]*\s*\)$/;
+
+function jsRegexpFirstArgument(text: string): string | null {
+  const start = text.search(/new\s+RegExp\s*\(/);
+  if (start < 0) return null;
+  const open = text.indexOf('(', start);
+  if (open < 0) return null;
+  let depth = 0;
+  const argStart = open + 1;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    if (c === '(') depth++;
+    else if (c === ')') {
+      depth--;
+      if (depth === 0) return text.slice(argStart, i).trim();
+    }
+  }
+  return null;
+}
+
+/**
+ * True when the `new RegExp(` on `sinkLine` builds its pattern only from string
+ * literals plus `escapeRegExp`-style calls — the interpolated part cannot carry
+ * regex structure, so ReDoS from a tainted subject alone does not apply.
+ */
+function jsRegexpPatternOnlyViaEscapeHelper(code: string, lines: string[], sinkLine: number): boolean {
+  const text = lines[sinkLine - 1] ?? '';
+  if (!/new\s+RegExp\s*\(/.test(text)) return false;
+
+  const tpl = regExpTemplateArgument(code, lines, sinkLine);
+  if (tpl !== null) {
+    let sawInterpolation = false;
+    for (const m of tpl.matchAll(/\$\{([^}]*)\}/g)) {
+      sawInterpolation = true;
+      if (!JS_REGEXP_ESCAPE_CALL_RE.test(m[1].trim())) return false;
+    }
+    return sawInterpolation;
+  }
+
+  const arg = jsRegexpFirstArgument(text);
+  if (!arg) return false;
+  if (!/escape(?:RegExp|Re|Regex)\s*\(/.test(arg)) return false;
+  const segments = arg.split(/\s*\+\s*/);
+  let sawEscape = false;
+  for (const seg of segments) {
+    const s = seg.trim();
+    if (/^(['"`])(?:\\.|(?!\1)[^\\])*\1$/.test(s)) continue;
+    if (JS_REGEXP_ESCAPE_CALL_RE.test(s)) {
+      sawEscape = true;
+      continue;
+    }
+    return false;
+  }
+  return sawEscape;
+}
 
 /** A template literal that starts with `${IDENT}/` (cognium-dev#680). */
 const CONST_BASE_TEMPLATE_RE = /`\$\{\s*([A-Za-z_$][\w$]*)\s*\}\//g;
@@ -1587,6 +1788,144 @@ function isSchemeHostPrefix(prefix: string): boolean {
  * host-guarded above (following one-hop derivations), and the guard has a
  * throwing/returning body (reject polarity — the safe path is everything below).
  */
+/** Names bound to the in-process supertest helper (`require('supertest')` / default import). */
+function jsSupertestRequestBindingNames(code: string): Set<string> {
+  const names = new Set<string>();
+  for (const line of code.split('\n')) {
+    let m = line.match(
+      /\b(?:const|let|var)\s+(\w+)\s*=\s*require\s*\(\s*['"]supertest['"]\s*\)/,
+    );
+    if (m) names.add(m[1]!);
+    m = line.match(/\bimport\s+(\w+)\s+from\s+['"]supertest['"]/);
+    if (m) names.add(m[1]!);
+    m = line.match(/\bimport\s+\*\s+as\s+(\w+)\s+from\s+['"]supertest['"]/);
+    if (m) names.add(m[1]!);
+    m = line.match(/\bimport\s+(\w+)\s*,\s*\{[^}]*\}\s*from\s+['"]supertest['"]/);
+    if (m) names.add(m[1]!);
+  }
+  return names;
+}
+
+/**
+ * Stage 15f1 (#1332) — true for `/^…$/` regex literals whose body is a finite
+ * allowlist: explicit anchors, no unescaped `.` wildcard. Alternation inside
+ * the anchored body is allowed (BenchProctor express_ts safe cmdi/xpathi shapes).
+ */
+function isJsAnchoredFiniteAllowlistRegexBody(src: string): boolean {
+  if (!src.startsWith('^') || !src.endsWith('$')) return false;
+  const inner = src.slice(1, -1);
+  if (inner === '') return false;
+  const stripped = inner.replace(/\[(?:[^\]\\]|\\.)*\]/g, '');
+  const cleaned = stripped.replace(/\\./g, '');
+  return !cleaned.includes('.');
+}
+
+/**
+ * Returns 1-indexed lines whose sinks are covered by a reject-guard:
+ * `if (!/^allowlist$/.test(var)) { … return|throw; … }` then uses `var`
+ * (or one-hop assignment from it) below. Mirrors `jsSsrfHostGuardedLines`.
+ */
+function jsAnchoredAllowlistRejectGuardedLines(code: string): Set<number> {
+  const covered = new Set<number>();
+  const lines = code.split('\n');
+  const rejectRegexTest =
+    /\bif\s*\(\s*!\s*\/((?:[^/\\]|\\.)*)\/[a-z]*\s*\.\s*test\s*\(\s*(?:String\s*\(\s*)?([A-Za-z_$][\w$]*)(?:\s*\))?\s*\)\s*\)/;
+  const terminatorRe = /\b(throw|return)\b/;
+  const assignRe = /^\s*(?:const|let|var\s+)?\s*([A-Za-z_$][\w$]*)\s*=(?!=)\s*(.*)$/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const rm = rejectRegexTest.exec(lines[i] ?? '');
+    if (!rm || !isJsAnchoredFiniteAllowlistRegexBody(rm[1] ?? '')) continue;
+    const guardedVar = rm[2];
+    if (!guardedVar) continue;
+
+    let hasTerminator = terminatorRe.test(lines[i] ?? '');
+    if (!hasTerminator) {
+      for (let j = i + 1; j < Math.min(lines.length, i + 6); j++) {
+        const ln = lines[j] ?? '';
+        if (terminatorRe.test(ln)) { hasTerminator = true; break; }
+        // Closing brace of the guard `if` — not `});` inside the block body.
+        if (/^\s*}\s*$/.test(ln) || /^\s*}\s*else\b/.test(ln)) break;
+      }
+    }
+    if (!hasTerminator) continue;
+
+    const guarded = new Set<string>([guardedVar]);
+    const mentionsGuarded = (text: string): boolean => {
+      for (const name of guarded) if (new RegExp(`\\b${name}\\b`).test(text)) return true;
+      return false;
+    };
+    for (let p = 0; p <= i; p++) {
+      const pre = assignRe.exec(lines[p] ?? '');
+      if (pre && mentionsGuarded(pre[2]!)) guarded.add(pre[1]!);
+    }
+    for (let l = i + 1; l < lines.length; l++) {
+      const lineText = lines[l] ?? '';
+      const assign = assignRe.exec(lineText);
+      if (assign) {
+        if (mentionsGuarded(assign[2]!)) guarded.add(assign[1]!);
+        else if (assign[1] !== guardedVar) guarded.delete(assign[1]!);
+      }
+      if (mentionsGuarded(lineText)) covered.add(l + 1);
+    }
+  }
+  return covered;
+}
+
+/**
+ * Stage 19b (#1347) — Python: `if not re.fullmatch(<allowlist>, var): return`
+ * before subprocess / exec-shaped sinks. Covers interop IL-77 safe mirrors
+ * where a numeric allowlist rejects attacker input before crossing to node.
+ */
+function pythonFullmatchRejectGuardedLines(code: string): Set<number> {
+  const covered = new Set<number>();
+  const lines = code.split('\n');
+  const rejectFullmatch =
+    /\bif\s+not\s+re\s*\.\s*(?:fullmatch|match)\s*\(\s*r["']((?:[^"'\\]|\\.)*)["']\s*,\s*([A-Za-z_]\w*)\s*\)/;
+  const terminatorRe = /\b(throw|return)\b/;
+  const assignRe = /^\s*([A-Za-z_]\w*)\s*=(?!=)\s*(.*)$/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const rm = rejectFullmatch.exec(lines[i] ?? '');
+    if (!rm || !isImplicitlyAnchoredAllowlistRegex(rm[1] ?? '')) continue;
+    const guardedVar = rm[2];
+    if (!guardedVar) continue;
+
+    let hasTerminator = terminatorRe.test(lines[i] ?? '');
+    if (!hasTerminator) {
+      for (let j = i + 1; j < Math.min(lines.length, i + 6); j++) {
+        const ln = lines[j] ?? '';
+        if (terminatorRe.test(ln)) { hasTerminator = true; break; }
+        if (/^\s*elif\b/.test(ln) || /^\s*else\s*:/.test(ln)) break;
+        if (ln.trim() !== '' && !/^\s+/.test(ln)) break;
+      }
+    }
+    if (!hasTerminator) continue;
+
+    const guarded = new Set<string>([guardedVar]);
+    const mentionsGuarded = (text: string): boolean => {
+      for (const name of guarded) {
+        if (new RegExp(`\\b${escapeRegex(name)}\\b`).test(text)) return true;
+      }
+      return false;
+    };
+    for (let p = 0; p <= i; p++) {
+      const pre = assignRe.exec(lines[p] ?? '');
+      if (pre && mentionsGuarded(pre[2]!)) guarded.add(pre[1]!);
+    }
+    for (let l = i + 1; l < lines.length; l++) {
+      const lineText = lines[l] ?? '';
+      const assign = assignRe.exec(lineText);
+      if (assign) {
+        if (mentionsGuarded(assign[2]!)) guarded.add(assign[1]!);
+        else if (assign[1] !== guardedVar) guarded.delete(assign[1]!);
+      }
+      if (mentionsGuarded(lineText)) covered.add(l + 1);
+    }
+  }
+  return covered;
+}
+
 function jsSsrfHostGuardedLines(code: string): Set<number> {
   const covered = new Set<number>();
   const lines = code.split('\n');
@@ -1632,6 +1971,53 @@ function jsSsrfHostGuardedLines(code: string): Set<number> {
     }
   }
   return covered;
+}
+
+/**
+ * True when a libxmljs `parseXml` / `parseXmlString` call at `sinkLine` has
+ * disabled external entities: `noent: false`, an inline options object without
+ * `noent: true`, or a two-argument call whose inline options omit `noent: true`.
+ * Single-argument calls and dynamic options (`parseXml(buf, opts)`) → false
+ * (unknown entity resolution; keep the sink — flow-combo c02 / #1244).
+ * (cognium-dev#1222)
+ */
+function jsLibxmljsNoentDisablesXxe(code: string, sinkLine: number): boolean {
+  const lines = code.split('\n');
+  const start = Math.max(0, sinkLine - 2);
+  const end = Math.min(lines.length, sinkLine + 4);
+  const window = lines.slice(start, end).join('\n');
+  if (!/\blibxml(?:js)?\s*\.\s*parseXml(?:String)?\s*\(/.test(window)) return false;
+  if (/\bnoent\s*:\s*true\b/.test(window)) return false;
+
+  const callIdx = window.search(/\bparseXml(?:String)?\s*\(/);
+  if (callIdx < 0) return false;
+  const afterCall = window.slice(callIdx);
+  const openParen = afterCall.indexOf('(');
+  if (openParen < 0) return false;
+
+  let depth = 0;
+  let closeIdx = -1;
+  for (let i = openParen; i < afterCall.length; i++) {
+    const ch = afterCall[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) {
+        closeIdx = i;
+        break;
+      }
+    }
+  }
+  if (closeIdx < 0) return false;
+
+  const inner = afterCall.slice(openParen + 1, closeIdx);
+  const commaIdx = inner.indexOf(',');
+  if (commaIdx < 0) return false;
+
+  const secondArg = inner.slice(commaIdx + 1).trim();
+  if (/^[A-Za-z_$][\w$]*$/.test(secondArg)) return false;
+
+  return secondArg.startsWith('{');
 }
 
 /**
@@ -2292,6 +2678,40 @@ function isSameOriginQueryPrefix(prefix: string): boolean {
   return prefix.includes('?');                 // taint lands in the query
 }
 
+/**
+ * The values a JS sink call reads: each dotted name (`target`, `req.query.next`)
+ * in the argument list of `method(` on the sink line, outside string literals,
+ * and not itself called. Empty when the call is not found on the line.
+ */
+export function jsSinkArgumentValues(lineText: string, method?: string): string[] {
+  if (!method) return [];
+  const m = new RegExp(`\\b${method.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`).exec(lineText);
+  if (!m) return [];
+  let depth = 1, i = m.index + m[0].length;
+  const start = i;
+  for (; i < lineText.length && depth > 0; i++) {
+    const ch = lineText[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+  }
+  const args = lineText.slice(start, depth === 0 ? i - 1 : i)
+    .replace(/(["'`])(?:\\.|(?!\1)[^\\])*\1/g, '""');
+  const out = new Set<string>();
+  const re = /(?<![\w$.])([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)(?![\w$])(?!\s*\()/g;
+  for (let r = re.exec(args); r; r = re.exec(args)) {
+    const name = r[1].replace(/\s+/g, '');
+    if (!/^(?:true|false|null|undefined|this|new|typeof|await)$/.test(name)) out.add(name);
+  }
+  return [...out];
+}
+
+/** True if a guard line mentions one of the sink's values as a whole name. */
+function guardTestsValue(line: string, values: string[]): boolean {
+  return values.some(v => new RegExp(
+    `(?<![\\w$.])${v.replace(/[.$]/g, '\\$&')}(?![\\w$])`,
+  ).test(line));
+}
+
 export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
   readonly name = 'sink-filter';
   readonly category = 'security' as const;
@@ -2386,6 +2806,7 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       filtered, calls, constProp.tainted, constProp.symbols,
       dfg, constProp.sanitizedVars, constProp.synchronizedLines, language,
       constProp.sanitizedVarUncovered,
+      sanitizers,
     );
 
     // Stage 4 — sanitized sinks. A sanitizer on one operand does not drop
@@ -2569,6 +2990,12 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         // Default: keep the sink (conservative when no taint info available)
         return true;
       });
+
+      // Stage 7b — JS/TS libxmljs xxe: hardened `noent` drops the taint sink (#1222).
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'xxe') return true;
+        return !jsLibxmljsNoentDisablesXxe(ctx.code, sink.line);
+      });
     }
 
     // Stage 8 — JavaScript open_redirect / crlf / header_injection FP reduction.
@@ -2586,10 +3013,16 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         }
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
         // 8a. Conditional-allowlist guard: if (allowed.includes(x)) res.redirect(x);
+        // The guard must test a value the sink uses: a check on an unrelated
+        // variable (`if (name.includes(' '))`) no longer drops the sink. When the
+        // sink's argument names no value (the call is not found on the line),
+        // any guard in the window still drops it, as before.
+        const sinkValues = jsSinkArgumentValues(sinkLineText, sink.method);
         const startLine = Math.max(0, sink.line - 7);
         for (let i = startLine; i < sink.line - 1; i++) {
           const line = sourceLines[i] ?? '';
-          if (/\bif\s*\(/.test(line) && guardPatterns.test(line)) {
+          if (/\bif\s*\(/.test(line) && guardPatterns.test(line)
+              && (sinkValues.length === 0 || guardTestsValue(line, sinkValues))) {
             return false;
           }
         }
@@ -3417,6 +3850,23 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       });
     }
 
+    // Stage 15h2 — JS/TS nosql: string type reject-guard. (cognium-dev#1172)
+    // `if (typeof req.body.id !== 'string') { …; return }` before
+    // `coll.update({ _id: req.body.id }, …)` rules out an operator object
+    // (`{ $ne: … }`), the NoSQL injection itself. Drop the sink only when every
+    // request-derived reference in the filter argument is guarded that way.
+    if (['javascript', 'typescript'].includes(language)) {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'nosql_injection' || !sink.method) return true;
+        const arg0 = jsCallFirstArgText(sourceLines, sink.line, sink.method);
+        if (arg0 === null) return true;
+        const refs = [...new Set([...arg0.matchAll(/\b(?:req|request)(?:\.[A-Za-z_$][\w$]*)+/g)].map(m => m[0]))];
+        if (refs.length === 0) return true;
+        return !refs.every(ref => jsTypeofStringRejectGuarded(sourceLines, sink.line, ref));
+      });
+    }
+
     // Stage 15j — JS/TS ssrf: client-component file. (cognium-ai#279 R-3)
     // A fetch/axios call in a browser-rendered client component is not SSRF.
     // Gated on ext + positive client signal + no server signal (zero-FN).
@@ -3473,6 +3923,10 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         // A constant pattern can still backtrack on a tainted subject.
         return NESTED_QUANTIFIER_RE.test(pattern);
       });
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'redos') return true;
+        return !jsRegexpPatternOnlyViaEscapeHelper(ctx.code, sourceLines, sink.line);
+      });
     }
 
     // Stage 15f — JS/TS ssrf: anchored host allow-list reject-guard.
@@ -3488,6 +3942,44 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         filtered = filtered.filter(
           sink => !(sink.type === 'ssrf' && guardedLines.has(sink.line)),
         );
+      }
+    }
+
+    // Stage 15f1 — JS/TS: anchored allowlist reject-guard on user input
+    // (cognium-dev#1332 BenchProctor express_ts). `if (!/^tokens$/.test(x)) return`
+    // before cmdi/xpathi/sqli/xss sinks drops the sink when the line references
+    // the guarded (or one-hop derived) variable.
+    if (['javascript', 'typescript'].includes(language)) {
+      const allowlistGuarded = jsAnchoredAllowlistRejectGuardedLines(ctx.code);
+      if (allowlistGuarded.size > 0) {
+        const CREDITED = new Set([
+          'command_injection',
+          'xpath_injection',
+          'sql_injection',
+          'xss',
+          'unsafe_deserialization',
+          'code_injection',
+          'path_traversal',
+        ]);
+        filtered = filtered.filter(
+          sink => !(CREDITED.has(sink.type) && allowlistGuarded.has(sink.line)),
+        );
+      }
+    }
+
+    // Stage 15f2 — JS/TS ssrf: supertest drives an in-process Express app, not a
+    // network URL (#1326). Drop the classless `request(app)` SSRF sink when the
+    // callee is bound to `require('supertest')` / a default import from
+    // supertest.
+    if (['javascript', 'typescript'].includes(language)) {
+      const supertestNames = jsSupertestRequestBindingNames(ctx.code);
+      if (supertestNames.size > 0) {
+        filtered = filtered.filter(sink => {
+          if (sink.type !== 'ssrf' || sink.method !== 'request') return true;
+          const callee = (sink.code ?? '').match(/^([A-Za-z_$][\w$]*)\s*\(/);
+          if (callee && supertestNames.has(callee[1]!)) return false;
+          return true;
+        });
       }
     }
 
@@ -3845,6 +4337,18 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (!sawHelperWithGuard) return true;
         return false;
       });
+    }
+
+    // Stage 19b — Python command/code injection: inline `re.fullmatch` reject-guard
+    // (#1347 interop IL-77 safe py→node mirror).
+    if (language === 'python') {
+      const guardedLines = pythonFullmatchRejectGuardedLines(ctx.code);
+      if (guardedLines.size > 0) {
+        const CREDITED = new Set(['command_injection', 'code_injection']);
+        filtered = filtered.filter(
+          sink => !(CREDITED.has(sink.type) && guardedLines.has(sink.line)),
+        );
+      }
     }
 
     return { sources, sinks: filtered, sanitizers };
@@ -4229,6 +4733,70 @@ function argumentIdentifiers(expression: string): string[] {
   return out;
 }
 
+/** Split a Java string concat on top-level `+` (outside literals and parens). */
+function topLevelConcatOperands(expression: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  let start = 0;
+  for (let i = 0; i < expression.length; i++) {
+    const c = expression[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (c === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      continue;
+    }
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+    else if (c === '+' && depth === 0) {
+      parts.push(expression.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(expression.slice(start));
+  return parts;
+}
+
+function concatOperandVariableNames(
+  expr: string,
+  sanitizers: CircleIR['taint']['sanitizers'] | undefined,
+  sinkType: string | undefined,
+): string[] {
+  const out: string[] = [];
+  for (const operand of topLevelConcatOperands(expr)) {
+    const trimmed = operand.trim();
+    if (isStringLiteralExpression(trimmed)) continue;
+    let ids = argumentIdentifiers(trimmed);
+    if (sanitizers && sanitizers.length > 0 && sinkType) {
+      ids = ids.filter(varName => {
+        const wrappedOnly = identifierOutsideSanitizerCallsInConcatOperand(
+          varName,
+          trimmed,
+          sanitizers,
+          sinkType,
+        );
+        return wrappedOnly !== false;
+      });
+    }
+    for (const id of ids) {
+      if (!out.includes(id)) out.push(id);
+    }
+  }
+  return out;
+}
+
 function isStringLiteralExpression(expr: string): boolean {
   const trimmed = expr.trim();
   if (trimmed.length < 2) return false;
@@ -4291,6 +4859,7 @@ export function filterCleanVariableSinks(
   synchronizedLines?: Set<number>,
   language?: string,
   sanitizedVarUncovered?: Map<string, ReadonlySet<string>>,
+  sanitizers?: CircleIR['taint']['sanitizers'],
 ): CircleIR['taint']['sinks'] {
   const fieldNames = new Set<string>();
   if (dfg) {
@@ -4357,11 +4926,41 @@ export function filterCleanVariableSinks(
           // Java only. The same `+` test on other languages kept sinks in
           // minified scripts (a numeric add whose first identifier is a
           // constant). #627 is the Java `exec(cmd + tainted)` shape.
-          const concatNames = language === 'java' && isStringConcat(expr) ? argumentIdentifiers(expr) : [];
-          const names = concatNames.length > 0 ? concatNames : [arg.variable];
+          const rawConcatNames =
+            language === 'java' && isStringConcat(expr)
+              ? concatOperandVariableNames(expr, sanitizers, sink.type)
+              : [];
+          if (language === 'java' && isStringConcat(expr) && rawConcatNames.length === 0) continue;
+          const names = rawConcatNames.length > 0 ? rawConcatNames : [arg.variable];
+          const concatOperandCheck = rawConcatNames.length > 0;
           let argClean = true;
           for (const varName of names) {
             const scopedName = methodName ? `${methodName}:${varName}` : varName;
+
+            if (
+              concatOperandCheck &&
+              sanitizers &&
+              sanitizers.length > 0 &&
+              sink.type &&
+              !taintedVars.has(scopedName) &&
+              !taintedVars.has(varName) &&
+              !sanitizedVars?.has(scopedName) &&
+              !sanitizedVars?.has(varName)
+            ) {
+              let outsideOnly: boolean | null = null;
+              for (const operand of topLevelConcatOperands(expr)) {
+                const trimmed = operand.trim();
+                if (!trimmed.includes(varName)) continue;
+                outsideOnly = identifierOutsideSanitizerCallsInConcatOperand(
+                  varName,
+                  trimmed,
+                  sanitizers,
+                  sink.type,
+                );
+                if (outsideOnly !== null) break;
+              }
+              if (outsideOnly === true) continue;
+            }
 
             if (fieldNames.has(varName) && !isInSynchronizedBlock) { argClean = false; break; }
             // #589 review: when any `method:var` sanitizer exists, decide from
@@ -4517,4 +5116,56 @@ function isXPathQuoteEscapedOnLine(lineText: string, varName: string): boolean {
   }
 
   return seen > 0;
+}
+
+/**
+ * cognium-dev#1172 — text of the first argument of the call to `method` that
+ * starts on 1-based `line` (it may span lines), or null if it can't be read.
+ */
+function jsCallFirstArgText(lines: string[], line: number, method: string): string | null {
+  const text = lines.slice(line - 1, line + 11).join('\n');
+  const at = text.search(new RegExp(`\\b${method.replace(/\$/g, '\\$')}\\s*\\(`));
+  if (at < 0) return null;
+  let i = text.indexOf('(', at) + 1;
+  const start = i;
+  let depth = 0;
+  let str: string | null = null;
+  for (; i < text.length; i++) {
+    const ch = text[i]!;
+    if (str) { if (ch === '\\') i++; else if (ch === str) str = null; continue; }
+    if (ch === '"' || ch === "'" || ch === '`') { str = ch; continue; }
+    if (ch === '(' || ch === '{' || ch === '[') depth++;
+    else if (ch === ')' || ch === '}' || ch === ']') { if (depth === 0) return text.slice(start, i); depth--; }
+    else if (ch === ',' && depth === 0) return text.slice(start, i);
+  }
+  return null;
+}
+
+/**
+ * cognium-dev#1172 — true when, within the 40 lines before `sinkLine`, an
+ * `if (… typeof <ref> !== 'string' …)` whose condition is only that check or
+ * an `||` of checks rejects with return / throw / a `res.status(…)` reply.
+ */
+function jsTypeofStringRejectGuarded(lines: string[], sinkLine: number, ref: string): boolean {
+  const esc = ref.replace(/[.$]/g, m => '\\' + m);
+  const guardRe = new RegExp(`\\bif\\s*\\((?:[^()]*\\|\\|\\s*)?typeof\\s+${esc}\\s*!==?\\s*(['"])string\\1\\s*(?:\\|\\|[^()]*)?\\)`);
+  const terminator = /\b(?:return|throw)\b|\bres\s*\.\s*status\s*\(/;
+  for (let i = Math.max(0, sinkLine - 41); i < sinkLine - 1; i++) {
+    if (!guardRe.test(lines[i] ?? '')) continue;
+    const after = (lines[i] ?? '').slice((lines[i] ?? '').search(/\)\s*(?:\{|$|[^\s])/));
+    if (terminator.test(after)) return true;
+    // block body: scan to the closing brace for a terminator
+    let depth = 0;
+    let started = false;
+    for (let j = i; j < Math.min(lines.length, i + 15, sinkLine - 1); j++) {
+      const ln = j === i ? after : (lines[j] ?? '');
+      if (j > i && terminator.test(ln)) return true;
+      for (const ch of ln) {
+        if (ch === '{') { depth++; started = true; }
+        else if (ch === '}') depth--;
+      }
+      if (started && depth <= 0) break;
+    }
+  }
+  return false;
 }

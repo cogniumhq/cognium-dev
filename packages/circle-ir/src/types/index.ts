@@ -168,6 +168,13 @@ export interface CallInfo {
     column: number;
   };
   in_method?: string | null;
+  /**
+   * The nesting path (`Outer.Inner`) of the type whose constructor holds the
+   * call. Java only, present only under `AnalyzerOptions.navigationTypes`,
+   * and only on an explicit constructor invocation (`super(…)` /
+   * `this(…)`): the scope its superclass name is resolved in.
+   */
+  in_type?: string | null;
   is_constructor?: boolean;
   // PENDING: Call resolution
   resolved?: boolean;
@@ -184,8 +191,9 @@ export interface ArgumentInfo {
    * The argument's static type as the source spells it (`String`, `long`,
    * `Money`, `List<Foo>`), or `null` where it cannot be read off the syntax
    * and the declarations in scope. `null` (the literal) is spelled `null`.
-   * Java only, and present only under `AnalyzerOptions.navigationTypes`;
-   * overload selection reads it.
+   * Java only. Present under `AnalyzerOptions.navigationTypes`, and without
+   * it on a call to a method name the file declares more than once;
+   * overload selection (navigation and inter-procedural taint) reads it.
    */
   type?: string | null;
   /**
@@ -216,6 +224,14 @@ export interface CFGBlock {
   type: "entry" | "exit" | "normal" | "conditional" | "loop";
   start_line: number;
   end_line: number;
+  /**
+   * 0-based column (UTF-16 code units) where the block starts on `start_line`: the statement's
+   * first character, or for a block placed on a statement's end (an exit
+   * block, a do-while condition) its last character. Absent on synthetic
+   * blocks no single statement gives (a Bash script's entry and exit, Go's
+   * block of top-level declarations).
+   */
+  start_column?: number;
 }
 
 export interface CFGEdge {
@@ -238,6 +254,7 @@ export interface DFGDef {
   id: number;
   variable: string;
   line: number;
+  /** 0-based column on `line`, in UTF-16 code units. Always set for JavaScript/TypeScript; other languages set it where noted in their builders. */
   column?: number;
   kind: "param" | "local" | "field" | "return";
   expression?: string;
@@ -247,6 +264,7 @@ export interface DFGUse {
   id: number;
   variable: string;
   line: number;
+  /** 0-based column on `line`, in UTF-16 code units. Always set for JavaScript/TypeScript. */
   column?: number;
   def_id: number | null;  // Reaching definition
 }
@@ -380,6 +398,7 @@ export const SINK_TYPES = [
   "weak_crypto",
   "insecure_cookie",
   "trust_boundary",
+  "cache_poisoning",
   "prompt_injection",
   "insecure_storage",
   "prototype_pollution",
@@ -560,6 +579,11 @@ export interface ImportInfo {
   alias: string | null;
   is_wildcard: boolean;
   line_number: number | null;
+  /**
+   * TypeScript type-only import (`import type { X } …` or `import { type X } …`):
+   * it binds no runtime value. Absent for every other import.
+   */
+  is_type_only?: true;
 }
 
 // =============================================================================
@@ -1150,6 +1174,13 @@ export interface ProjectAnalysis {
    */
   timed_out_files?: Array<{ file: string; elapsed_ms: number; phase: string }>;
   /**
+   * Files skipped because `analyze()` (or `analyzeFile`) threw an error other
+   * than {@link AnalysisTimeoutError} (cognium-dev#1351). Present only when at
+   * least one file failed. These files are absent from `files`; a consumer must
+   * report them, not treat them as clean.
+   */
+  failed_files?: Array<{ file: string; message: string }>;
+  /**
    * `true` when the PER-FILE phase of `analyzeProject` stopped at a size
    * ceiling (see `AnalyzerOptions.maxProjectSourceChars` /
    * `maxProjectFiles`). As with `per_file_budget_exceeded`, files were
@@ -1166,6 +1197,13 @@ export interface ProjectAnalysis {
    * Added in circle-ir 4.9.27 (cognium-dev#424).
    */
   project_size_budget_exceeded?: boolean;
+  /**
+   * How many high/critical security findings and taint flows the
+   * `require-entry-path` gate removed because no classified entry point
+   * reaches them. Present only when at least one was removed. Disabling the
+   * gate (`disabledPasses: ['require-entry-path']`) keeps them.
+   */
+  entry_path_dropped?: number;
 }
 
 export interface FileAnalysis {

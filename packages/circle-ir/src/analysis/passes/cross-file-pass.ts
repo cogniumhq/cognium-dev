@@ -547,6 +547,64 @@ function findCrossInstanceAliasingPaths(
  * constant-folding ternary, a list read of a safe slot). True when the sink is
  * then no longer reached. Without chains, or with nothing to stop, nothing changes.
  */
+/**
+ * A same-file Java helper whose every `return` hands back a value already
+ * sanitized for `sinkType` (#915): a string literal, a sanitizer call
+ * (`ESAPI.encoder().encodeForHTML(param)`), or a local assigned exactly once,
+ * from such a call. OWASP xss-04 `private static String doSomething(request,
+ * param) { String bar = ESAPI.encoder().encodeForHTML(param); return bar; }`.
+ * The sanitizer is read from `ir.taint.sanitizers`, so only calls the engine
+ * already credits for that sink type count.
+ */
+function javaHelperReturnsOnlySanitized(
+  ir: CircleIR,
+  lines: string[],
+  start: number,
+  end: number,
+  sinkType: string,
+): boolean {
+  const sanitizingLine = (line: number, expr: string): boolean => (ir.taint.sanitizers ?? []).some(san =>
+    san.line === line && sanitizerCoversSink(san, sinkType) &&
+    new RegExp(`(?:^|\\.)\\s*${escapeRe(lastSegment(san.method))}\\s*\\(`).test(expr) &&
+    /\)\s*$/.test(expr));
+  const strip = (t: string): string => t.replace(/\/\/.*$/, '').trim();
+  const returns: Array<{ line: number; expr: string }> = [];
+  for (let l = start; l <= end; l++) {
+    const text = strip(lines[l - 1] ?? '');
+    const m = /^(?:\}\s*)?return\s+(.+?)\s*;$/.exec(text);
+    if (m) returns.push({ line: l, expr: m[1] });
+    else if (/\breturn\b/.test(text)) return false;
+  }
+  if (returns.length === 0) return false;
+  for (const r of returns) {
+    if (/^"(?:[^"\\]|\\.)*"$/.test(r.expr)) continue;
+    if (sanitizingLine(r.line, r.expr)) continue;
+    const id = /^([A-Za-z_]\w*)$/.exec(r.expr)?.[1];
+    if (!id) return false;
+    const assign = new RegExp(`(?<![\\w.])${id}\\s*(?:[-+*/%&|^]|<<|>>>?)?=(?!=)`);
+    const decl = new RegExp(`^(?:final\\s+)?[\\w<>\\[\\].]+\\s+${id}\\s*=\\s*(.+?)\\s*;$`);
+    let assigned = 0;
+    let ok = false;
+    for (let l = start; l <= end; l++) {
+      const text = strip(lines[l - 1] ?? '').replace(/"(?:[^"\\]|\\.)*"/g, '""');
+      if (!assign.test(text) && !new RegExp(`(?:\\+\\+|--)\\s*${id}\\b|\\b${id}\\s*(?:\\+\\+|--)`).test(text)) continue;
+      assigned++;
+      const d = decl.exec(strip(lines[l - 1] ?? ''));
+      ok = !!d && sanitizingLine(l, d[1]);
+    }
+    if (assigned !== 1 || !ok) return false;
+  }
+  return true;
+}
+
+function lastSegment(method: string): string {
+  return method.replace(/\(\s*\)\s*$/, '').split('.').pop() ?? method;
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function javaHelperStopsCallerPath(ir: CircleIR, lines: string[], p: InterproceduralTaintPath): boolean {
   const chains = ir.dfg.chains;
   if (!chains || chains.length === 0 || lines.length === 0) return false;
@@ -571,6 +629,7 @@ function javaHelperStopsCallerPath(ir: CircleIR, lines: string[], p: Interproced
       const ms = localMethods.get(c.method_name);
       if (!ms || ms.length !== 1) continue;
       if (!calleeReturnMayCarryParam(code, ms[0].start, ms[0].end, [])) { b = true; break; }
+      if (javaHelperReturnsOnlySanitized(ir, lines, ms[0].start, ms[0].end, p.sink.type)) { b = true; break; }
     }
     blockedLine.set(line, b);
     return b;

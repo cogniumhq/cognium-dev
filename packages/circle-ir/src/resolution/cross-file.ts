@@ -820,13 +820,20 @@ export class CrossFileResolver {
       if (name) paramNameToIndex.set(name, i);
     }
 
+    const isJs = ir.meta.language === 'javascript' || ir.meta.language === 'typescript';
     for (const sink of ir.taint.sinks) {
       if (sink.line < method.start_line || sink.line > method.end_line) continue;
 
       // Find the call(s) at the sink line — match by line number.
-      const callsAtSink = ir.calls.filter(c => c.location.line === sink.line);
+      // JS/TS (#1120): only the sink call itself, at its dangerous positions —
+      // in `fs.writeFileSync(file, JSON.stringify(data))` the parameter `data`
+      // is written, not used as a path.
+      const callsAtSink = ir.calls.filter(c => c.location.line === sink.line
+        && (!isJs || !sink.method || this.callMatchesSink(sink, c)));
       for (const call of callsAtSink) {
         for (const arg of call.arguments) {
+          if (isJs && sink.argPositions && sink.argPositions.length > 0
+              && !sink.argPositions.includes(arg.position)) continue;
           // Argument that's a direct variable reference.
           const candidates: string[] = [];
           if (arg.variable) candidates.push(arg.variable);
@@ -1138,6 +1145,27 @@ export class CrossFileResolver {
       .some(a => (a.variable && names.has(a.variable)) || res.some(re => re.test(a.expression ?? ''))));
   }
 
+  /** Sink call on this line (method + optional column), same filter as `jsParamReachesSinkArgs`. */
+  private callMatchesSink(
+    sink: TaintSink,
+    call: { method_name?: string; location?: { column?: number } },
+  ): boolean {
+    return call.method_name === sink.method
+      && (sink.callColumn === undefined
+        || call.location?.column === undefined
+        || call.location.column === sink.callColumn);
+  }
+
+  /** Arguments the sink marks dangerous (`argPositions`, else all). */
+  private dangerousSinkArguments(
+    sink: TaintSink,
+    call: { arguments?: Array<{ position: number }> },
+  ): Array<{ position: number; variable?: string; expression?: string }> {
+    const args = call.arguments ?? [];
+    if (!sink.argPositions || sink.argPositions.length === 0) return args;
+    return args.filter(a => sink.argPositions!.includes(a.position));
+  }
+
   /**
    * C# (cognium-dev#637): the methods a value ends in after a chain of pure
    * forwarders. A callee that holds a sink is its own terminal. One that holds no
@@ -1253,8 +1281,10 @@ export class CrossFileResolver {
 
             // 2a. If callee returns a source and is NOT a sanitizer, mark every
             //     local def on this caller line as tainted (the assignment LHS).
-            if (callee.returnsSource && !callee.sanitizes && callee.sourceType) {
-              const calleeNode = methodIndex.get(resolved.targetMethod);
+            const calleeNode0 = methodIndex.get(resolved.targetMethod);
+            if (callee.returnsSource && !callee.sanitizes && callee.sourceType &&
+                !(calleeNode0 && this.sourcesOnlySteerBranches(callee.file, calleeNode0.ir, calleeNode0.method))) {
+              const calleeNode = calleeNode0;
               const calleeSourceLine = calleeNode
                 ? this.findRealSourceLineInMethod(calleeNode.ir, calleeNode.method)
                 : undefined;
@@ -1288,7 +1318,8 @@ export class CrossFileResolver {
               if (!callee.taintedParams.includes(argIdx)) continue;
 
               const arg = call.arguments[argIdx];
-              const matched = this.matchTaintedArg(arg, tainted);
+              const matched = this.matchTaintedArg(arg, tainted,
+                callerIR.meta.language === 'javascript' || callerIR.meta.language === 'typescript');
               if (!matched) continue;
 
               // #266: skip when the matched var's value was reassigned away
@@ -1352,11 +1383,13 @@ export class CrossFileResolver {
           //     caller's file rather than in a cross-file callee.
           if (tainted.size > 0) {
             const sinksInCaller = callerIdx.sinksByMethod.get(method) ?? [];
+            const isJs = callerIR.meta.language === 'javascript' || callerIR.meta.language === 'typescript';
             for (const sink of sinksInCaller) {
-              const callsAtSink = callerIdx.callsByLine.get(sink.line) ?? [];
+              const callsAtSink = (callerIdx.callsByLine.get(sink.line) ?? [])
+                .filter(c => this.callMatchesSink(sink, c));
               for (const sinkCall of callsAtSink) {
-                for (const arg of sinkCall.arguments ?? []) {
-                  const matched = this.matchTaintedArg(arg, tainted);
+                for (const arg of this.dangerousSinkArguments(sink, sinkCall)) {
+                  const matched = this.matchTaintedArg(arg, tainted, isJs);
                   if (!matched) continue;
                   const key = `${matched.origin.file}:${matched.origin.line}→${callerFile}:${sink.line}`;
                   if (seen.has(key)) continue;
@@ -1569,9 +1602,10 @@ export class CrossFileResolver {
           // 3a. Caller-body sinks consuming a tainted local.
           const sinksInCaller = callerIdx.sinksByMethod.get(method) ?? [];
           for (const sink of sinksInCaller) {
-            const callsAtSink = callerIdx.callsByLine.get(sink.line) ?? [];
+            const callsAtSink = (callerIdx.callsByLine.get(sink.line) ?? [])
+              .filter(c => this.callMatchesSink(sink, c));
             for (const sinkCall of callsAtSink) {
-              for (const arg of sinkCall.arguments ?? []) {
+              for (const arg of this.dangerousSinkArguments(sink, sinkCall)) {
                 const matched = this.matchTaintedArg(arg, tainted);
                 if (!matched) continue;
                 const key = `fb:${matched.origin.file}:${matched.origin.line}→${callerFile}:${sink.line}`;
@@ -1874,19 +1908,32 @@ export class CrossFileResolver {
   private matchTaintedArg(
     arg: { variable?: string | null; expression?: string },
     tainted: Map<string, { file: string; line: number; type: string; hopChain: InterproceduralTaintPath['hops']; defIds?: Set<number> }>,
+    /** JS/TS: a name after a single `.` is a property (`args.output`), not the tainted local `output` (a spread `...output` still is). */
+    jsMember = false,
   ): { var: string; origin: { file: string; line: number; type: string; hopChain: InterproceduralTaintPath['hops']; defIds?: Set<number> } } | null {
     if (tainted.size === 0) return null;
 
+    // JS/TS (#1137): `name.length` is a number, so an argument that uses the
+    // tainted name only as `name.length` carries no taint across the call.
+    const lengthOnly = (tv: string): string | undefined => arg.expression?.replace(
+      new RegExp(`(?<![\\w$.])${escapeRegExp(tv)}\\s*\\??\\.\\s*length(?![\\w$(\\[])`, 'g'), '0');
+
     // Direct variable reference
     if (arg.variable && tainted.has(arg.variable)) {
-      return { var: arg.variable, origin: tainted.get(arg.variable)! };
+      const rest = jsMember ? lengthOnly(arg.variable) : undefined;
+      if (rest === undefined || rest === arg.expression
+          || new RegExp(`(?<![\\w$])${escapeRegExp(arg.variable)}(?![\\w$])`).test(rest)) {
+        return { var: arg.variable, origin: tainted.get(arg.variable)! };
+      }
     }
 
     // Whole-word scan inside the expression (handles `prefix + url`, `url.trim()`, etc.)
     if (arg.expression) {
       for (const [tv, origin] of tainted) {
-        const re = new RegExp(`\\b${escapeRegExp(tv)}\\b`);
-        if (re.test(arg.expression)) return { var: tv, origin };
+        const re = jsMember
+          ? new RegExp(`(?<![\\w$])(?<!(?:^|[^.])\\.)${escapeRegExp(tv)}(?![\\w$])`)
+          : new RegExp(`\\b${escapeRegExp(tv)}\\b`);
+        if (re.test(jsMember ? lengthOnly(tv)! : arg.expression)) return { var: tv, origin };
       }
     }
 
@@ -2057,6 +2104,101 @@ export class CrossFileResolver {
     return !taintDefIds.has(use.def_id);
   }
 
+  /**
+   * True when every real source inside `method` lands in a local that is only
+   * ever read in a branch condition (`if (...)`, `while (...)`) after it is
+   * assigned, so no source value can reach what the method returns (#914).
+   *
+   * OWASP `Utils.getOSCommandString(append)` reads
+   * `String osName = System.getProperty("os.name");` only to choose between
+   * `"cmd.exe /c " + append` and `append`. Without this, `returnsSource`
+   * marks the method's return as `env_input` and every caller's
+   * `exec(... getOSCommandString("ls ") ...)` became a command_injection path.
+   *
+   * Java / JS / TS when the source text is available; otherwise false
+   * (the method keeps `returnsSource`).
+   */
+  private sourcesOnlySteerBranches(file: string, ir: CircleIR, method: MethodInfo): boolean {
+    const lang = ir.meta.language;
+    if (lang !== 'java' && lang !== 'javascript' && lang !== 'typescript') return false;
+    const lines = this.sourceLines?.get(file);
+    if (!lines) return false;
+    const real = ir.taint.sources.filter(s =>
+      s.type !== 'interprocedural_param' && s.line >= method.start_line && s.line <= method.end_line);
+    if (real.length === 0) return false;
+    for (const src of real) {
+      if (lang === 'java') {
+        if (!this.javaSourceOnlySteersBranches(lines, method, src)) return false;
+      } else if (!this.jsTsSourceOnlySteersBranches(lines, method, src)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** #914 — local assigned from a source, then only read in branch conditions. */
+  private javaSourceOnlySteersBranches(
+    lines: string[],
+    method: MethodInfo,
+    src: TaintSource,
+  ): boolean {
+    const v = src.variable;
+    if (!v || !/^[A-Za-z_$][\w$]*$/.test(v)) return false;
+    const decl = new RegExp(`^\\s*(?:final\\s+)?[\\w<>\\[\\].]+\\s+${v}\\s*=[^;]*;\\s*$`);
+    if (!decl.test(stripJavaLiterals(lines[src.line - 1] ?? ''))) return false;
+    const mention = new RegExp(`(?<![\\w$.])${v.replace(/\$/g, '\\$')}(?![\\w$])`);
+    for (let l = src.line + 1; l <= method.end_line; l++) {
+      const text = withoutLeadingConditions(stripJavaLiterals(lines[l - 1] ?? ''));
+      if (mention.test(text)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * #1136 — JS/TS counterpart of #914: a read used only to steer a branch
+   * (including inline `if (guard(read(...))) push(path)`) does not taint the
+   * helper's return for cross-file chaining.
+   */
+  private jsTsSourceOnlySteersBranches(
+    lines: string[],
+    method: MethodInfo,
+    src: TaintSource,
+  ): boolean {
+    const v = src.variable;
+    if (v && /^[A-Za-z_$][\w$]*$/.test(v)) {
+      const decl = new RegExp(`^\\s*(?:const|let|var)\\s+${v.replace(/\$/g, '\\$')}\\s*=`);
+      if (decl.test(stripJavaLiterals(lines[src.line - 1] ?? ''))) {
+        const mention = new RegExp(`(?<![\\w$.])${v.replace(/\$/g, '\\$')}(?![\\w$])`);
+        for (let l = src.line + 1; l <= method.end_line; l++) {
+          const text = withoutLeadingConditions(stripJavaLiterals(lines[l - 1] ?? ''));
+          if (mention.test(text)) return false;
+        }
+        return true;
+      }
+    }
+    const anchor = this.jsTsBranchOnlyAnchor(lines, src);
+    if (!anchor) return false;
+    for (let l = method.start_line; l <= method.end_line; l++) {
+      const text = stripJavaLiterals(lines[l - 1] ?? '');
+      if (!text.includes(anchor)) continue;
+      const outsideCond = withoutLeadingConditions(text);
+      if (outsideCond.includes(anchor)) return false;
+    }
+    return true;
+  }
+
+  /** Stable substring for an inline read (e.g. `readFileSync`) on the source line. */
+  private jsTsBranchOnlyAnchor(lines: string[], src: TaintSource): string | undefined {
+    const line = stripJavaLiterals(lines[src.line - 1] ?? '');
+    const readCall = line.match(/\b(readFileSync|readFile|readSync)\s*\(/);
+    if (readCall) return readCall[1];
+    if (src.location) {
+      const m = src.location.match(/\b(readFileSync|readFile|readSync)\b/);
+      if (m) return m[1];
+    }
+    return undefined;
+  }
+
   private findRealSourceLineInMethod(ir: CircleIR, method: MethodInfo): number | undefined {
     for (const src of ir.taint.sources) {
       if (src.type === 'interprocedural_param') continue;
@@ -2137,6 +2279,37 @@ export class CrossFileResolver {
   /** Expose field-taint summary (for tests + diagnostics). */
   getFieldTaintInfo(typeFqn: string, fieldName: string): FieldTaintInfo | undefined {
     return this.fieldTaintInfo.get(`${typeFqn}.${fieldName}`);
+  }
+}
+
+/** A Java line with comments and string / char literals blanked. */
+function stripJavaLiterals(text: string): string {
+  return text
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\]|\\.)'/g, "''")
+    .replace(/\/\/.*$/, '');
+}
+
+/**
+ * The line with the parenthesised condition of every `if` / `else if` /
+ * `while` it opens removed, so what remains is what the line does with
+ * data. An unbalanced condition (it wraps to the next line) is left in
+ * place, which only makes the caller more conservative.
+ */
+function withoutLeadingConditions(text: string): string {
+  let out = text;
+  for (;;) {
+    const m = /\b(?:if|while)\s*\(/.exec(out);
+    if (!m) return out;
+    const open = m.index + m[0].length - 1;
+    let depth = 0;
+    let close = -1;
+    for (let i = open; i < out.length; i++) {
+      if (out[i] === '(') depth++;
+      else if (out[i] === ')' && --depth === 0) { close = i; break; }
+    }
+    if (close < 0) return out;
+    out = out.slice(0, m.index) + out.slice(close + 1);
   }
 }
 

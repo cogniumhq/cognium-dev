@@ -96,6 +96,29 @@ export { handler };
     expect(hasCmdFlow(r)).toBe(true);
   });
 
+  it('typescript export default { resolveUser } keeps graphql/sql flow (ch01)', async () => {
+    const code = `import sqlite3 from 'sqlite3';
+function resolveUser(_: unknown, { id }: { id: string }) {
+  const q = id;
+  new sqlite3.Database(':memory:').all("SELECT * FROM u WHERE id='" + q + "'");
+}
+export default { resolveUser };
+`;
+    const r = await analyze(code, 'ch01_graphql.ts', 'typescript');
+    expect(hasSqlFlow(r)).toBe(true);
+  });
+
+  it('typescript export default { handle } keeps grpc/cmd flow (ch03)', async () => {
+    const code = `import { exec } from 'child_process';
+function handle(req: { payload: string }) {
+  exec('echo ' + req.payload, () => {});
+}
+export default { handle };
+`;
+    const r = await analyze(code, 'ch03_grpc.ts', 'typescript');
+    expect(hasCmdFlow(r)).toBe(true);
+  });
+
   it('rust #[post] handler with DTO param reaches command_injection', async () => {
     const code = `use std::process::Command;
 

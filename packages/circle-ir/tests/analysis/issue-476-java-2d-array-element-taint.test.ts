@@ -55,4 +55,26 @@ describe('#476 slice: 2-D array element taint', () => {
     const r = await analyze(GRID_NOTE_FIXED, 'GridNoteFixedServlet.java', 'java');
     expect(flows(r, 'xss')).toEqual([]);
   });
+
+  it('RowLiteralServlet: row assigned from {tainted, literal} reaches matrix[0][0] (#476 / Arrays10)', async () => {
+    const code = `import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class RowLiteralServlet extends HttpServlet {
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String note = request.getParameter("note");
+        String[][] matrix = new String[3][5];
+        matrix[0] = new String[] { note, "abc" };
+        response.getWriter().println(matrix[0][0]);
+        response.getWriter().println(matrix[0][2]);
+    }
+}`;
+    const r = await analyze(code, 'RowLiteralServlet.java', 'java');
+    const xss = flows(r, 'xss');
+    expect(xss).toHaveLength(1);
+    expect(xss[0]!.sink_line).toBe(12);
+  });
 });

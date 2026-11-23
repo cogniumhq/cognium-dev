@@ -1,0 +1,53 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  # core is reached as required on a long link path (foo > bar > baz > core)
+  # and as optional on a short one (core). x comes only through core's
+  # optionalDependencies, so it is optional, and its shortest optional path is core.
+  app:
+    optionalDependencies:
+      core:
+        specifier: workspace:*
+        version: link:../core
+    dependencies:
+      foo:
+        specifier: workspace:*
+        version: link:../foo
+
+  foo:
+    dependencies:
+      bar:
+        specifier: workspace:*
+        version: link:../bar
+
+  bar:
+    dependencies:
+      baz:
+        specifier: workspace:*
+        version: link:../baz
+
+  baz:
+    dependencies:
+      core:
+        specifier: workspace:*
+        version: link:../core
+
+  core:
+    optionalDependencies:
+      x:
+        specifier: '1'
+        version: 1.0.0
+
+packages:
+
+  x@1.0.0:
+    resolution: {integrity: sha512-x}
+
+snapshots:
+
+  x@1.0.0: {}

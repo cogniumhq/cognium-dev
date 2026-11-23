@@ -83,7 +83,101 @@ export function applyTagSeverityDowngrade(severity: string, tags: string[] | und
 export interface ScanResult {
   file: string;
   vulnerabilities: Vulnerability[];
+  /** Set when the file was not analysed; it has no findings because it was skipped. */
   error?: string;
+  /** `'timeout'` when `--file-timeout-ms` skipped the file; otherwise analysis failed. */
+  errorKind?: 'timeout';
+  /**
+   * The parser recovered from syntax errors in this file (circle-ir
+   * `parse_status.success === false`), so its findings may be incomplete.
+   * `lines` are the distinct error lines, sorted.
+   */
+  parseErrors?: { count: number; lines: number[] };
+}
+
+/**
+ * Something the scan ran into that the findings alone do not show: a file
+ * that was not analysed or only partly parsed, or a budget that cut the
+ * analysis short. SARIF carries these as
+ * `invocations[0].toolExecutionNotifications`.
+ */
+export interface ScanNotification {
+  level: 'error' | 'warning' | 'note';
+  /** Stable reason id, emitted as SARIF `properties.reason`. */
+  reason: 'analysis-error' | 'file-timeout' | 'parse-error' | 'cross-file-budget' | 'project-size-ceiling' | 'entry-path-gate' | 'no-files';
+  message: string;
+  file?: string;
+  line?: number;
+}
+
+/**
+ * Reasons that mean part of the requested analysis did not run, so the
+ * results are not a complete scan. A parse error does not count: the file
+ * was analysed as far as the parser could read it, and is reported on its own.
+ */
+const INCOMPLETE_REASONS: ReadonlySet<ScanNotification['reason']> = new Set([
+  'analysis-error', 'file-timeout', 'cross-file-budget', 'project-size-ceiling',
+]);
+
+export function parseErrorText(p: NonNullable<ScanResult['parseErrors']>): string {
+  const at = p.lines.length > 0 ? ` (first at line ${p.lines[0]})` : '';
+  return `${p.count} syntax error(s)${at}; the parser could not read the code around them, so findings in this file may be incomplete`;
+}
+
+export function entryPathDroppedText(n: number): string {
+  return `${n} high/critical security finding(s) dropped by require-entry-path: no entry point reaches them. `
+    + 'Rerun with --disable-pass require-entry-path to report them.';
+}
+
+/** Every notification for a scan, run-level conditions first, then per file in result order. */
+export function scanNotifications(results: ScanResult[], crossFileData?: CrossFileData): ScanNotification[] {
+  const out: ScanNotification[] = [];
+  // An empty run says why it is empty (cross-file data exists only when files were read).
+  if (results.length === 0 && !crossFileData) {
+    out.push({ level: 'warning', reason: 'no-files', message: 'No supported files found; nothing was analysed.' });
+  }
+  if (crossFileData?.projectSizeBudgetExceeded) {
+    out.push({
+      level: 'warning',
+      reason: 'project-size-ceiling',
+      message: `Project size ceiling reached — analysed ${crossFileData.filesAnalysed ?? '?'} of ${crossFileData.filesTotal ?? '?'} files.`,
+    });
+  }
+  if (crossFileData?.budgetExceeded) {
+    out.push({
+      level: 'warning',
+      reason: 'cross-file-budget',
+      message: 'Cross-file budget exceeded — some cross-file taint paths may be missing. Raise it with --cross-file-budget-ms <n> (0 = unlimited).',
+    });
+  }
+  // A design choice, not a failure: a note, and the run is still complete.
+  if (crossFileData?.entryPathDropped) {
+    out.push({ level: 'note', reason: 'entry-path-gate', message: entryPathDroppedText(crossFileData.entryPathDropped) });
+  }
+  for (const r of results) {
+    if (r.error) {
+      out.push({
+        level: 'error',
+        reason: r.errorKind === 'timeout' ? 'file-timeout' : 'analysis-error',
+        message: `File not analysed: ${r.error}`,
+        file: r.file,
+      });
+    } else if (r.parseErrors) {
+      out.push({
+        level: 'warning',
+        reason: 'parse-error',
+        message: parseErrorText(r.parseErrors),
+        file: r.file,
+        line: r.parseErrors.lines[0],
+      });
+    }
+  }
+  return out;
+}
+
+/** False when any notification means the requested analysis did not complete. */
+export function executionSuccessful(notifications: readonly ScanNotification[]): boolean {
+  return !notifications.some(n => INCOMPLETE_REASONS.has(n.reason));
 }
 
 export interface CrossFileData {
@@ -109,6 +203,18 @@ export interface CrossFileData {
   filesAnalysed?: number;
   /** #424 — files the scan was asked to cover. */
   filesTotal?: number;
+  /**
+   * S4 — paths the file walk left out: a broken or looping symlink, a link out
+   * of the scan root, a link to a path the walk already covers (counted once,
+   * at its real path), an unreadable directory. Never fatal; reported in every
+   * format.
+   */
+  skippedPaths?: Array<{ path: string; reason: string }>;
+  /**
+   * High/critical security findings and taint flows the `require-entry-path`
+   * gate removed (circle-ir `entry_path_dropped`). Reported, never silent.
+   */
+  entryPathDropped?: number;
 }
 
 export const SINK_SEVERITY: Record<SinkType, string> = {
@@ -130,6 +236,7 @@ export const SINK_SEVERITY: Record<SinkType, string> = {
   weak_crypto: 'low',
   insecure_cookie: 'low',
   trust_boundary: 'medium',
+  cache_poisoning: 'high',
   external_taint_escape: 'medium',
   mybatis_mapper_call: 'medium',
   redos: 'medium',
@@ -162,6 +269,7 @@ export const SINK_CWE: Record<SinkType, string> = {
   weak_crypto: 'CWE-327',  // Use of Broken/Risky Cryptographic Algorithm
   insecure_cookie: 'CWE-614',
   trust_boundary: 'CWE-501',
+  cache_poisoning: 'CWE-524',
   external_taint_escape: 'CWE-20',
   mybatis_mapper_call: 'CWE-89',
   redos: 'CWE-1333',
@@ -248,6 +356,10 @@ const VULNERABILITY_HELP: Record<string, { description: string; fix: string }> =
   trust_boundary: {
     description: 'Data crosses trust boundary without validation',
     fix: 'Validate and sanitize data when crossing trust boundaries'
+  },
+  cache_poisoning: {
+    description: 'Untrusted data is stored in a shared in-memory cache keyed by attacker-influenced input',
+    fix: 'Do not use request-derived host or path as cache keys for security-sensitive entries; validate issuer URLs and isolate per-tenant caches'
   },
   external_taint_escape: {
     description: 'External input reaches a sensitive sink without proper validation',
@@ -516,6 +628,10 @@ export function formatResults(
       continue;
     }
 
+    if (result.parseErrors) {
+      lines.push(colors.yellow(`[PARTIAL] ${result.file}: ${parseErrorText(result.parseErrors)}`));
+    }
+
     if (result.vulnerabilities.length === 0) {
       if (verbose) {
         lines.push(colors.green(`[OK] ${result.file}`));
@@ -571,6 +687,11 @@ export function formatResults(
   // floor, not an exhaustive list.
   // #424: files were skipped outright — a stronger statement than the
   // cross-file budget warning below, so it goes first.
+  if (crossFileData?.skippedPaths?.length) {
+    lines.push('');
+    lines.push(colors.yellow(`⚠ ${crossFileData.skippedPaths.length} path(s) not scanned:`));
+    for (const p of crossFileData.skippedPaths) lines.push(colors.yellow(`  ${p.path} (${p.reason})`));
+  }
   if (crossFileData?.projectSizeBudgetExceeded) {
     lines.push('');
     lines.push(colors.yellow(
@@ -584,13 +705,18 @@ export function formatResults(
     ));
   }
 
+  if (crossFileData?.entryPathDropped) {
+    lines.push('');
+    lines.push(colors.dim(`ℹ ${entryPathDroppedText(crossFileData.entryPathDropped)}`));
+  }
+
   if (crossFileData?.budgetExceeded) {
     lines.push('');
     lines.push(colors.yellow(
       '⚠ Cross-file budget exceeded — some cross-file taint paths may be missing.',
     ));
     lines.push(colors.yellow(
-      '  Raise the limit via the `crossFileBudgetMs` analyzer option (default 300000ms).',
+      '  Raise the limit with --cross-file-budget-ms <n> (default 300000, 0 = unlimited).',
     ));
   }
 
@@ -609,6 +735,7 @@ export function formatJSON(
       file: r.file,
       vulnerabilities: r.vulnerabilities,
       error: r.error,
+      ...(r.parseErrors ? { parse_errors: r.parseErrors } : {}),
     })),
     cross_file_taint_paths: crossFileData?.taintPaths ?? [],
     cross_file_calls: crossFileData?.crossFileCalls ?? [],
@@ -616,6 +743,8 @@ export function formatJSON(
     // budget exceeded mid-phase, paths above may be incomplete.
     cross_file_budget_exceeded: crossFileData?.budgetExceeded ?? false,
     project_size_budget_exceeded: crossFileData?.projectSizeBudgetExceeded ?? false,
+    // S4: paths the file walk left out (symlinks, unreadable directories).
+    ...(crossFileData?.skippedPaths?.length ? { skipped_paths: crossFileData.skippedPaths } : {}),
     // 3.106.0 (#169): project-profile detection summary. Omitted when
     // detection was disabled (`--no-project-profile`) or the scan target
     // was a single file (no module concept).
@@ -627,6 +756,10 @@ export function formatJSON(
       crossFileTaintPaths: crossFileData?.taintPaths.length ?? 0,
       crossFileBudgetExceeded: crossFileData?.budgetExceeded ?? false,
       errors: results.filter(r => r.error).length,
+      filesWithParseErrors: results.filter(r => !r.error && r.parseErrors).length,
+      entryPathDropped: crossFileData?.entryPathDropped ?? 0,
+      // Same rule as SARIF `invocations[0].executionSuccessful`.
+      executionSuccessful: executionSuccessful(scanNotifications(results, crossFileData)),
     },
   };
 
@@ -659,6 +792,11 @@ export function formatSARIF(
   crossFileData?: CrossFileData,
   profileSummary?: ProjectProfileSummary,
 ): string {
+  // #615: a truncated or partial scan must not look complete. SARIF
+  // consumers (code scanning) only see the run, so every file that was not
+  // analysed, every partial parse and every budget cut is a tool
+  // notification, and executionSuccessful says whether the run is complete.
+  const notifications = scanNotifications(results, crossFileData);
   const sarif = {
     // The OASIS repo moved this file: master/Schemata/ is a 404 today, the
     // schema now lives under main/sarif-2.1/schema/. Consumers that resolve
@@ -676,26 +814,30 @@ export function formatSARIF(
           },
         },
         results: generateSarifResults(results, crossFileData),
-        // #615: a truncated scan must not look complete. Text output already
-        // warns; SARIF consumers (code scanning) only see the run, so the
-        // ceiling is a tool notification and the invocation is unsuccessful.
-        ...(crossFileData?.projectSizeBudgetExceeded
-          ? {
-              invocations: [
-                {
-                  executionSuccessful: false,
+        // S4: a path the walk left out (a broken or looping symlink, a link
+        // out of the root) is also a notification; the run still succeeds.
+        invocations: [
+          {
+            executionSuccessful: executionSuccessful(notifications),
+            ...(notifications.length > 0 || crossFileData?.skippedPaths?.length
+              ? {
                   toolExecutionNotifications: [
-                    {
-                      level: 'warning' as const,
-                      message: {
-                        text: `Project size ceiling reached — analysed ${crossFileData.filesAnalysed ?? '?'} of ${crossFileData.filesTotal ?? '?'} files.`,
-                      },
-                    },
+                    ...notifications.map(n => ({
+                      level: n.level,
+                      message: { text: n.message },
+                      ...(n.file ? { locations: [physicalLocation(n.file, n.line)] } : {}),
+                      properties: { reason: n.reason },
+                    })),
+                    ...(crossFileData?.skippedPaths ?? []).map(p => ({
+                      level: (p.reason === 'symlink inside the scan root' ? 'note' : 'warning') as 'note' | 'warning',
+                      message: { text: `Not scanned: ${p.path} (${p.reason}).` },
+                      locations: [{ physicalLocation: { artifactLocation: { uri: p.path } } }],
+                    })),
                   ],
-                },
-              ],
-            }
-          : {}),
+                }
+              : {}),
+          },
+        ],
         // 3.106.0 (#169): per-run project-profile summary. Surfaced under
         // `run.properties.projectProfile` so SARIF consumers (Code
         // Scanning, Defect Dojo, custom dashboards) can attribute results

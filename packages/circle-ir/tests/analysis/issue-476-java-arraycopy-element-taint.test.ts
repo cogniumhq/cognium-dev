@@ -60,4 +60,24 @@ describe('#476 slice: System.arraycopy element taint', () => {
     const r = await analyze(NOTE_COPY_FIXED, 'NoteCopyFixedServlet.java', 'java');
     expect(flows(r, 'xss')).toEqual([]);
   });
+
+  it('IndexSpanServlet: array element at (span-span) index after element store (#476 / Arrays4)', async () => {
+    const code = `import java.io.IOException;
+import java.io.PrintWriter;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class IndexSpanServlet extends HttpServlet {
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String itemLabel = request.getParameter("name");
+        int span = 15432532;
+        String[] slots = new String[10];
+        slots[0] = itemLabel;
+        PrintWriter writer = response.getWriter();
+        writer.println(slots[span - span]);
+    }
+}`;
+    const r = await analyze(code, 'IndexSpanServlet.java', 'java');
+    expect(flows(r, 'xss').length).toBeGreaterThan(0);
+  });
 });

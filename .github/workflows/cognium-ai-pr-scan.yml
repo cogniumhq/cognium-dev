@@ -1,0 +1,187 @@
+# DRAFT, not in any repo. Proposed path: cogniumhq/cognium-dev/.github/workflows/cognium-ai-pr-scan.yml
+# A workflow change: needs a human merge (elarasu, openmason or mason-cognium).
+#
+# What it does: on every PR, scan the PR's base commit and its head commit with
+# the published cognium-ai CLI (pinned version) and fail only when the head has
+# a finding the base does not, at or above FAIL_ON. Existing findings on main do
+# not fail the PR. This is a diff gate, unlike ci.yml's `self-scan (SAST)`,
+# which runs the PR-built cognium-dev CLI on packages/cli only and gates on the
+# absolute count at --severity high.
+#
+# The gate is `cognium-ai compare <base> <head> --exit-code --fail-on <sev>`
+# (cognium-ai#585). Checked with cognium-ai 4.25.0 `compare --help` and a local
+# run: findings are matched without line numbers, so moved code is not "new".
+# With --exit-code it also fails when the trust tier gets worse, the trust score
+# drops by more than 2 points, or either side ran degraded (see notes).
+#
+# Static only (--no-llm) by default: deterministic, no secrets, safe for fork
+# PRs, and no LLM cost. An optional LLM job is at the bottom, commented out.
+
+name: cognium-ai PR scan
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Read-only by default. Only the SARIF upload step's job asks for more.
+permissions:
+  contents: read
+
+concurrency:
+  group: cognium-ai-pr-scan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  # Pin the scanner so a new cognium-ai release cannot turn PRs red on its own.
+  # Bump deliberately (Renovate/dependabot or by hand). 4.25.0 = npm latest on 2026-11-17.
+  COGNIUM_AI_VERSION: '4.25.0'
+  # Fail on a new finding at or above this level: critical|high|medium|low|none.
+  # Keep at high. Tested 2026-11-17 with 4.25.0: comparing two IDENTICAL trees
+  # passes at high but FAILS at medium, because project-level findings (e.g.
+  # doc-coverage `below-target`, medium) carry the scan path as their location,
+  # and base/ and head/ are different paths, so they always look "new".
+  FAIL_ON: high
+
+jobs:
+  regression:
+    name: cognium-ai regression (static)
+    runs-on: ubuntu-latest   # GitHub-hosted on purpose: fork PRs must not reach the grace runner
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      security-events: write   # SARIF upload; GitHub downgrades this to read on fork PRs
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@v7
+        with:
+          path: head
+          persist-credentials: false
+
+      - name: Check out PR base
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      # Installed outside both checkouts: a transitive dependency (@ax-llm/ax)
+      # may write Claude skill files into the install directory (cognium-ai README).
+      - name: Install cognium-ai ${{ env.COGNIUM_AI_VERSION }}
+        env:
+          AX_SKIP_SKILL_INSTALL: '1'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cai"
+          cd "$RUNNER_TEMP/cai"
+          npm init -y >/dev/null
+          npm install --ignore-scripts --no-audit --no-fund "cognium-ai@${COGNIUM_AI_VERSION}"
+          echo "$RUNNER_TEMP/cai/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - run: cognium-ai version
+
+      # The gate. Exit 1 = regression (reasons printed as "[fail]" lines and in
+      # compare.json exitReason). Any other non-zero = the tool errored.
+      # --max-files 5000 per side (compare's default is 1000): cognium-dev has
+      # 1521 tracked files (`git ls-files | wc -l` on main 1e5d1f39, 2026-11-17).
+      - name: Compare base vs head (fail on new findings >= ${{ env.FAIL_ON }})
+        id: compare
+        run: |
+          set -uo pipefail
+          cognium-ai compare base head \
+            --no-llm \
+            --exit-code \
+            --fail-on "$FAIL_ON" \
+            --max-files 5000 \
+            -f json -o "$RUNNER_TEMP/compare.json"
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit $code
+
+      - name: Job summary
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          f="$RUNNER_TEMP/compare.json"
+          {
+            echo "## cognium-ai ${COGNIUM_AI_VERSION} regression check (static)"
+            if [ ! -s "$f" ]; then
+              echo "No compare.json: the compare step errored before writing output. See its log."
+              exit 0
+            fi
+            jq -r '"Trust score: \(.scoreA) → \(.scoreB) (\(.tierA) → \(.tierB)), trend \(.trend)",
+                   "New findings: \(.newFindingsCount) total, \(.newFindingsAtFailOnCount) at or above \(.failOn). Fixed: \(.fixedFindingsCount).",
+                   (if .exitReason then "**Failed:** \(.exitReason | join(", "))" else "Passed." end)' "$f"
+            echo
+            echo "| severity | rule | file:line | message |"
+            echo "|---|---|---|---|"
+            jq -r '.newFindings[]
+                   | "| \(.severity) | \(.ruleId) | \(.location.file // "?"):\(.location.line // "") | \((.message // "") | gsub("\\|"; "/") | .[0:160]) |"' "$f"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload compare.json
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cognium-ai-compare
+          path: ${{ runner.temp }}/compare.json
+          retention-days: 14
+          if-no-files-found: warn
+
+      # SARIF of the head, for inline PR annotations in Code scanning.
+      # Advisory only: the pass/fail decision is the compare step above.
+      # Skipped on fork PRs, whose token cannot write security events.
+      # Written to the workspace root (not head/), because hashFiles() only sees the workspace.
+      - name: Scan head to SARIF
+        if: ${{ !cancelled() && !github.event.pull_request.head.repo.fork }}
+        continue-on-error: true
+        working-directory: head
+        run: cognium-ai scan . --no-llm -f sarif -o "$GITHUB_WORKSPACE/cognium-ai.sarif" -q
+
+      - name: Upload SARIF to code scanning
+        if: ${{ !cancelled() && !github.event.pull_request.head.repo.fork && hashFiles('cognium-ai.sarif') != '' }}
+        continue-on-error: true
+        # TODO(pin): confirm the current major of github/codeql-action and pin by SHA.
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: cognium-ai.sarif
+          category: cognium-ai
+
+  # ---------------------------------------------------------------------------
+  # OPTIONAL (choice for Ahmed): an LLM-verified pass. Off in this draft.
+  # Same-repo PRs only, so no secret is exposed to fork code; advisory
+  # (continue-on-error) because LLM output is not byte-stable between runs and
+  # an unreachable endpoint marks a side "degraded", which compare fails on.
+  # Needs repo secret LLM_API_KEY and repo variables LLM_BASE_URL / LLM_MODEL
+  # (which endpoint, e.g. Cognium's proxy, is TODO: not verified here).
+  # ---------------------------------------------------------------------------
+  # llm-advisory:
+  #   name: cognium-ai regression (LLM, advisory)
+  #   if: ${{ !github.event.pull_request.head.repo.fork && !github.event.pull_request.draft }}
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 40
+  #   continue-on-error: true
+  #   steps:
+  #     - uses: actions/checkout@v7
+  #       with: { path: head, persist-credentials: false }
+  #     - uses: actions/checkout@v7
+  #       with: { ref: '${{ github.event.pull_request.base.sha }}', path: base, persist-credentials: false }
+  #     - uses: actions/setup-node@v7
+  #       with: { node-version: '22' }
+  #     - name: Install cognium-ai
+  #       env: { AX_SKIP_SKILL_INSTALL: '1' }
+  #       run: |
+  #         mkdir -p "$RUNNER_TEMP/cai" && cd "$RUNNER_TEMP/cai" && npm init -y >/dev/null
+  #         npm install --ignore-scripts --no-audit --no-fund "cognium-ai@${COGNIUM_AI_VERSION}"
+  #         echo "$RUNNER_TEMP/cai/node_modules/.bin" >> "$GITHUB_PATH"
+  #     - name: Compare with LLM verification
+  #       env:
+  #         LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+  #         LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+  #         LLM_ENRICHMENT_MODEL: ${{ vars.LLM_MODEL }}
+  #       run: |
+  #         cognium-ai compare base head --llm --exit-code --fail-on "$FAIL_ON" \
+  #           --max-files 5000 --max-scan-time 1500 -f json -o "$RUNNER_TEMP/compare-llm.json"

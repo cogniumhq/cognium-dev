@@ -54,7 +54,7 @@
  *  – FeatureEnvyPass      — fires on legitimate delegation patterns (see pass file)
  */
 
-import type { CircleIR, AnalysisResponse, Vulnerability, Enriched, ProjectAnalysis, ProjectMeta, ProjectProfile, ProjectProfileSummary, ProjectShape, ProjectEnv, SastFinding } from './types/index.js';
+import type { CircleIR, TypeInfo, AnalysisResponse, Vulnerability, Enriched, ProjectAnalysis, ProjectMeta, ProjectProfile, ProjectProfileSummary, ProjectShape, ProjectEnv, SastFinding } from './types/index.js';
 import type { TaintConfig } from './types/config.js';
 import {
   initParser,
@@ -91,6 +91,7 @@ import { coalesceNoteLevelFindings } from './analysis/note-coalescer.js';
 import { applyRequireEntryPath } from './analysis/require-entry-path.js';
 import { applyConstantCallerGate, applySingleFileJavaMapConstantCallerGate } from './analysis/constant-caller-gate.js';
 import { promoteCrossFilePathsToSinkFlows } from './analysis/promote-cross-file-flows.js';
+import { dropJsTestToProductionTaintPaths } from './analysis/test-to-production-taint-gate.js';
 import { dropEscapesToProjectCallees } from './analysis/project-callee-escape-gate.js';
 import { applyProjectProfileTransform, type ProfileResolver } from './analysis/project-profile-transform.js';
 import { registerBuiltinPlugins } from './languages/index.js';
@@ -183,6 +184,12 @@ import { TlsVerifyDisabledPass } from './analysis/passes/tls-verify-disabled-pas
 import { ModuleSideEffectPass } from './analysis/passes/module-side-effect-pass.js';
 import { CacheNoVaryPass } from './analysis/passes/cache-no-vary-pass.js';
 import { JwtVerifyDisabledPass } from './analysis/passes/jwt-verify-disabled-pass.js';
+import { SensitiveDataInLogPass } from './analysis/passes/sensitive-data-in-log-pass.js';
+import { RedosRegexLiteralPass } from './analysis/passes/redos-regex-literal-pass.js';
+import { HardcodedSecretArgumentPass } from './analysis/passes/hardcoded-secret-argument-pass.js';
+import { MissingAuthMiddlewarePass } from './analysis/passes/missing-auth-middleware-pass.js';
+import { PrototypePollutionPass } from './analysis/passes/prototype-pollution-pass.js';
+import { CsrfSameSiteNoneSessionPass } from './analysis/passes/csrf-samesite-none-session-pass.js';
 import { CsrfProtectionDisabledPass } from './analysis/passes/csrf-protection-disabled-pass.js';
 import { XmlEntityExpansionPass } from './analysis/passes/xml-entity-expansion-pass.js';
 import { MassAssignmentPass } from './analysis/passes/mass-assignment-pass.js';
@@ -205,6 +212,7 @@ import {
 // Pass result types (used to read typed results from the pipeline map)
 import { boundedMakeDefIds, scalarDerivedDefIds } from './analysis/scalar-derivation.js';
 import { constTableLookupDefIds } from './analysis/const-table-lookup.js';
+import { honoEnvDefIds } from './analysis/hono-env.js';
 import type { SinkFilterResult } from './analysis/passes/sink-filter-pass.js';
 import type { InterproceduralPassResult } from './analysis/passes/interprocedural-pass.js';
 import { makeCommentOnlyLineTest } from './analysis/comment-lines.js';
@@ -237,9 +245,10 @@ export interface AnalyzerOptions {
    * declarations, which the default extraction omits entirely,
    * `TypeInfo.enclosing_type` for a nested type, whose nesting the default
    * extraction flattens, an enum's methods and fields, a varargs parameter's
-   * type, and each call argument's static type and position
-   * (`ArgumentInfo.type` / `.location`). See `TypeExtractionOptions` and
-   * `CallExtractionOptions`.
+   * type, each call argument's static type and position
+   * (`ArgumentInfo.type` / `.location`), and explicit constructor
+   * invocations (`super(…)`, `this(…)`) as calls. See `TypeExtractionOptions`
+   * and `CallExtractionOptions`.
    *
    * **Off by default, and the default output is unchanged.** `ir.types` is
    * read by the SAST passes and by the method-scoping gate, so adding a type
@@ -336,6 +345,31 @@ export interface AnalyzerOptions {
    * mistaken for a clean one.
    */
   fileTimeoutMs?: number;
+
+  /**
+   * Called when `analyze()` starts a file and again when it ends (also when it
+   * throws). A caller that needs a hard bound on a file's time, which
+   * `fileTimeoutMs` cannot give for one synchronous step, can watch from
+   * outside the analysing thread which file is in flight (cognium-dev S3).
+   * Markup files call it again for each extracted script, with the same path.
+   * Omitted: no effect.
+   */
+  onFileStart?: (filePath: string) => void;
+  /** See {@link AnalyzerOptions.onFileStart}. */
+  onFileEnd?: (filePath: string) => void;
+
+  /**
+   * `analyzeProject` only: produces each file's `CircleIR` in place of
+   * `analyze(code, filePath, language, options)` (cognium-dev#1324). The
+   * project loop still awaits files one at a time in input order, so a caller
+   * that starts every file's work before `analyzeProject` runs (on worker
+   * threads, say) and returns the pending result here gets a parallel per-file
+   * phase with the same merge order. An `AnalysisTimeoutError` it throws is
+   * recorded in `timed_out_files`; any other error is recorded in
+   * `failed_files` and the project scan continues (cognium-dev#1351). Ignored
+   * by `analyze()`. Omitted: `analyze()` is used.
+   */
+  analyzeFile?: (code: string, filePath: string, language: SupportedLanguage) => Promise<CircleIR>;
 
   /**
    * Size ceiling for the PER-FILE phase of `analyzeProject`, in source
@@ -683,6 +717,23 @@ export async function initAnalyzer(options: AnalyzerOptions = {}): Promise<void>
  * cognium-dev#458 — Python starred parameter names (`*args`, `**kwargs`) reach
  * the tainted-var map with their stars, and `*` is a quantifier.
  */
+/**
+ * Java: the method names some type in the file declares more than once.
+ * Calls to these names get argument types so inter-procedural taint can
+ * choose the overload (see `CallExtractionOptions.overloadedMethodNames`).
+ */
+function javaOverloadedMethodNames(types: readonly TypeInfo[]): Set<string> {
+  const out = new Set<string>();
+  for (const t of types) {
+    const seen = new Set<string>();
+    for (const m of t.methods) {
+      if (seen.has(m.name)) out.add(m.name);
+      seen.add(m.name);
+    }
+  }
+  return out;
+}
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -827,11 +878,14 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
       // 3.173.0 (T2-D) — `buildResolutionContext` in extractors/calls.ts
       // queries both at tree-root scope; without cache membership each
       // query fell back to a full-tree `findNodes` walk per file.
+      // `explicit_constructor_invocation` (`super(…)` / `this(…)`) is read by
+      // `extractCalls` under `navigationTypes`.
       return new Set([
         'method_invocation', 'object_creation_expression', 'class_declaration',
         'method_declaration', 'constructor_declaration', 'field_declaration',
         'import_declaration', 'interface_declaration', 'enum_declaration',
         'package_declaration', 'local_variable_declaration',
+        'explicit_constructor_invocation',
       ]);
   }
 }
@@ -970,6 +1024,20 @@ export async function analyze(
   filePath: string,
   language: SupportedLanguage,
   options: AnalyzerOptions = {}
+): Promise<CircleIR> {
+  options.onFileStart?.(filePath);
+  try {
+    return await analyzeFile(code, filePath, language, options);
+  } finally {
+    options.onFileEnd?.(filePath);
+  }
+}
+
+async function analyzeFile(
+  code: string,
+  filePath: string,
+  language: SupportedLanguage,
+  options: AnalyzerOptions
 ): Promise<CircleIR> {
   if (!initialized) {
     await initAnalyzer(options);
@@ -1122,11 +1190,25 @@ export async function analyze(
   }
 
   const tTypes = phaseStart();
-  const types   = extractTypes(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
+  let types: ReturnType<typeof extractTypes>;
+  if (parseGrammar === 'typescript') {
+    const { hasExportTailProgramError } = await import('./core/ts-grammar-workarounds.js');
+    const { extractTypeScriptTypesWithExportRecovery } = await import('./core/extractors/types.js');
+    if (hasExportTailProgramError(tree.rootNode)) {
+      types = await extractTypeScriptTypesWithExportRecovery(tree, nodeCache, code, 'typescript');
+    } else {
+      types = extractTypes(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
+    }
+  } else {
+    types = extractTypes(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
+  }
   phaseEnd('extractTypes', tTypes);
   checkDeadline('extractTypes');
   const tCalls = phaseStart();
-  const calls   = extractCalls(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
+  const calls   = extractCalls(tree, nodeCache, language, {
+    navigationTypes: options.navigationTypes,
+    overloadedMethodNames: language === 'java' ? javaOverloadedMethodNames(types) : undefined,
+  });
   phaseEnd('extractCalls', tCalls);
   checkDeadline('extractCalls');
   const tImports = phaseStart();
@@ -1164,6 +1246,7 @@ export async function analyze(
     ...scalarDerivedDefIds(dfg.defs, code, language),
     ...boundedMakeDefIds(dfg.defs, code, language),
     ...constTableLookupDefIds(dfg.defs, code, language),
+    ...honoEnvDefIds(dfg.defs, dfg.uses, code, language),
   ]);
   phaseEnd('buildCodeGraph', tGraph);
   checkDeadline('buildCodeGraph');
@@ -1362,7 +1445,13 @@ export async function analyze(
   if (!disabledPasses.has('module-side-effect'))    pipeline.add(new ModuleSideEffectPass());
   if (!disabledPasses.has('cache-no-vary'))         pipeline.add(new CacheNoVaryPass());
   if (!disabledPasses.has('jwt-verify-disabled'))   pipeline.add(new JwtVerifyDisabledPass());
+  if (!disabledPasses.has('sensitive-data-in-log')) pipeline.add(new SensitiveDataInLogPass());
+  if (!disabledPasses.has('redos-regex-literal'))   pipeline.add(new RedosRegexLiteralPass());
+  if (!disabledPasses.has('hardcoded-secret-argument')) pipeline.add(new HardcodedSecretArgumentPass());
+  if (!disabledPasses.has('missing-auth-middleware')) pipeline.add(new MissingAuthMiddlewarePass());
+  if (!disabledPasses.has('prototype-pollution'))   pipeline.add(new PrototypePollutionPass());
   if (!disabledPasses.has('csrf-protection-disabled')) pipeline.add(new CsrfProtectionDisabledPass());
+  if (!disabledPasses.has('csrf-samesite-none-session')) pipeline.add(new CsrfSameSiteNoneSessionPass());
   if (!disabledPasses.has('xml-entity-expansion'))  pipeline.add(new XmlEntityExpansionPass());
   if (!disabledPasses.has('mass-assignment'))       pipeline.add(new MassAssignmentPass());
   if (!disabledPasses.has('info-disclosure-stacktrace')) pipeline.add(new InfoDisclosureStacktracePass());
@@ -1929,6 +2018,7 @@ export async function analyzeProject(
 ): Promise<ProjectAnalysis> {
   const fileAnalyses: Array<{ file: string; analysis: CircleIR }> = [];
   const timedOutFiles: Array<{ file: string; elapsed_ms: number; phase: string }> = [];
+  const failedFiles: Array<{ file: string; message: string }> = [];
   const projectGraph = new ProjectGraph();
   const sourceLinesByFile = new Map<string, string[]>();
 
@@ -1979,7 +2069,9 @@ export async function analyzeProject(
     }
     let ir: CircleIR;
     try {
-      ir = await analyze(code, filePath, language, options);
+      ir = options.analyzeFile
+        ? await options.analyzeFile(code, filePath, language)
+        : await analyze(code, filePath, language, options);
     } catch (err) {
       if (err instanceof AnalysisTimeoutError) {
         timedOutFiles.push({ file: filePath, elapsed_ms: err.elapsedMs, phase: err.phase });
@@ -1988,7 +2080,12 @@ export async function analyzeProject(
         });
         continue;
       }
-      throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      failedFiles.push({ file: filePath, message });
+      logger.warn('analyzeProject: file analysis failed, skipping it', {
+        file: filePath, message,
+      });
+      continue;
     }
     fileAnalyses.push({ file: filePath, analysis: ir });
     projectGraph.addFile(filePath, new CodeGraph(ir));
@@ -2009,6 +2106,9 @@ export async function analyzeProject(
     sourceLinesByFile,
     { budgetMs: crossFileBudgetMs },
   );
+
+  // 2.3.5 (#1187) — JS/TS test-only sources must not taint production sinks.
+  crossFileResult.taintPaths = dropJsTestToProductionTaintPaths(crossFileResult.taintPaths);
 
   // 2.4 (#684) — per-file flows on sink files for cross-file paths (gate parity).
   promoteCrossFilePathsToSinkFlows(fileAnalyses, crossFileResult.taintPaths);
@@ -2060,7 +2160,7 @@ export async function analyzeProject(
   // that ARE reachable get annotated with `entryPath[]`. Runs BEFORE
   // ProjectMeta assembly so downstream consumers see the gated stream.
   // No-op when the caller disabled the rule via `disabledPasses`.
-  applyRequireEntryPath(fileAnalyses, {
+  const entryPathDropped = applyRequireEntryPath(fileAnalyses, {
     projectProfile: options.projectProfile,
     disabledPasses: options.disabledPasses,
   });
@@ -2107,8 +2207,14 @@ export async function analyzeProject(
   if (timedOutFiles.length > 0) {
     projectAnalysis.timed_out_files = timedOutFiles;
   }
+  if (failedFiles.length > 0) {
+    projectAnalysis.failed_files = failedFiles;
+  }
   if (projectSizeBudgetExceeded) {
     projectAnalysis.project_size_budget_exceeded = true;
+  }
+  if (entryPathDropped > 0) {
+    projectAnalysis.entry_path_dropped = entryPathDropped;
   }
   return projectAnalysis;
 }

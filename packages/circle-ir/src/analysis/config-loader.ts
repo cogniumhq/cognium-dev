@@ -1113,6 +1113,15 @@ const NOSQL_FRAMEWORK_SINKS: SinkPattern[] = [
 // Severity `medium` unless the sink pollutes a process-wide store
 // (System.setProperty → high).
 // =========================================================================
+// cognium-dev #900 — shared in-memory cache writes of request-derived content
+// (OIDC discovery / fragment cache shapes). Distinct from cache-no-vary (#96).
+const CACHE_POISONING_SINKS: SinkPattern[] = [
+  { method: 'set', class: 'Map', type: 'cache_poisoning', cwe: 'CWE-524', severity: 'high', arg_positions: [1], languages: ['javascript', 'typescript'] },
+  { method: 'set', class: 'cache', type: 'cache_poisoning', cwe: 'CWE-524', severity: 'high', arg_positions: [1], languages: ['javascript', 'typescript'] },
+  // read-through cache: `cache.fetch(key, () => value)` stores what the callback returns
+  { method: 'fetch', class: 'cache', type: 'cache_poisoning', cwe: 'CWE-524', severity: 'high', arg_positions: [1], languages: ['javascript', 'typescript'] },
+];
+
 const TRUST_BOUNDARY_FRAMEWORK_SINKS: SinkPattern[] = [
   // --- Python: Django cache write -----------------------------------------
   { method: 'set',      class: 'cache', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['python'] },
@@ -1125,8 +1134,9 @@ const TRUST_BOUNDARY_FRAMEWORK_SINKS: SinkPattern[] = [
   { method: 'cookie',  class: 'Response', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['javascript', 'typescript'] },
 
   // --- Java: Cookie / SecurityContext / System.setProperty ----------------
-  // `new Cookie(name, value)` — constructor with tainted value crosses the
-  // client-server trust boundary via Set-Cookie.
+  // `new Cookie(name, value)` / `setValue` — CWE-501 when the value is HTTP-sourced
+  // in-method (#1247 variant `cookie_trusted`); non-HTTP method params are dropped
+  // in `TaintPropagationPass` (#1152 static #118 / InsecureCookieTp).
   { method: 'Cookie',            class: 'Cookie',          type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['java'] },
   { method: 'setValue',          class: 'Cookie',          type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [0], languages: ['java'] },
   // Spring Security: SecurityContext.setAuthentication(userSuppliedAuth) —
@@ -1773,6 +1783,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'eval', class: 'ScriptContext', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   // Dynamic class loading (can lead to RCE)
   { method: 'forName', class: 'Class', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
+  // Attacker-chosen class names used for reflective instantiation (yamlbeans CVE-2023-24621, cognium-dev#1290)
+  { method: 'forName', class: 'Class', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['java'] },
   { method: 'loadClass', class: 'ClassLoader', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
   { method: 'defineClass', class: 'ClassLoader', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0, 1] },
   { method: 'newInstance', class: 'Class', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [] },
@@ -2328,6 +2340,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'updateMany', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0] },
   { method: 'deleteOne', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0] },
   { method: 'deleteMany', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0] },
+  // #1172: the legacy driver / MarsDB / NeDB forms. Class-scoped only: a bare
+  // `update` would hit crypto `hash.update(x)` and friends.
+  { method: 'update',        class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'remove',        class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'findAndModify', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
   // Mongoose Model/Query class entries — Model.find/findOne/etc.
   { method: 'find',                class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
   { method: 'findOne',             class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
@@ -3431,6 +3448,7 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // inference complexity limit (TS2590). See ~lines 661-752.
   ...OPEN_REDIRECT_FRAMEWORK_SINKS,
   ...TRUST_BOUNDARY_FRAMEWORK_SINKS,
+  ...CACHE_POISONING_SINKS,
   // cognium-dev #240 ship 2 — extended framework sinks for
   // deserialization (CWE-502) and nosql_injection (CWE-943). Same
   // pattern: constants defined near the ship-1 blocks and spread here.
@@ -3609,6 +3627,10 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
 
   // Log Injection sanitizers
   { method: 'replace', removes: ['log_injection'] },  // Used to remove newlines/control chars
+  // JSON.stringify escapes CR/LF (and every other control character) inside a
+  // string, so a log entry cannot be split. Log injection only: the output still
+  // carries `<`, quotes and shell/SQL metacharacters.
+  { method: 'stringify', class: 'JSON', removes: ['log_injection'] },
 
   // LDAP Injection
   { method: 'encodeForLDAP', removes: ['ldap_injection'] },
@@ -3704,6 +3726,8 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   // SQL - parameterized queries (mysql, pg)
   { method: 'escape', class: 'mysql', removes: ['sql_injection'] },
   { method: 'escapeId', class: 'mysql', removes: ['sql_injection'] },
+  // BenchProctor express_ts safe ORDER BY (cognium-dev#1332): escapeIdentifier wrapper before concat query
+  { method: 'escapeIdentifier', removes: ['sql_injection', 'external_taint_escape'] },
   { method: 'format', class: 'mysql', removes: ['sql_injection'] },
 
   // MongoDB - sanitization
@@ -3907,6 +3931,13 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   // `code_injection` categorization that `re.compile` currently emits
   // (a re.escape-wrapped pattern cannot execute anything, so both are safe).
   { method: 'escape', class: 're', removes: ['redos', 'code_injection'] },
+
+  // JS/TS ReDoS — escaping a request value before `new RegExp(...)` makes it a
+  // literal: lodash `_.escapeRegExp`, the `escape-string-regexp` package, and
+  // the common local helper names.
+  { method: 'escapeRegExp', removes: ['redos'] },
+  { method: 'escapeStringRegexp', removes: ['redos'] },
+  { method: 'escapeRegex', removes: ['redos'] },
 
   // Python SQLAlchemy — `text(...).bindparams(...)` binds params safely.
   // The `bindparams` call is the sanitizer; the parent `text` wraps the

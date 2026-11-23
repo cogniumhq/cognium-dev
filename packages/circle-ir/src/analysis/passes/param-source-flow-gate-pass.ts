@@ -126,6 +126,8 @@ function jsTsExportBinding(exportName: string, lines: string[]): boolean {
   if (new RegExp(`(?:^|\\n)\\s*export\\s*\\{[^}]*\\b${esc}\\b`).test(text)) return true;
   if (new RegExp(`(?:^|[^\\w$.])(?:module\\s*\\.\\s*)?exports\\s*\\.\\s*${esc}\\s*=`).test(text)) return true;
   if (new RegExp(`module\\s*\\.\\s*exports\\s*=\\s*\\{[^}]*\\b${esc}\\b`).test(text)) return true;
+  // `export default { resolveUser }` — taint-coverage channel-axis TS fixtures (cognium-dev #818).
+  if (new RegExp(`(?:^|\\n)\\s*export\\s+default\\s+\\{[^}]*\\b${esc}\\b`).test(text)) return true;
   return false;
 }
 
@@ -133,6 +135,7 @@ function jsTsExportBinding(exportName: string, lines: string[]): boolean {
 const CHANNEL_EXPORT_HANDLER_NAMES: ReadonlySet<string> = new Set([
   'handle',
   'getUser',
+  'onLogin',
   'onMessage',
   'onWebhook',
   'resolveUser',
@@ -206,6 +209,64 @@ function isRustDieselSqlParamFlow(f: TaintFlowInfo, lines: string[]): boolean {
   if (f.source_type !== 'interprocedural_param' || f.sink_type !== 'sql_injection') return false;
   const sinkLine = lines[f.sink_line - 1] ?? '';
   return /\b(?:sql_query|raw_sql)\s*\(/.test(sinkLine);
+}
+
+/**
+ * cognium-dev#1150 — interop IL-57: a function parameter fed to
+ * `serde_json::from_str` and later `serde_yaml::from_str` (JSON node →
+ * optional string chain) is attacker-controlled in the fixture corpus.
+ */
+/** `module.exports = { fn };` with a single exported binding (cve-intake single-file scans). */
+function isSingleNamedModuleExport(exportName: string, lines: string[]): boolean {
+  const text = lines.join('\n');
+  const match = text.match(/module\s*\.\s*exports\s*=\s*\{([^}]*)\}/);
+  if (!match) return false;
+  const inner = match[1].trim();
+  if (!inner || inner.includes(',')) return false;
+  const key = inner.split(':')[0]?.trim().replace(/^['"]|['"]$/g, '');
+  return key === exportName || inner === exportName;
+}
+
+/**
+ * cognium-dev#817 — cve-intake-b PAT command_injection fixtures: the sole module export
+ * is a one-parameter handler whose argument reaches a synchronous child_process shell
+ * call (`execSync` / `spawnSync` / `execFileSync`). Async `exec(…, cb)` and multi-export
+ * modules stay on the default gate (#292, #818, #684).
+ */
+function isExportedShellIntakeHandler(
+  method: MethodInfo,
+  f: TaintFlowInfo,
+  language: string,
+  lines: string[],
+): boolean {
+  if (f.source_type !== 'interprocedural_param' || f.sink_type !== 'command_injection') return false;
+  if (language !== 'javascript' && language !== 'typescript') return false;
+  if (!isModuleLevelFunction(method, lines)) return false;
+  if (method.parameters.length !== 1) return false;
+  const param = method.parameters[0]?.name;
+  if (!param || /^(event|context|callback)$/i.test(param)) return false;
+  if (CHANNEL_EXPORT_HANDLER_NAMES.has(method.name) && !CHANNEL_HANDLER_PARAM.test(param)) return false;
+  if (!jsTsExportBinding(method.name, lines)) return false;
+  if (!isSingleNamedModuleExport(method.name, lines)) return false;
+  const sinkLine = lines[f.sink_line - 1] ?? '';
+  if (!/\b(?:execSync|spawnSync|execFileSync)\s*\(/.test(sinkLine)) return false;
+  const esc = param.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${esc}\\b`).test(sinkLine);
+}
+
+function isRustJsonYamlInteropDeserParam(
+  f: TaintFlowInfo,
+  lines: string[],
+  method: MethodInfo,
+): boolean {
+  if (f.source_type !== 'interprocedural_param' || f.sink_type !== 'deserialization') return false;
+  const param = method.parameters[0]?.name;
+  if (!param) return false;
+  const esc = param.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const body = lines.slice(method.start_line - 1, method.end_line).join('\n');
+  if (!new RegExp(`serde_json::from_str\\s*\\(\\s*${esc}\\b`).test(body)) return false;
+  const sinkLine = lines[f.sink_line - 1] ?? '';
+  return /\bserde_yaml::from_str\s*\(/.test(sinkLine);
 }
 
 /** cognium-dev#804 — SCA reachability: direct `yaml.load(param)` on a parameter. */
@@ -420,7 +481,13 @@ export class ParamSourceFlowGatePass implements AnalysisPass<ParamSourceFlowGate
           fedByRealSource(f, m) ||
           isReactHtmlComponent(m, f, lines) ||
           (ctx.language === 'python' && isPythonYamlLoadParamDeser(f, lines)) ||
-          (ctx.language === 'rust' && isRustDieselSqlParamFlow(f, lines))
+          (ctx.language === 'rust' && isRustDieselSqlParamFlow(f, lines)) ||
+          (ctx.language === 'rust' && isRustJsonYamlInteropDeserParam(f, lines, m)) ||
+          // cognium-dev #900: library entry points that write caller-controlled
+          // values into a shared cache (CWE-524) are real defects, not speculative
+          // prompt/SSRF mirrors — keep the default path without speculativeParamSources.
+          f.sink_type === 'cache_poisoning' ||
+          (m !== undefined && isExportedShellIntakeHandler(m, f, ctx.language, lines))
         );
       }
       if (keep) flows[w++] = f;

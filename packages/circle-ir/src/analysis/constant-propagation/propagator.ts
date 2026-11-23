@@ -65,6 +65,8 @@ export class ConstantPropagator {
   private additionalTaintPatterns: string[] = [];
   // Track list elements by index for precise list taint tracking
   private listElements: Map<string, (string | null)[]> = new Map();
+  /** Lists that received taint via addAll (SecuriBench Collections8 get(0) recall). */
+  private listAddAllFromTainted: Set<string> = new Set();
   // Track loop variables (should not be overwritten with constant values)
   private loopVariables: Set<string> = new Set();
   // Track tainted array elements: array name → set of tainted indices (or '*' for whole array)
@@ -123,12 +125,28 @@ export class ConstantPropagator {
   private isTaintedExpressionCache: Map<number, boolean> | null = null;
 
   /**
+   * cognium-dev#814 S2: per-iteration overlay of callee parameter names that
+   * received tainted actuals at same-file call sites. Filled by a fixpoint
+   * loop so callee bodies are analyzed with correct param taint regardless of
+   * method declaration order.
+   */
+  private javaCalleeParameterOverlay: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+
+  /**
    * Analyze source code and build constant propagation state.
    */
-  analyze(tree: Tree, sourceCode: string, additionalTaintPatterns: string[] = [], sanitizerMethods: string[] = [], taintedParameters: TaintedParameter[] = []): ConstantPropagatorResult {
+  analyze(
+    tree: Tree,
+    sourceCode: string,
+    additionalTaintPatterns: string[] = [],
+    sanitizerMethods: string[] = [],
+    taintedParameters: TaintedParameter[] = [],
+    language?: string,
+  ): ConstantPropagatorResult {
     this.source = sourceCode;
     this.additionalTaintPatterns = additionalTaintPatterns;
     this.taintedParametersList = taintedParameters;
+    const omitJavaUnscopedTaintAliases = language === 'java';
     this.symbols.clear();
     this.tainted.clear();
     this.unreachableLines.clear();
@@ -145,6 +163,7 @@ export class ConstantPropagator {
     this.methodReturnsParameter.clear();
     this.methodReturnsSafeValue.clear();
     this.listElements.clear();
+    this.listAddAllFromTainted.clear();
     this.loopVariables.clear();
     this.taintedArrayElements.clear();
     this.sanitizedVars.clear();
@@ -167,6 +186,7 @@ export class ConstantPropagator {
     this.constructorParamPositions.clear();
     this.safePatternFieldsCache = null;
     this.isTaintedExpressionCache = null;
+    this.javaCalleeParameterOverlay = undefined;
 
     // Pre-pass: single tree walk that collects class fields (previously
     // `collectClassFields`) AND method nodes (previously `findAllMethods`,
@@ -198,11 +218,44 @@ export class ConstantPropagator {
     // on Python ASTs.
     this.seedPythonModuleConstants(tree.rootNode);
 
-    // First pass: collect symbols, taint, and unreachable lines
-    this.visit(tree.rootNode);
+    const javaMethodParamIndex = this.buildJavaMethodParameterIndex(prePassMethods);
+    const javaCalleeOverlay = new Map<string, Set<string>>();
 
-    // Second pass: refine taint for variables derived from constants
-    this.refineTaintFromConstants();
+    if (omitJavaUnscopedTaintAliases && javaMethodParamIndex.arityKeyToParams.size > 0) {
+      // Fixpoint: same-file calls pass taint into callees; const-prop order
+      // follows declaration order, so seed params from call sites iteratively.
+      let prevSig = '';
+      for (let round = 0; round < 16; round++) {
+        this.resetStateForJavaFixpointRound();
+        this.javaCalleeParameterOverlay = javaCalleeOverlay;
+        this.visit(tree.rootNode);
+        this.refineTaintFromConstants();
+        this.javaCalleeParameterOverlay = undefined;
+
+        const discovered = this.collectJavaCalleeParameterSeedsFromCalls(tree.rootNode, javaMethodParamIndex);
+        let sig = '';
+        for (const [m, ps] of [...discovered.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+          sig += `${m}:[${[...ps].sort().join(',')}];`;
+        }
+        if (sig === prevSig) {
+          break;
+        }
+        prevSig = sig;
+        for (const [m, ps] of discovered) {
+          let acc = javaCalleeOverlay.get(m);
+          if (!acc) {
+            acc = new Set();
+            javaCalleeOverlay.set(m, acc);
+          }
+          for (const p of ps) {
+            acc.add(p);
+          }
+        }
+      }
+    } else {
+      this.visit(tree.rootNode);
+      this.refineTaintFromConstants();
+    }
 
     // Build result with both scoped and unscoped names for backward compatibility
     // Unscoped names are needed for legacy code and tests
@@ -216,8 +269,20 @@ export class ConstantPropagator {
         if (/^[^:]+:b\d+:/.test(name)) {
           continue;
         }
+        if (omitJavaUnscopedTaintAliases) {
+          continue;
+        }
         const unscoped = name.substring(name.indexOf(':') + 1);
         resultTainted.add(unscoped);
+      }
+    }
+    if (omitJavaUnscopedTaintAliases) {
+      for (const name of this.tainted) {
+        if (!name.includes(':') || /^[^:]+:b\d+:/.test(name)) continue;
+        const local = name.substring(name.indexOf(':') + 1);
+        if (this.classFields.has(local)) {
+          resultTainted.add(local);
+        }
       }
     }
     // #589 review: do NOT copy sanitizedVarUncovered onto the bare name.
@@ -265,6 +330,148 @@ export class ConstantPropagator {
       instanceFieldTaint: new Map(this.instanceFieldTaint),
       constantReturningMethods: new Set(this.methodReturnsConstant),
     };
+  }
+
+  /**
+   * Clear per-visit const-prop state between Java fixpoint rounds. Keeps
+   * `classFields` from the one-time collection pass.
+   */
+  private resetStateForJavaFixpointRound(): void {
+    this.symbols.clear();
+    this.tainted.clear();
+    this.unreachableLines.clear();
+    this.taintedCollections.clear();
+    this.definitionNodes.clear();
+    this.inConditionalBranch = false;
+    this.goUnknownVars.clear();
+    this.goScopedNames.clear();
+    this.listElements.clear();
+    this.listAddAllFromTainted.clear();
+    this.loopVariables.clear();
+    this.taintedArrayElements.clear();
+    this.sanitizedVars.clear();
+    this.sanitizedVarUncovered.clear();
+    this.currentMethod = null;
+    this.blockScopeStack = [];
+    this.lineBlockScopes.clear();
+    this.skipMethodBodyBlockScope = false;
+    this.conditionalTaints.clear();
+    this.conditionStack = [];
+    this.lineConditions.clear();
+    this.synchronizedLines.clear();
+    this.inSynchronizedBlock = false;
+    this.iteratorSources.clear();
+    this.taintedFromIteratorNext.clear();
+    this.instanceFieldTaint.clear();
+    this.currentClassName = null;
+    this.inConstructor = false;
+    this.constructorParamPositions.clear();
+    this.isTaintedExpressionCache = null;
+  }
+
+  /**
+   * Index same-file Java callables by `simpleName#argCount` with arity-only
+   * keys. If two overloads share the same simple name and parameter count,
+   * that key is marked ambiguous and callee-param seeding skips it (avoids
+   * wiring the wrong formal list).
+   */
+  private buildJavaMethodParameterIndex(methods: Node[]): {
+    arityKeyToParams: Map<string, string[]>;
+    ambiguousArityKeys: Set<string>;
+  } {
+    const byKey = new Map<string, string[][]>();
+    for (const m of methods) {
+      const nameNode = m.childForFieldName('name');
+      const methodName = nameNode ? getNodeText(nameNode, this.source) : null;
+      if (!methodName) continue;
+      const params = this.getMethodParameters(m);
+      if (params.length === 0) continue;
+      const key = `${methodName}#${params.length}`;
+      let list = byKey.get(key);
+      if (!list) {
+        list = [];
+        byKey.set(key, list);
+      }
+      list.push(params);
+    }
+    const arityKeyToParams = new Map<string, string[]>();
+    const ambiguousArityKeys = new Set<string>();
+    for (const [key, lists] of byKey) {
+      if (lists.length > 1) {
+        const first = lists[0]!;
+        const namesMatch = lists.every(
+          (p) => p.length === first.length && p.every((name, i) => name === first[i]),
+        );
+        if (!namesMatch) {
+          ambiguousArityKeys.add(key);
+          continue;
+        }
+      }
+      arityKeyToParams.set(key, lists[0]!);
+    }
+    return { arityKeyToParams, ambiguousArityKeys };
+  }
+
+  /**
+   * After a fixpoint round, find simple same-file `foo(arg)` calls where the
+   * callee `foo` is declared in this compilation unit and an argument is
+   * tainted; record those formal parameter names for the next overlay.
+   */
+  private collectJavaCalleeParameterSeedsFromCalls(
+    root: Node,
+    index: { arityKeyToParams: Map<string, string[]>; ambiguousArityKeys: Set<string> },
+  ): Map<string, Set<string>> {
+    const out = new Map<string, Set<string>>();
+    const walk = (node: Node): void => {
+      if (
+        node.type === 'method_declaration' ||
+        node.type === 'function_declaration' ||
+        node.type === 'constructor_declaration'
+      ) {
+        const nameNode = node.childForFieldName('name');
+        const mName = nameNode ? getNodeText(nameNode, this.source) : null;
+        const prev = this.currentMethod;
+        this.currentMethod = mName;
+        for (const c of node.children) {
+          walk(c);
+        }
+        this.currentMethod = prev;
+        return;
+      }
+      if (node.type === 'method_invocation') {
+        const calleeName = this.extractJavaCalleeSimpleName(node);
+        if (calleeName) {
+          const argsNode = node.childForFieldName('arguments');
+          if (argsNode) {
+            const args = argsNode.children.filter(
+              (c: Node) => c.type !== '(' && c.type !== ')' && c.type !== ',',
+            );
+            const arityKey = `${calleeName}#${args.length}`;
+            if (!index.ambiguousArityKeys.has(arityKey)) {
+              const formalList = index.arityKeyToParams.get(arityKey);
+              if (formalList && formalList.length > 0) {
+                for (let i = 0; i < args.length && i < formalList.length; i++) {
+                  const formal = formalList[i];
+                  if (!formal) continue;
+                  if (!this.isTaintedExpression(args[i]!)) continue;
+                  let acc = out.get(calleeName);
+                  if (!acc) {
+                    acc = new Set();
+                    out.set(calleeName, acc);
+                  }
+                  acc.add(formal);
+                }
+              }
+            }
+          }
+        }
+      }
+      for (const c of node.children) {
+        walk(c);
+      }
+    };
+    walk(root);
+    return out;
   }
 
   /**
@@ -370,13 +577,8 @@ export class ConstantPropagator {
           continue;
         }
 
-        // #589: `return <Encoder>.<encode>(<the only parameter>)`.
-        const encoderArgs = valueNode.type === 'method_invocation'
-          ? valueNode.childForFieldName('arguments')?.children.filter((c: Node) => c.type !== '(' && c.type !== ')' && c.type !== ',')
-          : undefined;
-        if (!(valueNode.type === 'method_invocation' &&
-          HTML_CONTEXT_ENCODER_METHODS.has(getNodeText(valueNode.childForFieldName('name') ?? valueNode, this.source)) &&
-          params.length === 1 && encoderArgs?.length === 1 && getNodeText(encoderArgs[0]!, this.source) === params[0])) {
+        // #589: direct encoder return, or `String bar = escapeHtml(param); return bar;` (#589 S4).
+        if (!this.returnExpressionIsHtmlEncoderOnly(valueNode, body, params)) {
           allReturnsHtmlEncoder = false;
         }
 
@@ -602,12 +804,9 @@ export class ConstantPropagator {
 
   private isSanitizerCall(node: Node, methodBody?: Node): boolean {
     if (node.type === 'method_invocation') {
-      const nameNode = node.childForFieldName('name');
-      if (nameNode) {
-        const methodName = getNodeText(nameNode, this.source);
-        if (SANITIZER_METHODS.has(methodName) && !this.localNonSanitizing.has(methodName)) {
-          return true;
-        }
+      const methodName = this.extractJavaCalleeSimpleName(node);
+      if (methodName && SANITIZER_METHODS.has(methodName) && !this.localNonSanitizing.has(methodName)) {
+        return true;
       }
     }
 
@@ -619,6 +818,82 @@ export class ConstantPropagator {
     }
 
     return false;
+  }
+
+  /** #589 S4: `return escapeHtml(param)` or `bar = escapeHtml(param); return bar;`. */
+  private returnExpressionIsHtmlEncoderOnly(
+    valueNode: Node,
+    methodBody: Node,
+    params: string[],
+  ): boolean {
+    if (valueNode.type === 'method_invocation') {
+      return this.htmlEncoderCallUsesDeclaredParam(valueNode, params);
+    }
+    if (valueNode.type === 'identifier') {
+      const varName = getNodeText(valueNode, this.source);
+      return this.variableIsAssignedFromHtmlEncoderOnParam(varName, methodBody, params);
+    }
+    return false;
+  }
+
+  private htmlEncoderCallUsesDeclaredParam(node: Node, params: string[]): boolean {
+    if (node.type !== 'method_invocation') return false;
+    const methodName = this.extractJavaCalleeSimpleName(node);
+    if (!methodName || !HTML_CONTEXT_ENCODER_METHODS.has(methodName)) return false;
+    const argsNode = node.childForFieldName('arguments');
+    if (!argsNode) return false;
+    const args = argsNode.children.filter(
+      (c: Node) => c.type !== '(' && c.type !== ')' && c.type !== ',',
+    );
+    if (args.length !== 1) return false;
+    const argText = getNodeText(args[0]!, this.source);
+    return params.includes(argText);
+  }
+
+  private variableIsAssignedFromHtmlEncoderOnParam(
+    varName: string,
+    methodBody: Node,
+    params: string[],
+  ): boolean {
+    const findAssignments = (n: Node): boolean => {
+      if (n.type === 'local_variable_declaration') {
+        const declarator = n.children.find(c => c.type === 'variable_declarator');
+        if (declarator) {
+          const nameNode = declarator.childForFieldName('name');
+          const valueNode = declarator.childForFieldName('value');
+          if (nameNode && valueNode) {
+            const name = getNodeText(nameNode, this.source);
+            if (name === varName) {
+              return this.htmlEncoderCallUsesDeclaredParam(valueNode, params);
+            }
+          }
+        }
+      }
+      if (n.type === 'assignment_expression') {
+        const leftNode = n.childForFieldName('left');
+        const rightNode = n.childForFieldName('right');
+        if (leftNode && rightNode) {
+          const name = getNodeText(leftNode, this.source);
+          if (name === varName) {
+            return this.htmlEncoderCallUsesDeclaredParam(rightNode, params);
+          }
+        }
+      }
+      for (const child of n.children) {
+        if (findAssignments(child)) return true;
+      }
+      return false;
+    };
+    return findAssignments(methodBody);
+  }
+
+  private noteHtmlEncoderHelperAssignment(scopedName: string, valueNode: Node): boolean {
+    if (valueNode.type !== 'method_invocation') return false;
+    const callee = this.extractJavaCalleeSimpleName(valueNode);
+    if (!callee || !this.methodReturnsHtmlEncoderOnly.has(callee)) return false;
+    this.sanitizedVars.add(scopedName);
+    this.sanitizedVarUncovered.set(scopedName, HTML_CONTEXT_ENCODER_UNCOVERED_SINKS);
+    return true;
   }
 
   private variableIsAssignedFromSanitizer(varName: string, methodBody: Node): boolean {
@@ -1161,6 +1436,15 @@ export class ConstantPropagator {
                   this.tainted.add(paramName); // Also add unscoped for flexibility
                 }
               }
+              // #814 S2: callee formals that received tainted actuals at a same-file
+              // call site (fixpoint overlay; arity-resolved; same-name+arity overload
+              // conflicts skip seeding).
+              const overlay = this.javaCalleeParameterOverlay?.get(methodName);
+              if (overlay?.has(paramName)) {
+                const scopedName = this.getScopedName(paramName);
+                this.tainted.add(scopedName);
+                this.tainted.add(paramName);
+              }
             }
             paramPosition++;
           }
@@ -1521,6 +1805,8 @@ export class ConstantPropagator {
               if (this.isSanitizerMethodCall(valueNode)) {
                 this.sanitizedVars.add(scopedName);
                 this.recordSanitizerScope(scopedName, valueNode);
+              } else if (this.noteHtmlEncoderHelperAssignment(scopedName, valueNode)) {
+                /* encoder-only helper return: uncovered trust_boundary */
               } else {
                 this.sanitizedVars.delete(scopedName);
                 this.sanitizedVarUncovered.delete(scopedName);
@@ -1785,6 +2071,8 @@ export class ConstantPropagator {
         if (this.isSanitizerMethodCall(right)) {
           this.sanitizedVars.add(scopedName);
           this.recordSanitizerScope(scopedName, right);
+        } else if (this.noteHtmlEncoderHelperAssignment(scopedName, right)) {
+          /* encoder-only helper return */
         } else {
           this.sanitizedVars.delete(scopedName);
           this.sanitizedVarUncovered.delete(scopedName);
@@ -1808,6 +2096,39 @@ export class ConstantPropagator {
     const { arrayName, indexKey } = this.arrayElementStorageKey(chain);
     const isTainted = this.isTaintedExpression(right);
     this.setArrayElementTaint(arrayName, indexKey, isTainted);
+    this.propagateJavaRowArrayInitializerElementTaint(chain, right);
+  }
+
+  /**
+   * cognium-dev#476 / SecuriBench Arrays10 — `matrix[0] = new String[] { tainted, "ok" }`
+   * stores taint in row cells (`matrix@0` index `0`), not only on the row slot.
+   */
+  private propagateJavaRowArrayInitializerElementTaint(
+    rowChain: { base: string; indices: string[] },
+    right: Node,
+  ): void {
+    if (rowChain.indices.length !== 1 || rowChain.indices[0] === '*') return;
+    const initializer = this.findJavaArrayLiteralInitializer(right);
+    if (!initializer) return;
+    const rowArrayName = `${rowChain.base}@${rowChain.indices[0]}`;
+    let position = 0;
+    for (const child of initializer.children) {
+      if (child.type === ',' || child.type === '{' || child.type === '}') continue;
+      if (this.isTaintedExpression(child)) {
+        this.setArrayElementTaint(rowArrayName, String(position), true);
+      }
+      position++;
+    }
+  }
+
+  private findJavaArrayLiteralInitializer(node: Node): Node | null {
+    if (node.type === 'array_initializer') return node;
+    if (node.type === 'array_creation_expression') {
+      for (const child of node.children) {
+        if (child.type === 'array_initializer') return child;
+      }
+    }
+    return null;
   }
 
   /** cognium-dev#476: `grid[0][0]` and deeper element paths. */
@@ -2400,16 +2721,34 @@ export class ConstantPropagator {
   }
 
   /**
+   * Trailing simple name for a Java `method_invocation` (`sink`, `this.sink`, …).
+   */
+  private extractJavaCalleeSimpleName(node: Node): string | null {
+    if (node.type !== 'method_invocation') return null;
+    const nameNode = node.childForFieldName('name');
+    if (!nameNode) return null;
+    if (nameNode.type === 'identifier') {
+      return getNodeText(nameNode, this.source);
+    }
+    if (nameNode.type === 'field_access') {
+      const field = nameNode.childForFieldName('name') ?? nameNode.childForFieldName('field');
+      return field ? getNodeText(field, this.source) : null;
+    }
+    return null;
+  }
+
+  /**
    * Extract the trailing method/function name from any call node shape:
-   *   Java   `method_invocation`        — name field
+   *   Java   `method_invocation`        — name field (identifier or field_access)
    *   Go/JS  `call_expression`          — function field (identifier or selector/member)
    *   Python `call`                     — function field (identifier or attribute)
    */
   private extractCallName(node: Node): string | null {
-    let fnNode: Node | null = null;
     if (node.type === 'method_invocation') {
-      fnNode = node.childForFieldName('name');
-    } else if (node.type === 'call_expression' || node.type === 'call') {
+      return this.extractJavaCalleeSimpleName(node);
+    }
+    let fnNode: Node | null = null;
+    if (node.type === 'call_expression' || node.type === 'call') {
       fnNode = node.childForFieldName('function');
     }
     if (!fnNode) return null;
@@ -2440,12 +2779,11 @@ export class ConstantPropagator {
       return false;
     }
 
-    const nameNode = node.childForFieldName('name');
-    if (!nameNode) {
+    const methodName = this.extractJavaCalleeSimpleName(node);
+    if (!methodName) {
       return false;
     }
 
-    const methodName = getNodeText(nameNode, this.source);
     return ANTI_SANITIZER_METHODS.has(methodName);
   }
 
@@ -2531,34 +2869,53 @@ export class ConstantPropagator {
     }
   }
 
+  /** Instance field list/collection names: `arguments` ↔ `this.arguments` (cognium-dev#1199). */
+  private javaCollectionLookupNames(collectionName: string): string[] {
+    const names = [collectionName];
+    if (collectionName.startsWith('this.')) {
+      const field = collectionName.slice(5);
+      if (this.classFields.has(field)) names.push(field);
+    } else if (this.classFields.has(collectionName)) {
+      names.push(`this.${collectionName}`);
+    }
+    return names;
+  }
+
+  private markJavaCollectionTainted(collectionName: string): void {
+    for (const name of this.javaCollectionLookupNames(collectionName)) {
+      const scopedCollection = this.currentMethod ? `${this.currentMethod}:${name}` : name;
+      this.tainted.add(name);
+      this.tainted.add(scopedCollection);
+    }
+  }
+
   /**
    * Check if a collection is tainted (has any tainted elements).
    */
   private isCollectionTainted(collectionName: string): boolean {
-    // Check if the collection has tainted elements via list tracking
-    const listElems = this.listElements.get(collectionName);
-    if (listElems) {
-      for (const elem of listElems) {
-        if (elem === '__TAINTED__') return true;
-        if (elem !== null) {
-          const scopedElem = this.currentMethod ? `${this.currentMethod}:${elem}` : elem;
-          if (this.tainted.has(elem) || this.tainted.has(scopedElem)) {
-            return true;
+    for (const lookup of this.javaCollectionLookupNames(collectionName)) {
+      const listElems = this.listElements.get(lookup);
+      if (listElems) {
+        for (const elem of listElems) {
+          if (elem === '__TAINTED__') return true;
+          if (elem !== null) {
+            const scopedElem = this.currentMethod ? `${this.currentMethod}:${elem}` : elem;
+            if (this.tainted.has(elem) || this.tainted.has(scopedElem)) {
+              return true;
+            }
           }
         }
       }
-    }
 
-    // Check if the collection has tainted keys (for maps)
-    const taintedKeys = this.taintedCollections.get(collectionName);
-    if (taintedKeys && taintedKeys.size > 0) {
-      return true;
-    }
+      const taintedKeys = this.taintedCollections.get(lookup);
+      if (taintedKeys && taintedKeys.size > 0) {
+        return true;
+      }
 
-    // Check if the collection variable itself is tainted
-    const scopedCollection = this.currentMethod ? `${this.currentMethod}:${collectionName}` : collectionName;
-    if (this.tainted.has(collectionName) || this.tainted.has(scopedCollection)) {
-      return true;
+      const scopedCollection = this.currentMethod ? `${this.currentMethod}:${lookup}` : lookup;
+      if (this.tainted.has(lookup) || this.tainted.has(scopedCollection)) {
+        return true;
+      }
     }
 
     return false;
@@ -2760,8 +3117,11 @@ export class ConstantPropagator {
                   if (index >= 0 && index < listElems.length) {
                     const elem = listElems[index];
                     if (elem === null) {
-                      // Index points to a literal value (like "safe" or "moresafe")
-                      // which was added directly, not via a variable - this is clean
+                      // Literal slot: stay clean unless addAll merged taint into this list
+                      // (Collections8: add("abc") then addAll(tainted) then get(0) → sink).
+                      if (hasAnyTainted && this.listAddAllFromTainted.has(collectionName)) {
+                        return true;
+                      }
                       return false;
                     }
                     if (elem === '__TAINTED__') {
@@ -2894,6 +3254,23 @@ export class ConstantPropagator {
             );
             if (args.length > returnedParamIdx && this.isTaintedExpression(args[returnedParamIdx]!)) {
               return true;
+            }
+          }
+        }
+
+        // JSON.parse — propagate taint from input only (#1149 IL-22).
+        if (methodName === 'parse') {
+          const callee = node.childForFieldName('function');
+          const calleeText = callee ? getNodeText(callee, this.source) : '';
+          if (/\bJSON\.parse\b/.test(calleeText)) {
+            const argsNode = node.childForFieldName('arguments');
+            if (argsNode) {
+              const args = argsNode.children.filter(
+                (c: Node) => c.type !== '(' && c.type !== ')' && c.type !== ','
+              );
+              if (args.length > 0 && this.isTaintedExpression(args[0]!)) {
+                return true;
+              }
             }
           }
         }
@@ -3145,10 +3522,8 @@ export class ConstantPropagator {
           list.push(null);
         }
 
-        // Also mark the collection variable itself as tainted if it contains tainted elements
         if (isTainted) {
-          const scopedCollection = this.currentMethod ? `${this.currentMethod}:${collectionName}` : collectionName;
-          this.tainted.add(scopedCollection);
+          this.markJavaCollectionTainted(collectionName);
         }
       }
     }
@@ -3163,24 +3538,37 @@ export class ConstantPropagator {
         const sourceArg = args[0];
         if (sourceArg.type === 'identifier') {
           const sourceName = getNodeText(sourceArg, this.source);
-          // Check if the source collection is tainted
-          if (this.isCollectionTainted(sourceName)) {
+          const sourceList = this.listElements.get(sourceName);
+          if (sourceList && sourceList.length > 0) {
             if (!this.listElements.has(collectionName)) {
               this.listElements.set(collectionName, []);
             }
-            // Add a tainted marker to indicate the collection now has tainted elements
+            const targetList = this.listElements.get(collectionName)!;
+            targetList.push(...sourceList);
+            if (sourceList.some(e => {
+              if (e === null) return false;
+              if (e === '__TAINTED__') return true;
+              const scopedE = this.currentMethod ? `${this.currentMethod}:${e}` : e;
+              return this.tainted.has(e) || this.tainted.has(scopedE);
+            })) {
+              this.markJavaCollectionTainted(collectionName);
+              this.listAddAllFromTainted.add(collectionName);
+            }
+          } else if (this.isCollectionTainted(sourceName)) {
+            if (!this.listElements.has(collectionName)) {
+              this.listElements.set(collectionName, []);
+            }
             this.listElements.get(collectionName)!.push('__TAINTED__');
-            // Also mark the target collection as tainted
-            const scopedCollection = this.currentMethod ? `${this.currentMethod}:${collectionName}` : collectionName;
-            this.tainted.add(scopedCollection);
+            this.markJavaCollectionTainted(collectionName);
+            this.listAddAllFromTainted.add(collectionName);
           }
         } else if (this.isTaintedExpression(sourceArg)) {
           if (!this.listElements.has(collectionName)) {
             this.listElements.set(collectionName, []);
           }
           this.listElements.get(collectionName)!.push('__TAINTED__');
-          const scopedCollection = this.currentMethod ? `${this.currentMethod}:${collectionName}` : collectionName;
-          this.tainted.add(scopedCollection);
+          this.markJavaCollectionTainted(collectionName);
+          this.listAddAllFromTainted.add(collectionName);
         }
       }
     }

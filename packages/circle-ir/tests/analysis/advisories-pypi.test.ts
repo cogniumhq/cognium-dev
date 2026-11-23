@@ -12,7 +12,12 @@ import {
   diffAdvisoryMatches,
   type OsvRecord,
 } from '../../src/analysis/advisories.js';
-import { parsePoetryLockDependencies, type Dependency } from '../../src/analysis/sbom.js';
+import {
+  parsePoetryLockDependencies,
+  parsePypiDependencies,
+  parsePyprojectDependencies,
+  type Dependency,
+} from '../../src/analysis/sbom.js';
 
 const DIR = fileURLToPath(new URL('../fixtures/osv-pypi/', import.meta.url));
 const RECORDS: OsvRecord[] = readdirSync(DIR)
@@ -55,15 +60,37 @@ describe('matchAdvisories (PyPI)', () => {
     expect(ids([py('zope_interface', '5.0')])).toEqual(['zope_interface@5.0 TEST-PEP-0001']);
     expect(ids([py('Zope-Interface', '5.0.post1')])).toEqual([]);
   });
-  it('honours explicit version lists under normalised names', () => {
-    const m = matchAdvisories([py('Listed.Pkg', '1.0.0')], INDEX);
-    expect(m).toEqual([]); // the list holds "1.0" literally; lists are exact strings, as OSV defines them
-    expect(matchAdvisories([py('Listed.Pkg', '1.0')], INDEX)[0].affected.viaVersionsList).toBe(true);
+  it('honours explicit version lists under normalised names, by PEP 440 equality (#1127)', () => {
+    // The list holds "1.0"; PEP 440 calls 1.0, 1.0.0 and 1 the same version.
+    for (const v of ['1.0', '1.0.0', '1', '0!1.0', 'v1.0']) {
+      expect([v, matchAdvisories([py('Listed.Pkg', v)], INDEX)[0]?.affected.viaVersionsList]).toEqual([v, true]);
+    }
+    expect(ids([py('Listed.Pkg', '1.0.post1'), py('Listed.Pkg', '1.0+local'), py('Listed.Pkg', '1.0rc1')])).toEqual([]);
   });
   it('never matches specifiers, non-versions or other ecosystems', () => {
     expect(ids([py('requests', '>=2.0'), py('requests', 'unknown'), py('requests', 'latest')])).toEqual([]);
     const npmRequests: Dependency = { name: 'requests', version: '2.28.1', ecosystem: 'npm', scope: 'required', purl: 'pkg:npm/requests@2.28.1' };
     expect(ids([npmRequests])).toEqual([]);
+  });
+  it('never takes a declared lower bound for the installed version (#1127)', () => {
+    const req = ['requests>=2.0', 'requests~=2.28', 'requests>=2.28,<3', 'requests==2.*', 'requests==2.28.1'].join('\n');
+    expect(ids(parsePypiDependencies(req))).toEqual(['requests@2.28.1 GHSA-j8r2-6x86-q33q']);
+    const pyproject = ['[project]', 'dependencies = [', '  "flask>=2.0",', '  "requests (>=2.0)",', ']'].join('\n');
+    expect(ids(parsePyprojectDependencies(pyproject))).toEqual([]);
+  });
+  it('matches pins in a hashed requirements file (#1131 review)', () => {
+    const req = [
+      'requests==2.28.1 \\',
+      '    --hash=sha256:abc \\',
+      '    --hash=sha256:def',
+      'requests == 2.28.1 --hash=sha256:abc',
+      'requests==2.28.1 ; python_version >= "3.8"  # pinned',
+    ].join('\n');
+    expect(ids(parsePypiDependencies(req))).toEqual([
+      'requests@2.28.1 GHSA-j8r2-6x86-q33q',
+      'requests@2.28.1 GHSA-j8r2-6x86-q33q',
+      'requests@2.28.1 GHSA-j8r2-6x86-q33q',
+    ]);
   });
   it('matches the exact versions of a poetry.lock', () => {
     const lock = ['[[package]]', 'name = "requests"', 'version = "2.25.1"', '', '[[package]]', 'name = "Flask"', 'version = "2.3.3"'].join('\n');
@@ -77,5 +104,55 @@ describe('deltas (PyPI)', () => {
     const d = diffAdvisoryMatches(base, matchAdvisories([py('requests', '2.31.0')], INDEX));
     expect(d.removed).toHaveLength(1);
     expect(d.removed[0].baselineVersions).toEqual(['2.9.0', '2.10.0']);
+  });
+});
+
+describe('epochs and edge bounds (PyPI, #1127)', () => {
+  const rec = (id: string, name: string, events: Array<Record<string, string>>, versions?: string[]): OsvRecord => ({
+    id,
+    modified: '2024-05-01T00:00:00Z',
+    affected: [{ package: { ecosystem: 'PyPI', name }, ranges: [{ type: 'ECOSYSTEM', events }], ...(versions ? { versions } : {}) }],
+  });
+  const idx = buildAdvisoryIndex(
+    [
+      rec('TEST-EP-1', 'ep', [{ introduced: '0' }, { fixed: '1!1.0' }]),
+      rec('TEST-LA-1', 'la', [{ introduced: '1.0' }, { last_affected: '2.0' }]),
+      rec('TEST-IN-1', 'intro', [{ introduced: '2.0' }, { fixed: '3.0' }]),
+      { id: 'TEST-VL-2', modified: '2024-05-01T00:00:00Z', affected: [{ package: { ecosystem: 'PyPI', name: 'pre' }, versions: ['1.0rc1'] }] },
+    ],
+    'PyPI',
+  );
+  const hit = (name: string, version: string): string[] => matchAdvisories([py(name, version)], idx).map((m) => m.advisory.id);
+
+  it('matches a dependency with an epoch', () => {
+    expect(hit('ep', '1!0.5')).toEqual(['TEST-EP-1']);
+    expect(hit('ep', '0!2.0')).toEqual(['TEST-EP-1']); // epoch 0 is the default, below 1!
+    expect(hit('ep', '2.0')).toEqual(['TEST-EP-1']);
+    expect(hit('ep', '1!1.0')).toEqual([]);
+    expect(hit('ep', '1!0.0.post1')).toEqual(['TEST-EP-1']);
+    expect(matchAdvisories([py('ep', '1!0.5')], idx)[0].fixedIn).toEqual(['1!1.0']);
+  });
+  it('compares a versions list by PEP 440 equality, whatever the spelling', () => {
+    for (const v of ['1.0rc1', '1.0c1', '1.0.0rc1', '1.0RC1', '1.0-rc.1', '1.0.0-c1']) expect([v, hit('pre', v)]).toEqual([v, ['TEST-VL-2']]);
+    expect(hit('pre', '1.0rc2')).toEqual([]);
+    expect(hit('pre', '1.0')).toEqual([]);
+  });
+  it('excludes a post or local version above last_affected', () => {
+    expect(hit('la', '2.0')).toEqual(['TEST-LA-1']);
+    expect(hit('la', '2.0.0')).toEqual(['TEST-LA-1']);
+    expect(hit('la', '2.0.post1')).toEqual([]);
+    expect(hit('la', '2.0+local')).toEqual([]);
+  });
+  it('excludes a dev or pre release just below introduced', () => {
+    expect(hit('intro', '2.0.dev1')).toEqual([]);
+    expect(hit('intro', '2.0rc1')).toEqual([]);
+    expect(hit('intro', '2.0')).toEqual(['TEST-IN-1']);
+    expect(hit('intro', '3.0.dev1')).toEqual(['TEST-IN-1']); // a dev release of the fix is still before it
+  });
+  it('never matches a version with whitespace or a specifier operator', () => {
+    expect(hit('ep', ' 1.0')).toEqual([]);
+    expect(hit('ep', '1.0 ')).toEqual([]);
+    expect(hit('ep', '!1.0')).toEqual([]);
+    expect(hit('ep', '==1.0')).toEqual([]);
   });
 });

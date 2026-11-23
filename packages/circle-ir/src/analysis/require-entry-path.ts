@@ -190,17 +190,21 @@ export interface ApplyRequireEntryPathOptions {
  * The mutation is idempotent — running twice produces the same result
  * (BFS is deterministic; annotation always overwrites prior fields
  * with the same values).
+ *
+ * Returns how many findings and taint flows were dropped, so a caller
+ * can report the gate's effect instead of leaving it invisible.
  */
 export function applyRequireEntryPath(
   fileAnalyses: ReadonlyArray<{ file: string; analysis: CircleIR }>,
   options: ApplyRequireEntryPathOptions = {},
-): void {
+): number {
   const disabledSet = normalizeDisabled(options.disabledPasses);
-  if (disabledSet.has(RULE_ID_REQUIRE_ENTRY_PATH)) return;
+  if (disabledSet.has(RULE_ID_REQUIRE_ENTRY_PATH)) return 0;
 
   // Build the project-wide method index + reverse-caller adjacency once.
   const graph = buildProjectMethodGraph(fileAnalyses);
-  if (graph.methodsByKey.size === 0) return;
+  if (graph.methodsByKey.size === 0) return 0;
+  let dropped = 0;
 
   // Per-file classifier context (calls, runtime_registrations) — used
   // by the polyglot classifier for Go inline call walks and JS/TS +
@@ -208,7 +212,12 @@ export function applyRequireEntryPath(
   const fileContext = buildFileContext(fileAnalyses);
 
   // Classify entry points once — reused for every finding.
-  const entryPointKeys = collectEntryPointKeys(graph, fileContext, indexTypesByName(fileAnalyses));
+  const entryPointKeys = collectEntryPointKeys(
+    graph,
+    fileContext,
+    indexTypesByName(fileAnalyses),
+    fileAnalyses,
+  );
 
   // Per-language entry-point-key count — used by the safety guard
   // (#237): if a language has ZERO classified entry points across the
@@ -250,9 +259,9 @@ export function applyRequireEntryPath(
             });
             break;
           case 'drop':
-            // Findings dropped by the entry-path gate carry no
-            // side-channel signal — downstream consumers see them
-            // as if they were never emitted.
+            // The finding itself is removed; only the returned count
+            // (`ProjectAnalysis.entry_path_dropped`) records it.
+            dropped++;
             break;
         }
       }
@@ -290,10 +299,12 @@ export function applyRequireEntryPath(
           profile,
         );
         if (decision.action !== 'drop') keptFlows.push(flow);
+        else dropped++;
       }
       fa.analysis.taint.flows = keptFlows;
     }
   }
+  return dropped;
 }
 
 // ---------------------------------------------------------------------------
@@ -514,6 +525,7 @@ function collectEntryPointKeys(
   graph: ProjectMethodGraph,
   fileContext: Map<string, FileClassifierContext>,
   typesByName: Map<string, TypeInfo[]>,
+  fileAnalyses: ReadonlyArray<{ file: string; analysis: CircleIR }>,
 ): Set<string> {
   const entryPoints = new Set<string>();
   for (const rec of graph.methodsByKey.values()) {
@@ -529,7 +541,151 @@ function collectEntryPointKeys(
       entryPoints.add(rec.key);
     }
   }
+  addCrossFileJsTsRouteHandlerEntryPoints(fileAnalyses, graph, entryPoints);
   return entryPoints;
+}
+
+/**
+ * When an Express-family route registers an imported handler
+ * (`router.get(path, run)` with `run` from `./handler`), classify the
+ * exported function in the other file as a Tier-1 entry point
+ * (cognium-dev#1323). Also resolves a member handler on a namespace or
+ * class import (`handlers.run`, `Controller.run`), a default export whose
+ * name differs from the local binding, and one re-export hop (`index.ts`).
+ */
+function addCrossFileJsTsRouteHandlerEntryPoints(
+  fileAnalyses: ReadonlyArray<{ file: string; analysis: CircleIR }>,
+  graph: ProjectMethodGraph,
+  entryPoints: Set<string>,
+): void {
+  const knownFiles = new Set(fileAnalyses.map(fa => fa.file));
+  const byFile = new Map(fileAnalyses.map(fa => [fa.file, fa.analysis]));
+
+  for (const fa of fileAnalyses) {
+    const language = (fa.analysis.meta.language ?? '').toLowerCase();
+    if (
+      language !== 'javascript' &&
+      language !== 'typescript' &&
+      language !== 'tsx' &&
+      language !== 'jsx'
+    ) {
+      continue;
+    }
+    const regs = fa.analysis.runtime_registrations ?? [];
+    if (regs.length === 0) continue;
+    const imports = fa.analysis.imports ?? [];
+
+    for (const reg of regs) {
+      if (
+        reg.kind !== 'http_route' &&
+        reg.kind !== 'middleware' &&
+        reg.kind !== 'event_listener'
+      ) {
+        continue;
+      }
+      const handlerName = reg.handler?.name;
+      const ref = handlerName?.match(/^([A-Za-z_$][\w$]*)(?:\.([A-Za-z_$][\w$]*))?$/);
+      if (!ref) continue;
+      const [, head, member] = ref;
+
+      if (!member) {
+        const localKeys = (graph.methodsByName.get(head) ?? []).filter(
+          key => graph.methodsByKey.get(key)?.file === fa.file,
+        );
+        const alreadyEntry = localKeys.some(key => entryPoints.has(key));
+        if (alreadyEntry) continue;
+      }
+
+      const imp = imports.find(
+        i => !i.is_type_only && (i.alias ?? i.imported_name) === head && i.from_package,
+      );
+      if (!imp?.from_package) continue;
+
+      const targetFile = resolveRelativeImportToScanFile(fa.file, imp.from_package, knownFiles);
+      if (!targetFile) continue;
+
+      if (!member) {
+        if (!imp.is_wildcard) addExportedHandler(targetFile, imp.imported_name, head, 0);
+      } else if (imp.is_wildcard) {
+        // `import * as handlers` / `const handlers = require(...)`, then `handlers.run`.
+        addExportedHandler(targetFile, member, member, 0);
+      } else {
+        // `import { Controller }`, then `Controller.run`.
+        for (const key of graph.methodsByName.get(member) ?? []) {
+          const rec = graph.methodsByKey.get(key);
+          if (rec?.file === targetFile && rec.className === imp.imported_name) entryPoints.add(key);
+        }
+      }
+    }
+  }
+
+  /**
+   * Mark `symbol` exported from `file`. A default export whose name differs
+   * from the local binding falls back to the file's only module-scope
+   * function. When nothing matches, follow one hop of the file's re-exports
+   * (`export { run } from './run'`, `export * from …`, both recorded as
+   * un-aliased wildcard imports) and its imports of the same name.
+   */
+  function addExportedHandler(file: string, symbol: string, local: string, hop: number): void {
+    const name = symbol === 'default' ? local : symbol;
+    let keys = (graph.methodsByName.get(name) ?? []).filter(key => graph.methodsByKey.get(key)?.file === file);
+    if (keys.length === 0 && symbol === 'default') {
+      const moduleMethods = (byFile.get(file)?.types ?? []).find(t => t.name === '<module>')?.methods ?? [];
+      if (moduleMethods.length === 1) {
+        keys = [makeMethodKey(file, '<module>', moduleMethods[0].name, moduleMethods[0].start_line)];
+      }
+    }
+    if (keys.length > 0) {
+      for (const key of keys) entryPoints.add(key);
+      return;
+    }
+    if (hop > 0 || symbol === 'default') return;
+    for (const imp of byFile.get(file)?.imports ?? []) {
+      if (!imp.from_package || imp.is_type_only) continue;
+      const reExport = imp.is_wildcard && imp.alias === null;
+      if (!reExport && (imp.alias ?? imp.imported_name) !== symbol) continue;
+      const next = resolveRelativeImportToScanFile(file, imp.from_package, knownFiles);
+      if (next && next !== file) addExportedHandler(next, reExport ? symbol : imp.imported_name, symbol, hop + 1);
+    }
+  }
+}
+
+/** Resolve a relative ES module import to a file path present in the scan. */
+function resolveRelativeImportToScanFile(
+  fromFile: string,
+  fromPackage: string,
+  knownFiles: ReadonlySet<string>,
+): string | null {
+  if (!fromPackage.startsWith('.')) return null;
+
+  const dir = fromFile.includes('/') ? fromFile.slice(0, fromFile.lastIndexOf('/')) : '';
+  let base = dir;
+  for (const segment of fromPackage.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      base = base.includes('/') ? base.slice(0, base.lastIndexOf('/')) : '';
+    } else {
+      base = base ? `${base}/${segment}` : segment;
+    }
+  }
+
+  const candidates = [
+    base,
+    `${base}.ts`,
+    `${base}.tsx`,
+    `${base}.js`,
+    `${base}.jsx`,
+    `${base}/index.ts`,
+    `${base}/index.tsx`,
+    `${base}/index.js`,
+  ];
+  for (const c of candidates) {
+    if (knownFiles.has(c)) return c;
+  }
+  for (const f of knownFiles) {
+    if (f === base || f.endsWith(`/${base}`) || f.endsWith(`/${base}.ts`)) return f;
+  }
+  return null;
 }
 
 /** Every type in the scan, by simple name (several when packages differ). */

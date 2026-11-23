@@ -14,9 +14,9 @@
  * vocabularies that survive.
  *
  * This module mirrors `schemas/facts@2.json` field for field;
- * `tests/facts/schema2.test.ts` fails when the two drift. `facts@1`
- * (`schema.ts`) stays the producer's default: `facts@2` is emitted only when
- * a caller asks for it (`JavaGraphOptions.factsScheme`).
+ * `tests/facts/schema2.test.ts` fails when the two drift. `facts@2` is the
+ * producer's default (graph-store T5a.1b); `facts@1` (`schema.ts`) is still
+ * written when a caller asks for it (`JavaGraphOptions.factsScheme`).
  */
 
 import { STABLE_FILE_KIND, fileIdBytes } from '../stable-ids/files.js';

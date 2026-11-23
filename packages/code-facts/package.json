@@ -60,7 +60,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
-    "@vitest/coverage-v8": "^5.0.5",
+    "@vitest/coverage-v8": "^5.1.0",
     "circle-ir": "^4.18.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.1"

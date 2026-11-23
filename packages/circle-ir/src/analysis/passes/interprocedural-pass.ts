@@ -20,7 +20,12 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { TaintPropagationPassResult } from './taint-propagation-pass.js';
-import { analyzeInterprocedural, findTaintBridges, type InterproceduralResult } from '../interprocedural.js';
+import {
+  analyzeInterprocedural,
+  findTaintBridges,
+  shouldSuppressGatedLoggerLogInjection,
+  type InterproceduralResult,
+} from '../interprocedural.js';
 import { attachSourceLineCode } from '../taint-matcher.js';
 import { shouldGateInterproceduralParam } from '../entry-point-detection.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
@@ -162,8 +167,14 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
               continue;
             }
 
+            // Java: a source in another method than the call reaches it
+            // through the call graph, wherever that method is declared; the
+            // line test is for a source in the calling method itself (C5 F4).
+            const callerRange = language === 'java' ? enclosingMethodRange(graph.ir.types, edge.callLine) : null;
+            let flowAdded = false;
             for (const source of sources) {
-              if (source.line > edge.callLine) continue;
+              if (source.line > edge.callLine &&
+                  !(callerRange !== null && (source.line < callerRange[0] || source.line > callerRange[1]))) continue;
               if (source.type === 'interprocedural_param' && source.confidence < 0.6) continue;
               // JS/TS (dogfood 2026-11-03): the source must be able to reach this
               // call — in the calling function, or in a function that calls it
@@ -217,9 +228,13 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
                 confidence: sink.confidence * source.confidence * 0.85,
                 sanitized: false,
               });
+              flowAdded = true;
               break; // one source per sink is enough
             }
-            break; // one call edge per sink is enough
+            // One call edge per sink is enough. Java: the first edge that
+            // yields a flow, so the answer does not hang on which caller of
+            // the method comes first in the file.
+            if (language !== 'java' || flowAdded) break;
           }
         }
       }
@@ -320,16 +335,22 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
       // Generate simple source→sink flows for any newly-found sinks
       if (additionalSinks.length > 0 && sources.length > 0) {
         for (const sink of additionalSinks) {
+          // Java: the earliest source in the sink's own method, at or above
+          // the sink, when there is one. `sources[0]` is whichever source
+          // comes first in the file, so moving a method changed the source
+          // (and with it the line range the sanitizer filter below reads),
+          // which dropped live escapes (C5 F4, WebGoat `VerifyAccount`).
+          const source = (language === 'java' ? sourceInSinkMethod(graph.ir.types, fallbackSources, sink.line) : null) ?? sources[0];
           additionalFlows.push({
-            source_line: sources[0].line,
+            source_line: source.line,
             sink_line:   sink.line,
-            source_type: sources[0].type,
+            source_type: source.type,
             sink_type:   sink.type,
             path: [
-              { variable: 'input', line: sources[0].line, type: 'source' as const },
+              { variable: 'input', line: source.line, type: 'source' as const },
               { variable: 'input', line: sink.line,       type: 'sink'   as const },
             ],
-            confidence: sources[0].confidence * sink.confidence,
+            confidence: source.confidence * sink.confidence,
             sanitized: false,
           });
         }
@@ -421,6 +442,16 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
       filteredAdditionalSinks = filteredAdditionalSinks.filter(
         s => !(s.type === 'external_taint_escape' && credited.has(s.line)),
       );
+    }
+
+    // cognium-dev#468 S2 (Decision 468-1 A): gated SLF4J/Log4j loggers should not
+    // also emit log_injection (Go #455 duplicate). java.util.logging is kept for
+    // flow-sanitize recall (#947).
+    if (language === 'java') {
+      filteredAdditionalFlows = filteredAdditionalFlows.filter(f => {
+        const callsAtSink = graph.callsByLine.get(f.sink_line) ?? [];
+        return !shouldSuppressGatedLoggerLogInjection(f, callsAtSink);
+      });
     }
 
     return { additionalSinks: filteredAdditionalSinks, additionalFlows: filteredAdditionalFlows, interprocedural };
@@ -704,9 +735,9 @@ function appendCalleeSourceCallerSinkFlows(
       ) {
         continue;
       }
-      // cognium-dev#917 S4 / #913 S4 / #914 S4 — pass-through helpers must not reach sinks when
+      // cognium-dev#917 S4 / #913 S4 / #914 S4 / #1197 — pass-through helpers must not reach sinks when
       // the matching caller argument has no request-derived source (SeparateClassRequest.getTheValue).
-      // sql_injection / command_injection / path_traversal / xss / format_string (#915): instance inner-class helpers only;
+      // sql_injection / command_injection / path_traversal / xss / format_string / ldap_injection (#1197): instance inner-class helpers only;
       // static helpers can still carry param (e.g. #913 BenchmarkTest02625, #914 BenchmarkTest01929).
       if (
         fileCode &&
@@ -715,7 +746,8 @@ function appendCalleeSourceCallerSinkFlows(
             sink.type === 'command_injection' ||
             sink.type === 'path_traversal' ||
             sink.type === 'xss' ||
-            sink.type === 'format_string') &&
+            sink.type === 'format_string' ||
+            sink.type === 'ldap_injection') &&
             javaHelperCallHasInstanceReceiver(graph, edge))) &&
         calleeSources.every(
           s => (s.type === 'interprocedural_param' || s.type === 'plugin_param') && !!s.variable,
@@ -769,6 +801,20 @@ function interproceduralParamReachIsDeadBranchOnly(
   const onLivePaths = buildJavaTaintedVars(sliceText, new Set([paramName]), dead);
   const ifDeadLinesCount = buildJavaTaintedVars(sliceText, new Set([paramName]), new Set());
   return ifDeadLinesCount.has(localName) && !onLivePaths.has(localName);
+}
+
+/**
+ * cognium-dev#915 — return expressions that are only a context HTML encoder call
+ * (no raw parameter passthrough), e.g. OWASP BenchmarkTest01048 inner-class `Test`.
+ */
+function javaCalleeReturnIsHtmlEncoderOnly(expr: string): boolean {
+  const t = expr.trim();
+  if (!t) return false;
+  const enc =
+    /^(?:(?:org\.springframework\.web\.util\.)?HtmlUtils\.htmlEscape(?:Decimal|Hex)?|(?:org\.apache\.commons\.lang\.)?StringEscapeUtils\.escapeHtml(?:3|4)?|org\.owasp\.esapi\.ESAPI\.encoder\(\)\.encodeForHTML|Encode\.forHtml(?:Content|Attribute)?|Escaper\.escapeHtml|HtmlEscapers\.escapeHtml)\s*\([^)]*\)\s*$/;
+  if (enc.test(t)) return true;
+  if (/^new\s+String\s*\([^)]*\)\s*$/.test(t)) return false;
+  return false;
 }
 
 /** Sink types whose caller-side flow is dropped when the helper cannot return the parameter. */
@@ -858,6 +904,7 @@ export function calleeReturnMayCarryParam(
     if (!m) return true; // could not read this return
     sawReturn = true;
     const expr = m[1];
+    if (javaCalleeReturnIsHtmlEncoderOnly(expr)) continue;
     const bare = /^[A-Za-z_]\w*$/.test(expr) ? expr : null;
     if (bare && mutated.has(bare)) return true;
     if (bare && live.has(bare)) {
@@ -866,6 +913,7 @@ export function calleeReturnMayCarryParam(
       // assignment that actually reaches this return instead, when there is one.
       const def = mustReachingAssignment(slice, dead, i, bare, inlined);
       if (!def) return true;
+      if (javaCalleeReturnIsHtmlEncoderOnly(def.rhs)) continue;
       const upTo = slice.slice(0, def.line);
       upTo.push(`__helperReturn = ${def.rhs};`);
       const atDef = buildJavaTaintedVars(upTo.join('\n'), seeds, dead, { trackSlots: true });
@@ -1309,4 +1357,28 @@ function makeSourceReachesCaller(
     if (fn === null) return true;
     return ancestorsOf(callerMethod.split('.').pop() ?? callerMethod).has(fn);
   };
+}
+
+/** The line range of the innermost method around `line`, or `null`. */
+function enclosingMethodRange(types: readonly TypeInfo[], line: number): [number, number] | null {
+  let best: [number, number] | null = null;
+  for (const t of types) {
+    for (const m of t.methods) {
+      if (line < m.start_line || line > m.end_line) continue;
+      if (best === null || m.end_line - m.start_line < best[1] - best[0]) best = [m.start_line, m.end_line];
+    }
+  }
+  return best;
+}
+
+/** The earliest source inside the innermost method around `sinkLine`, at or above it, or `null`. */
+function sourceInSinkMethod<S extends { line: number }>(types: readonly TypeInfo[], sources: readonly S[], sinkLine: number): S | null {
+  const range = enclosingMethodRange(types, sinkLine);
+  if (range === null) return null;
+  let best: S | null = null;
+  for (const s of sources) {
+    if (s.line < range[0] || s.line > sinkLine) continue;
+    if (best === null || s.line < best.line) best = s;
+  }
+  return best;
 }

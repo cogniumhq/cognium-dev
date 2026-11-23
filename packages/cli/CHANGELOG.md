@@ -7,6 +7,121 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Usage and configuration errors exit `2` instead of `1`, in every command.** This covers a bad `-f`/`--format`, `--severity`, `--threads` or `--language` value, a missing path argument, an unknown command, a malformed `cognium.config.json` or an invalid `severity` in it, `deadcode`/`reach`/`entries`/`depcalls` option errors, `sbom` option errors and `sbom` finding no manifests. Old: exit `1`, the same code as "security findings present". New: exit `2`, with a one-line `Error: …` on stderr. Exit `1` now means only that `scan` found security findings, or that the `recheck` no-new-high rule failed. Analysis results keep their exit codes (0, 1 for findings; a partial run exits by its findings). `--help` has an EXIT CODES section. A script that treated `1` as "findings" no longer sees a typo as findings; a script that expected `1` on a bad option must expect `2`. Refs #1306
+- **Unknown options are refused with exit `2`.** Each command accepts the options it reads (plus `--help`, `--version` and `--log-level`); anything else stops with `Error: unknown option '--x' for 'scan'` before any work is done. Old: the option was ignored and the command ran (exit `0` or `1` by its result), so `--severty high` ran a full scan at the default severity. New: exit `2`. Every option `--help` documents is still accepted. Refs #1306
+
+### Fixed
+
+- **`scan`: the entry-path gate no longer drops findings in an Express handler that a router registers as a default import under another name, through an `index.ts` re-export, as `handlers.run`, or inside an array of handlers (Refs #1323, follow-up to #1331; circle-ir fix).**
+- **`scan`: a directory scan runs the per-file phase on `--threads` worker threads (#1324).** `--threads` (default 4, capped at the number of CPUs and the number of files) now applies to directory scans. Each file is analysed on a worker, and the results are merged in the original file order before the cross-file phase, so the output is the same as with `--threads 1`, which keeps the in-process path. A timed-out file is reported as before. A file whose analysis throws is reported as not analysed and siblings still run (cognium-dev#1351). If a worker cannot start or exits, its files are analysed on the main thread.
+- **`scan`: files that were not fully analysed, budget cuts and entry-path gate drops are reported, not silent (#1306, part 1).** SARIF now always has `runs[0].invocations[0]`. `executionSuccessful` is false when a file was not analysed (an analysis error or `--file-timeout-ms`) or when the cross-file budget or the project size ceiling cut the run. Each case is a `toolExecutionNotifications` entry with a level, the file location (plus the first error line for a parse error) and `properties.reason` (`analysis-error`, `file-timeout`, `parse-error`, `cross-file-budget`, `project-size-ceiling`). A parse error is a `warning` and the run stays successful. Before this change a scan where every file timed out wrote no `invocations` and 0 results, so it looked clean. JSON adds `results[].parse_errors`, `summary.filesWithParseErrors` and `summary.executionSuccessful`. Text output marks partly parsed files `[PARTIAL]`, and the stderr status line counts files not analysed and files with syntax errors in every format. The cross-file budget warning names `--cross-file-budget-ms`. S4 skipped-path notifications are unchanged.
+- **`scan`: findings that the `require-entry-path` gate drops are counted.** They appear as a text line, as `summary.entryPathDropped` and as a SARIF `note` (`entry-path-gate`), each naming `--disable-pass require-entry-path`. They do not affect `executionSuccessful`, and they are not reported when `--category` leaves out security.
+- **`scan`: a scan with no supported files writes a valid, empty report.** JSON and SARIF are written to stdout or `-o`, and text is written with `-o`. The SARIF has no results, `executionSuccessful: true` and a `no-files` warning. Exit 0. The bundled Action's SARIF upload no longer finds a missing file.
+
+## [4.23.0] - 2026-11-19
+
+### Fixed
+
+- **`recheck`: successors of anonymous handlers are matched by call-site anchor (#1287).** A `gone` verdict whose anonymous/inline handler was re-keyed (e.g. an import inserted above it) now resolves its successor declaration by the handler's call-site anchor, so an import-plus-real-fix reads the correct reason instead of `declaration-removed`.
+
+### Tests
+
+- **Lock flow-combo JS/Java XXE/xpath regressions for #1244 (#1294, #1295, #1296, #1297, #1298, #1299, #1300, #1302).** Built-CLI regression tests pinning flow-combo cases c02/c03/c04/c05/c06/c11/c13 (JS xxe) and c04 (Java xpath). No runtime behavior change.
+
+Note: #1283 (CI: cognium-ai regression scan, advisory) and #1284 (CI: engine bench regression check) are repository-CI changes, not cognium-dev CLI runtime; include only if this file lists CI. #1286 (chore: mark bench/.claude third-party for the Loop) is a chore.
+
+## [4.22.0] - 2026-11-16
+
+### Changes
+
+- fix(recheck): verdicts per flow inside a key (#1265)
+- fix(recheck): carry a finding across files when its move is evidenced (#1263)
+- feat(circle-ir): prototype-pollution (CWE-1321) for JS/TS (#1251)
+- feat(circle-ir): missing-auth-middleware (CWE-862) for JS/TS (#1254)
+- feat(circle-ir): hardcoded-secret-argument (CWE-798) for JS/TS (#1253)
+- feat(circle-ir): redos-regex-literal (CWE-1333) for JS/TS (#1250)
+- fix(circle-ir): JS/TS weak crypto through crypto named imports and aliases (#1249)
+
+## [4.21.1] - 2026-11-15
+
+### Changes
+
+- fix(circle-ir): JS/TS template_injection (CWE-1336) credits a fixed template (#1252)
+
+## [4.21.0] - 2026-11-15
+
+### Changes
+
+- test(cli): recheck re-key cases for CWE-601 and CWE-502 (JS and TS)
+- test(cli): eslint-disable on v12_stored gates fixture (Refs #1148)
+- test(cli): gates-nightly v12_stored variant XSS via built CLI (Refs #1148)
+- test(recheck): name the Java survival tests by what they cover
+- fix(recheck): identify parameter sources by the parameter; sanitized-by only for new sanitizers
+- feat(circle-ir): csrf-samesite-none-session (CWE-352) for JS/TS
+- recheck: a finding whose declaration key moved is still-present (or unknown), never gone (G1)
+- feat(circle-ir): sensitive-data-in-log (CWE-532) for JS/TS
+- fix(#1149): scan JS taint binds per-assignment; drop require in gate fixture
+- fix(js): JSON.parse(req.body) field flows to SQL sink (#1149)
+- test(cli): gates-nightly IL-57 rust JSON→yaml deser (Refs #1150)
+- fix(circle-ir): narrow #817 shell intake to sync execSync PAT shape
+- fix(circle-ir): cve-intake exported shell handlers keep command_injection (#817)
+- fix(circle-ir): cache_poisoning on the cve-intake parameter shapes, with a built-CLI test (#900)
+- chore(cli): suppress self-scan cache_poisoning on in-process Map caches
+- fix(cli): S4 — never follow symlinks in the file walk; a bad link is reported, not fatal
+- fix(circle-ir,cli): S3 — exponential regexes, a hard bound behind --file-timeout-ms, regex lint in CI
+- fix(java): field-carried Commandline argv at execute (#1199)
+- feat(circle-ir,cli): facts@2 is the default fact schema (graph-store T5a.1b)
+- feat(cli): recheck verifies a fix — --expect-gone, parse guard, evidence, --changed-from (R1–R4)
+- fix(java-graph): review — linear XML read, narrower constructor rooting
+- fix(facts@2): names in registering files are not registration rows
+- feat(java-graph): entries from registering files passed in as text
+- feat(circle-ir,cli): facts@2 follow-ups — TS graph facts, call.declaring, --facts-scheme (#1139)
+- fix(#900): restore Map.get SQL suppression; add cache_poisoning CLI maps
+
+## [4.20.0] - 2026-11-06
+
+### Changes
+
+- feat(cli): `entries --facts-arrow <dir> --facts-scheme facts@2` (Java only); default stays facts@1, so `--facts-arrow` alone writes what it wrote before (#1139)
+- feat(circle-ir): facts@2 schema file, ids@0.1 file kind and opt-in Java emission (graph-store T5a.1) (#1111)
+- fix(graph-facts): Class.forName registrations: scope by from, resolve local constants, bound by use (#1092) (#1096)
+- fix(cli): write graph-fact JSON reports in pieces, not one string (#1079) (#1091)
+- fix(cli): same scan on every run under Bun (#1032) (#1033)
+- fix(circle-ir): SBOM reads maven-dependency-plugin artifactItems and Tycho *.target Maven locations (#1077) (#1089)
+- fix(cli): standalone binary ships web-tree-sitter.wasm; CI smoke-runs it (#1034)
+- chore(deps-dev): Bump @types/node (#1083)
+- facts@1: flow filled on fixed-width ids@0.1 node ids (stable-ids 1a); multi-level native key sort
+- facts@1: reconciled contract (sets, no nulls, hex, di), unique keys, columnar emitter
+- facts@1 schema (proposed) and Arrow emission behind emitFacts / --facts-arrow
+- fix(circle-ir): js-yaml load on js-yaml >= 4 or with a safe schema is not a deserialization sink (#1068)
+
+## [Unreleased]
+
+### Fixed
+- **`recheck`: verdicts per flow inside a key** (report `cognium-recheck@0.4`; `@0.3`, `@0.2` and `@0.1` baselines are still read). The key is `cwe|file|declaration|rule`, so several flows of one rule in one method (two SQL sinks in one handler) share it, and the report kept only the first: fixing one flow while another stayed read `still-present` with nothing more, and a refactor that lost one of two flows, or a new flow of the same rule in the same method, was invisible. A finding now lists every distinct flow under its key (`flows: [{identity, line, evidence}]`, `identity` a hash of the flow identity, present when the key holds more than one). A verdict on a key that is still reported compares the key's flows (`flows: [{identity, verdict, line, sink}]`, each `still-present`, `gone`, `changed` or `new`): some baseline flows gone and others remaining is `still-present` with `partial: true`; a new flow of the same rule in the same method is a separate `new-high` / `new-other` entry with `newFlow: true` and the key, so it counts in `summary.newHigh` and fails the no-new-high rule. A flow whose sink, source or sanitizers were edited without being removed pairs with the edited after flow as `changed` (same sink code first, then line order), never `gone`. `--expect-gone` passes only when every flow of the key is gone; a partial fix fails with `reason: partial-fix` and `flows: {gone, remaining, new}` on the target. A key whose first flow was fixed while its declaration was re-keyed (an import above an anonymous handler) is matched by any of its other flows: `still-present`, not `gone`. The key and the one verdict per key are unchanged; the new fields are optional. The schema moves to `@0.4` because `verdicts` can now hold a second entry for a key (`newFlow`), and because a baseline must say whether it lists all flows: from `@0.4`, a finding without `flows` holds one flow; an earlier baseline gives no per-flow detail.
+- **`recheck`: a finding that moved to another file is `still-present` (`moved`), not `gone` plus a new finding**, when the move is evidenced (report stays `cognium-recheck@0.3`; the new fields are optional). The key and the flow identity both hold the file, so a method moved to another file or a class renamed with its file read as a false close plus a new issue (fingerprint survival on Java: on WebGoat `v2023.8`, 67 reported moved methods and 241 of 241 reported findings in renamed classes read `gone`). Evidence is a git rename or copy between the ref and the tree (`--changed-from`, `git diff -M -C`), a rename map from the caller (`--renames old=new[,…]` or `@file`, which also takes `git diff --name-status -M` lines; the new paths join `--changed`), or a declaration whose body settles as a move by its body hash (circle-ir `detectMoves`: equal hash, unique, at least 12 tokens). Findings now record `decl.kind`, `decl.bodyHash` and `decl.tokens` for that; a baseline written before them has no body-hash evidence. Under evidence, the one after finding in the file or declaration it moved to with the same flow identity (file left out; the source's file must be the same one or have moved with it) is the baseline finding: `still-present`, `reason: moved`, `matchedBy: move`, `movedFrom` (the baseline file; `file` is the new one), `rekeyedTo`, `moveEvidence`. More than one candidate, or a shared body hash, is `unknown` (`move-ambiguous`, `rekeyCandidates`), never `gone`. A move plus a real fix (a removed sink, an added sanitizer) is still `gone`, its reason taken from the file it moved to (`movedTo`) rather than `file-removed` / `declaration-removed`. `--expect-gone` on a moved finding fails: it is not gone. Without evidence nothing changes.
+- **`recheck`: a finding whose declaration key moved is `still-present` (or `unknown`), never `gone`** (report `cognium-recheck@0.3`; `@0.2` and `@0.1` baselines are still read). A flow in an anonymous or inline handler (`app.get('/x', (req, res) => …)`) is keyed by the handler's positional stable id, so inserting a statement above it (an `import`, as most fixes do), or inside it for a flow in a nested callback, re-keyed it: the old key read `gone` (`declaration-removed`) and the same flow came back `new-high`, so a no-op could pass `--expect-gone`. Findings are now matched by flow identity first: rule, CWE, file, the sink's type and code, the source's file, type and code (code compared without whitespace) and the sanitizers in the path; for a pass finding its message and line text. One baseline and one after finding of an identity are the same finding: `still-present`, and when the key changed `reason: rekeyed`, `rekeyedTo: <new key>`, `matchedBy: flow-identity`; the after key is not also `new-*`. When more than one could match, the baseline keys are `unknown` (`rekey-ambiguous`, `rekeyCandidates`), never `gone`. A changed sink, source or sanitizer set does not match, so a real fix still reads `gone`; a key taken over by another handler's flow no longer reads `still-present` for it. A `gone` whose declaration id moved takes its reason from the one declaration with the same position-free name (`successorDecl`), so an import plus a parameterized query reads `sanitized-by`, not `declaration-removed`. Pass findings now carry their line's code as `evidence.sink.code`.
+- **S4: `scan` and `metrics` no longer follow symlinks, and a bad symlink no longer aborts the scan.** The file walk followed symlinked directories, out of the scan root too; one broken or looping link anywhere ended the scan with exit 2 ("Analysis failed ENOENT" / ELOOP) and no SARIF; a link to a directory inside the tree was scanned twice. Now a symlink is never followed. A target inside the scan root is walked at its real path, so it is counted once. A target outside the root, a broken link, a looping link and an unreadable directory are left out and reported: a warning on stderr, a SARIF `toolExecutionNotifications` entry (`warning`; `note` for a link inside the root; the run stays `executionSuccessful`) and a JSON `skipped_paths` list.
+- **S3: `scan --file-timeout-ms` now bounds a step it cannot interrupt.** The limit is checked between analysis phases, so one synchronous step (a regex that backtracks) could hold a scan for hours. With the limit set, a watchdog thread stops the scan when a file has been in flight for twice the limit (at least the limit plus one second) without the main thread running: it names the file on stderr and ends the process with SIGTERM (exit status 143). Without `--file-timeout-ms` nothing changes. The crafted Go line that hung now scans in about 0.3 s (circle-ir fix).
+
+### Added
+- **`npm run lint:regex`** (repository CI, not the package): lints `packages/*/src` with `eslint-plugin-regexp` and fails on a regex certain to backtrack exponentially, or on a file with more super-linear regexes than `scripts/regex-lint-baseline.json` (686 reports in 64 files when it landed; the baseline may only go down).
+
+### Changed
+- **`entries --facts-arrow` writes `facts@2` by default** (graph-store T5a.1b): the twelve `facts@2` relations plus `manifest.json`. `--facts-scheme facts@1` still writes the eight `facts@1` relations. The report on stdout and `-o` is unchanged.
+
+### Added
+- **`recheck` verifies a fix, not only a key diff** (report `cognium-recheck@0.2`; `@0.1` baselines are still read):
+  - `--expect-gone <key[,…]|@list.txt>` names the findings the change is meant to fix. The report gets `targets[]` and `fixed: pass|fail`; the fix check fails, with exit 1, when a targeted key is `still-present`, `unknown`, not in the baseline, or `gone` only because a sanitizer for another sink class appeared (an HTML encoder before a SQL sink). A rename or a no-op helper no longer exits 0.
+  - Parse guard: changed files that do not parse fully are listed in `partialFiles` (error count, first error), and a baseline key on such a file is `unknown` (`reason: parse-error`), never `gone`. A baseline key on a file the run did not analyse is `unknown` (`not-analysed`). Any `unknown` verdict exits 3.
+  - Evidence: every finding and verdict carries `evidence` (source, sink, hops, `sanitizers_in_path`, confidence, and a line-free `fingerprint`). A `gone` verdict has a `reason`: `sanitized-by` (with the sanitizers and whether one covers the sink class), `sink-removed`, `source-removed`, `declaration-removed`, `file-removed`, `flow-not-found`, or `not-reported` for a pass finding.
+  - `--changed-from <git-ref>` takes the changed files from git (modified, added, deleted, both sides of a rename, untracked) and the baseline from `<ref>` itself, and scopes by change closure (`--scope closure`): the tree is analysed and every finding whose sink, source or path touches a changed file is reported, so a new sink in an unchanged helper reached from a changed caller is `new-high`. `--scope closure` also works with `--changed`; the default there stays `files`.
+  - `recheck` has its own RECHECK OPTIONS section in the help, and its entry no longer splits the `depcalls` description.
+- **`deadcode`, `reach`, `entries` and `depcalls` read Java registering files** and pass them to circle-ir: OSGi DS `OSGI-INF/*.xml`, `META-INF/MANIFEST.MF`, `plugin.xml` / `fragment.xml` and `web.xml` / `web-fragment.xml`, chosen by circle-ir's `registrationFileKind` (skipped directories such as `target/` are not read; a registering file over 32 MB is skipped with a warning). DS components, bundle activators, extension classes and servlets, filters and listeners become entries, so their classes are no longer reported unreached. `--root-kinds` takes the new kinds `osgi-ds` and `extension-point`.
+- **`--exported-packages`** (`deadcode`, `reach`, `entries`; Java only, off by default): the public top-level types of the `Export-Package` packages are `export` entries, for analysing a library's surface.
+
 ### Changes
 - **`sbom` reads Eclipse/Tycho `*.target` files** and pom `<artifactItem>`s (#1077), through circle-ir's new parsers.
 

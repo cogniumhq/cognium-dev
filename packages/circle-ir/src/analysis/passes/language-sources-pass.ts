@@ -248,8 +248,16 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     // -- Java (#78 round 2): static field stores inside the same class -------
     additionalSources.push(...findStaticFieldSources(types, code, language));
 
+    // -- Java #1198: instance-field HTTP stores + reflection Field.get reads -
+    additionalSources.push(...findJavaInstanceFieldHttpSources(types, code, language));
+    additionalSources.push(...findJavaReflectionFieldGetSources(types, code, language));
+    additionalSources.push(...findJavaReflectionFieldSetSources(types, code, language));
+
     // -- Java (#78 round 2): non-bean setter/getter chains -------------------
     additionalSources.push(...findSetterChainSources(types, code, language));
+
+    // -- Java #1198: taint stored on locals' instance fields (Basic29-style) -
+    additionalSources.push(...findJavaHeapFieldDerivedSources(code, language));
 
     // -- JavaScript/TypeScript: assignment sources and DOM XSS sinks ---------
     additionalSources.push(...findJavaScriptAssignmentSources(code, language));
@@ -441,8 +449,12 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
 
     // -- Python: safe-handler sanitizer detectors (cognium-dev #114 Sprint 31) --
     if (language === 'python') {
-      additionalSanitizers.push(...findPythonNetlocAllowlistGuardSanitizers(code));
-      additionalSanitizers.push(...findPythonRangeCheckGuardSanitizers(code));
+      for (const s of findPythonNetlocAllowlistGuardSanitizers(code)) {
+        additionalSanitizers.push(s);
+      }
+      for (const s of findPythonRangeCheckGuardSanitizers(code)) {
+        additionalSanitizers.push(s);
+      }
       // Sprint 74 (#216 Pattern B): regex-allowlist wrapper functions,
       // var-aware set-membership xss guard, and defusedxml import-alias
       // recognition.
@@ -592,6 +604,24 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       )) {
         ctx.addFinding(finding);
       }
+      for (const r of findRustActixBodyFormatFormatStringSinks(code)) {
+        if (
+          additionalSinks.some(
+            (s) => s.line === r.sinkLine && s.type === 'format_string',
+          )
+        ) {
+          continue;
+        }
+        additionalSinks.push({
+          type: 'format_string',
+          cwe: 'CWE-134',
+          line: r.sinkLine,
+          location:
+            `Actix HttpResponse body built with format! containing request data at line ${r.sinkLine}`,
+          method: 'body',
+          confidence: 0.9,
+        });
+      }
     }
 
     // -- JavaScript/TypeScript: Sprint 73 (#216 Pattern A + B) — ETE
@@ -604,6 +634,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(...findJsWrapperFunctionSanitizers(code));
       // Sprint 75 (#216 Pattern D): JS SSRF allow-list guard (var-aware).
       additionalSanitizers.push(...findJsSsrfAllowlistGuardSanitizers(code));
+      additionalSanitizers.push(...findJsSsrfAllowlistWrapperSanitizers(code));
       // Sprint 77b (#216 Pattern X): JS/TS argv-form execFile/spawn and
       // parameterized SQL placeholder sanitizers.
       additionalSanitizers.push(...findJsArgvFormExecSanitizers(code));
@@ -611,6 +642,12 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // #223 REG-144-20: JS path.resolve/join + startsWith(root) guard.
       additionalSanitizers.push(
         ...findJsPathResolveStartsWithGuardSanitizers(code),
+      );
+      // JS/TS open_redirect: a same-site relative-path guard that rejects `//` AND `/\`.
+      additionalSanitizers.push(...findJsRelativeRedirectGuardSanitizers(code));
+      // cognium-dev#1146: same-file helper returns path.resolve after allow-list guard.
+      additionalSanitizers.push(
+        ...findJsPathAllowlistHelperSanitizers(code),
       );
       // #223 REG-144-17/18/19: JS/TS command allowlist guard
       // (Set.has / Array.includes / indexOf) before execFile/spawn.
@@ -1207,6 +1244,198 @@ function findStaticFieldSources(
   return sources;
 }
 
+const JAVA_HTTP_RHS_PATTERN =
+  /\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\.(?:getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getCookies|getQueryString|getPathInfo|getRequestURI|getRequestURL|getInputStream|getReader)\b/;
+
+/** Shared line matchers for reflection field get/set heuristics (#1198). */
+const JAVA_DECLARE_FIELD_LINE_RE =
+  /^\s*(?:[\w.]+\s+)?Field\s+(\w+)\s*=\s*.+\.(?:getField|getDeclaredField)\s*\(\s*"([^"]+)"\s*\)/;
+const JAVA_FIELD_SET_LINE_RE = /^\s*(\w+)\.set\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*;?/;
+/** cognium-dev #1198 — heap field stores `base.field = rhs;` (shared for regex-lint budget). */
+const JAVA_LOCAL_FIELD_ASSIGN_LINE_RE =
+  /^\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
+const JAVA_BARE_ASSIGN_LINE_RE =
+  /^\s*([A-Za-z_]\w*)\s*=\s*(.+?)(?:;\s*)?$/;
+
+/**
+ * cognium-dev #1198 — Instance (non-static) field assigned from HTTP in any method.
+ * Complements constructor-only #78 field sources (SecuriBench `Refl2` writes `name` in
+ * `doGet`, not the ctor).
+ */
+function findJavaInstanceFieldHttpSources(
+  types: TypeInfo[],
+  sourceCode: string,
+  language: string,
+): TaintSource[] {
+  if (language !== 'java') return [];
+  const sources: TaintSource[] = [];
+  const lines = sourceCode.split('\n');
+
+  for (const type of types) {
+    if (type.kind !== 'class' || type.name === '<module>') continue;
+    const instanceFields = new Set(
+      type.fields.filter(f => !f.modifiers.includes('static')).map(f => f.name),
+    );
+    if (instanceFields.size === 0) continue;
+
+    for (const m of type.methods) {
+      const mStart = m.start_line;
+      const mEnd = m.end_line;
+      for (let i = mStart - 1; i < Math.min(mEnd, lines.length); i++) {
+        const trimmed = (lines[i] ?? '').trim();
+        if (!trimmed || trimmed.startsWith('//')) continue;
+        const bm = trimmed.match(JAVA_BARE_ASSIGN_LINE_RE);
+        if (!bm) continue;
+        const fieldName = bm[1];
+        const rhs = bm[2].trim().replace(/;\s*$/, '');
+        if (!instanceFields.has(fieldName)) continue;
+        if (!JAVA_HTTP_RHS_PATTERN.test(rhs)) continue;
+
+        sources.push({
+          type: 'http_param',
+          location: `${type.name}.${fieldName} instance field (this.) set in ${m.name}() — #1198`,
+          severity: 'high',
+          line: i + 1,
+          confidence: 0.85,
+          variable: `this.${fieldName}`,
+        });
+      }
+    }
+  }
+
+  return sources;
+}
+
+/**
+ * cognium-dev #1198 — `Field.get` on a reflectively looked-up instance field that was
+ * tainted earlier in the class (SecuriBench `Refl2`).
+ */
+function findJavaReflectionFieldGetSources(
+  types: TypeInfo[],
+  sourceCode: string,
+  language: string,
+): TaintSource[] {
+  if (language !== 'java') return [];
+  const lines = sourceCode.split('\n');
+  const taintedFieldNames = new Set<string>();
+
+  for (const type of types) {
+    if (type.kind !== 'class' || type.name === '<module>') continue;
+    const instanceFields = new Set(
+      type.fields.filter(f => !f.modifiers.includes('static')).map(f => f.name),
+    );
+    for (const m of type.methods) {
+      for (let i = m.start_line - 1; i < Math.min(m.end_line, lines.length); i++) {
+        const trimmed = (lines[i] ?? '').trim();
+        if (!trimmed || trimmed.startsWith('//')) continue;
+        const bm = trimmed.match(JAVA_BARE_ASSIGN_LINE_RE);
+        if (!bm) continue;
+        const fieldName = bm[1];
+        const rhs = bm[2].trim().replace(/;\s*$/, '');
+        if (instanceFields.has(fieldName) && JAVA_HTTP_RHS_PATTERN.test(rhs)) {
+          taintedFieldNames.add(fieldName);
+        }
+      }
+    }
+  }
+  if (taintedFieldNames.size === 0) return [];
+
+  const sources: TaintSource[] = [];
+  const fieldVarToName = new Map<string, string>();
+  const fieldGetAssignRe =
+    /^\s*(?:[\w.]+\s+)?(\w+)\s*=\s*\([^)]*\)\s*(\w+)\.get\s*\(/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = (lines[i] ?? '').trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    const decl = trimmed.match(JAVA_DECLARE_FIELD_LINE_RE);
+    if (decl) {
+      const [, varName, reflectedField] = decl;
+      if (taintedFieldNames.has(reflectedField)) {
+        fieldVarToName.set(varName, reflectedField);
+      }
+      continue;
+    }
+    const assign = trimmed.match(fieldGetAssignRe);
+    if (!assign) continue;
+    const [, lhs, fieldVar] = assign;
+    const reflectedField = fieldVarToName.get(fieldVar);
+    if (!reflectedField) continue;
+
+    sources.push({
+      type: 'http_param',
+      location: `Field.get("${reflectedField}") assignment — #1198`,
+      severity: 'high',
+      line: i + 1,
+      confidence: 0.85,
+      variable: lhs,
+    });
+  }
+
+  return sources;
+}
+
+/**
+ * cognium-dev #1198 — `Field.set` stores HTTP-tainted data into a reflectively
+ * looked-up instance field (`Refl3`: set on inner class field, read at sink).
+ */
+function findJavaReflectionFieldSetSources(
+  types: TypeInfo[],
+  sourceCode: string,
+  language: string,
+): TaintSource[] {
+  if (language !== 'java') return [];
+  const lines = sourceCode.split('\n');
+  const taintedVars = new Set<string>();
+
+  for (const type of types) {
+    if (type.kind !== 'class' || type.name === '<module>') continue;
+    for (const m of type.methods) {
+      for (let i = m.start_line - 1; i < Math.min(m.end_line, lines.length); i++) {
+        const trimmed = (lines[i] ?? '').trim();
+        if (!trimmed || trimmed.startsWith('//')) continue;
+        const bm = trimmed.match(JAVA_BARE_ASSIGN_LINE_RE);
+        if (!bm) continue;
+        const rhs = bm[2].trim().replace(/;\s*$/, '');
+        if (JAVA_HTTP_RHS_PATTERN.test(rhs)) {
+          taintedVars.add(bm[1]);
+        }
+      }
+    }
+  }
+  if (taintedVars.size === 0) return [];
+
+  const fieldVarToName = new Map<string, string>();
+
+  const sources: TaintSource[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = (lines[i] ?? '').trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    const decl = trimmed.match(JAVA_DECLARE_FIELD_LINE_RE);
+    if (decl) {
+      fieldVarToName.set(decl[1], decl[2]);
+      continue;
+    }
+    const setM = trimmed.match(JAVA_FIELD_SET_LINE_RE);
+    if (!setM) continue;
+    const [, fieldVar, targetObj, valueArg] = setM;
+    const reflectedField = fieldVarToName.get(fieldVar);
+    if (!reflectedField) continue;
+    if (!taintedVars.has(valueArg)) continue;
+
+    sources.push({
+      type: 'http_param',
+      location: `Field.set("${reflectedField}") on ${targetObj} — #1198`,
+      severity: 'high',
+      line: i + 1,
+      confidence: 0.85,
+      variable: `${targetObj}.${reflectedField}`,
+    });
+  }
+
+  return sources;
+}
+
 /**
  * Issue #78 round 2 — Non-bean setter/getter chains (Java).
  *
@@ -1224,7 +1453,8 @@ function findStaticFieldSources(
  * Strategy: for each class, build a `field -> { setter, getter }` map.
  * A setter is a 1-param method whose only body statement is
  * `this.<field> = <param>;`. A getter is a 0-param method whose only
- * body statement is `return this.<field>;`. Then walk the whole source
+ * body statement is `return this.<field>;` or `return <field>;` (common
+ * in SecuriBench heap-widget cases). Then walk the whole source
  * for setter call sites whose argument matches a known HTTP source —
  * emit a synthetic source on the setter call line bound to the *getter*
  * method name, so the variable-name scan in `TaintPropagationPass`
@@ -1243,6 +1473,19 @@ function findSetterChainSources(
   const lines = sourceCode.split('\n');
 
   const javaHttpPattern = /\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\.(?:getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getCookies|getQueryString|getPathInfo|getRequestURI|getRequestURL|getInputStream|getReader)\b/;
+  const setterArgFromHttp = (arg: string): boolean => {
+    const trimmed = arg.trim();
+    if (javaHttpPattern.test(trimmed)) return true;
+    const id = /^\s*([A-Za-z_]\w*)\s*$/.exec(trimmed);
+    if (!id) return false;
+    const v = id[1].replace(/[$]/g, '\\$&');
+    // cognium-dev#1198 — SecuriBench Basic16 passes taint as a local (`writePayload(s)`)
+    // after `String s = req.getParameter(...)`; the setter-chain emitter only
+    // matched literal HTTP call expressions in the argument position.
+    return new RegExp(
+      `\\b(?:[\\w.<>,\\s]+\\s+)?${v}\\s*=\\s*[^;\\n]*\\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\\.(?:getParameter|getParameterValues|getHeader|getCookies|getQueryString|getInputStream|getReader)\\s*\\(`,
+    ).test(sourceCode);
+  };
 
   for (const type of types) {
     if (type.kind !== 'class') continue;
@@ -1251,7 +1494,7 @@ function findSetterChainSources(
     // Build setter/getter pairs by inspecting per-method bodies.
     const pairs = new Map<string, { setter?: string; getter?: string }>();
     const setterRe = /this\.([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;?/;
-    const getterRe = /return\s+this\.([A-Za-z_]\w*)\s*;?/;
+    const getterRe = /return\s+(?:this\.)?([A-Za-z_]\w*)\s*;?/;
 
     for (const m of type.methods) {
       if (m.name === type.name) continue; // skip constructor
@@ -1310,7 +1553,7 @@ function findSetterChainSources(
         const cm = trimmed.match(setterCallRe);
         if (!cm) continue;
         const arg = cm[2];
-        if (!javaHttpPattern.test(arg)) continue;
+        if (!setterArgFromHttp(arg)) continue;
         sources.push({
           type: 'http_param',
           location: `${type.name}.${setter}(tainted) → ${type.name}.${getter}() chain — #78 round 2`,
@@ -1324,6 +1567,180 @@ function findSetterChainSources(
   }
 
   return sources;
+}
+
+/**
+ * cognium-dev #1198 — `next.value = name` heap field stores and reference aliases
+ * (`head.next = next`) for SecuriBench Basic29-style linked structures.
+ */
+function findJavaHeapFieldDerivedSources(
+  code: string,
+  language: string,
+): TaintSource[] {
+  if (language !== 'java') return [];
+  const seeds = new Set<string>();
+  for (const line of code.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    if (!JAVA_HTTP_RHS_PATTERN.test(trimmed)) continue;
+  const eq = trimmed.indexOf('=');
+    if (eq < 0) continue;
+    const rhs = trimmed.slice(eq + 1).trim().replace(/;\s*$/, '');
+    if (!JAVA_HTTP_RHS_PATTERN.test(rhs)) continue;
+    const lhs = trimmed.slice(0, eq).trim();
+    const bare = JAVA_BARE_ASSIGN_LINE_RE.exec(`${lhs} = ${rhs};`);
+    const local = bare
+      ? bare[1]
+      : lhs.split(/\s+/).pop() ?? '';
+    if (isSimpleJavaLocalIdent(local)) seeds.add(local);
+  }
+  if (seeds.size === 0) return [];
+  const derived = buildJavaTaintedVars(code, seeds);
+  const sources: TaintSource[] = [];
+  for (const [varName, line] of derived) {
+    if (!varName.includes('.')) continue;
+    const lineText = code.split('\n')[line - 1]?.trim() ?? '';
+    const m = JAVA_LOCAL_FIELD_ASSIGN_LINE_RE.exec(lineText);
+    if (!m) continue;
+    const written = `${m[1]}.${m[2]}`;
+  // Direct write or same-line alias (e.g. head.next.value after next.value = name).
+    if (varName !== written && !varName.endsWith(`.${m[2]}`)) continue;
+    if (varName === written && isJavaHeapFieldStronglyUpdated(code, line - 1, m[1], m[2])) continue;
+    sources.push({
+      type: 'http_param',
+      location: `heap field read ${varName} — #1198`,
+      severity: 'high',
+      line,
+      confidence: 0.8,
+      variable: varName,
+    });
+  }
+  return sources;
+}
+
+const JAVA_LITERAL_RHS_RE =
+  /^(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)'|-?\d[\w.]*|true|false|null)$/;
+const JAVA_JUMP_RE = /\b(?:return|break|continue|throw|yield)\b/;
+// `[final] [Type] local = <literal>;`: no call, division, array or field access.
+const JAVA_NON_THROWING_STMT_RE = new RegExp(
+  '^(?:final\\s+)?(?:[A-Za-z_][\\w.]*(?:<[^;=()]*>)?(?:\\s*\\[\\s*\\])*\\s+)?' +
+    `[A-Za-z_]\\w*\\s*=\\s*(?:${JAVA_LITERAL_RHS_RE.source.slice(1, -1)})\\s*;$`,
+);
+
+/**
+ * True when line `idx` sits inside a `try` or `catch` block, at any depth.
+ * Walks back over the enclosing blocks and checks the header of each.
+ */
+function isInsideJavaTryOrCatch(lines: string[], idx: number): boolean {
+  let depth = 0;
+  for (let i = idx - 1; i >= 0; i--) {
+    const line = lines[i].replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
+    for (let j = line.length - 1; j >= 0; j--) {
+      if (line[j] === '}') depth++;
+      else if (line[j] === '{') {
+        if (depth > 0) {
+          depth--;
+          continue;
+        }
+        let header = line.slice(0, j).trim();
+        for (let k = i - 1; !header && k >= 0; k--) header = lines[k].trim();
+        if (/\btry\s*(?:\(.*\))?$/.test(header) || /\bcatch\s*\(.*\)$/.test(header)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Strong update of a heap field (SecuriBench StrongUpdates3): the tainted
+ * write `recv.field = x;` on line `writeIdx` is overwritten by a later
+ * `recv.field = <literal>;` before any read. Only the plain straight-line case
+ * counts, so anything unsure keeps the taint:
+ *   - the kill is in the same block, and the lines between the two writes have
+ *     no braces, jumps or calls and do not mention `recv`;
+ *   - the line before the kill ends a statement (no brace-less `if`/`else`);
+ *   - inside a `try` or `catch`, every statement between the writes cannot
+ *     throw (a local assigned a literal), so no exception path skips the kill;
+ *   - the tainted write is alone on its line;
+ *   - every read of `recv.field` comes after the kill, and no later write of
+ *     the field (plain, compound or `++`/`--`) stores anything but a literal;
+ *   - no method is called on `recv` after the kill, since it may write the field;
+ *   - `recv` is only ever used as `recv.<member>` or assigned to, never passed
+ *     or copied, so no other reference can read the field.
+ */
+function isJavaHeapFieldStronglyUpdated(
+  code: string,
+  writeIdx: number,
+  recv: string,
+  field: string,
+): boolean {
+  const lines = code.split('\n').map(stripJavaTrailingLineComment);
+  const recvRe = new RegExp(`\\b${recv}\\b`);
+  const fieldRe = new RegExp(`(?<![\\w.])${recv}\\s*\\.\\s*${field}\\b`, 'g');
+  const fieldWriteRe = new RegExp(`^\\s*${recv}\\.${field}\\s*=(?!=)\\s*(.+?);\\s*$`);
+
+  let killIdx = -1;
+  for (let i = writeIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    const w = fieldWriteRe.exec(line);
+    if (w) {
+      if (!JAVA_LITERAL_RHS_RE.test(w[1].trim())) return false;
+      killIdx = i;
+      break;
+    }
+    if (/[{}]/.test(trimmed) || JAVA_JUMP_RE.test(trimmed)) return false;
+    if (/[\w)\]>]\s*\(/.test(trimmed) || recvRe.test(trimmed)) return false;
+  }
+  if (killIdx < 0) return false;
+  for (let i = killIdx - 1; i > writeIdx; i--) {
+    const trimmed = lines[i].trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    if (!trimmed.endsWith(';')) return false;
+    break;
+  }
+  // Inside a `try` or `catch`, an exception between the two writes skips the
+  // kill and reaches a handler, a `finally` or the code after the statement,
+  // any of which can read the field. Only statements that cannot throw count.
+  if (isInsideJavaTryOrCatch(lines, killIdx)) {
+    for (let i = writeIdx + 1; i < killIdx; i++) {
+      const trimmed = lines[i].trim();
+      if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+      if (!JAVA_NON_THROWING_STMT_RE.test(trimmed)) return false;
+    }
+  }
+
+  // Every mention of `recv` must be a member access or an assignment to it.
+  const mentionRe = new RegExp(`(?<![\\w.])${recv}\\b(?!\\s*\\.)(?!\\s*=(?!=))`);
+  // A method on `recv` may write the field (`b.setValue(name)`).
+  const recvCallRe = new RegExp(`(?<![\\w.])${recv}\\s*\\.\\s*[A-Za-z_]\\w*\\s*\\(`);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/"(?:[^"\\]|\\.)*"/g, '""');
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    if (mentionRe.test(line)) return false;
+    // The tainted write must be alone on its line: a read after it on the same
+    // line (`b.value = name; writer.println(b.value);`) comes before the kill.
+    if (i === writeIdx) {
+      if (trimmed.indexOf(';') !== trimmed.length - 1) return false;
+      continue;
+    }
+    if (i === killIdx) continue;
+    if (i > killIdx && recvCallRe.test(line)) return false;
+    for (const fm of line.matchAll(fieldRe)) {
+      if (i < killIdx) return false;
+      // `++b.value`, `b.value++`, `b.value += x`: a write of a non-literal.
+      if (/(?:\+\+|--)\s*$/.test(line.slice(0, fm.index))) return false;
+      const after = line.slice((fm.index ?? 0) + fm[0].length);
+      if (/^\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>>?)=)/.test(after)) return false;
+      const w = /^\s*=(?!=)\s*([^;]*)/.exec(after);
+      if (w && !JAVA_LITERAL_RHS_RE.test(w[1].trim())) return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -2383,6 +2800,7 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
   // event-name allowlist to avoid firing on unrelated `.on('drain', cb)`
   // / `.on('close', cb)` etc. that carry non-user-input.
   sources.push(...findJavaScriptCallbackParamSources(sourceCode));
+  sources.push(...findJavaScriptSubscribeCallbackParamSources(sourceCode));
   sources.push(...findExpressDestructuredRequestSources(sourceCode));
   if (language === 'javascript' || language === 'typescript') {
     sources.push(...findGraphqlResolverArgSources(sourceCode));
@@ -2728,6 +3146,39 @@ function findJavaScriptCallbackParamSources(sourceCode: string): TaintSource[] {
       severity: 'high',
       line: i + 1,
       confidence: 0.95,
+      variable: paramName,
+    });
+  }
+  return sources;
+}
+
+/**
+ * cognium-dev #1224 — RxJS/Observable `.subscribe` callback first-parameter sources.
+ *
+ * Angular services return HTTP payloads through `service.method().subscribe((data) => …)`.
+ * The first callback argument is user-influenced response body (stored-XSS shapes in Juice Shop).
+ * Scoped to `.subscribe(` only — not every higher-order function — to avoid unrelated FPs.
+ */
+function findJavaScriptSubscribeCallbackParamSources(sourceCode: string): TaintSource[] {
+  const sources: TaintSource[] = [];
+  const SUBSCRIBE_CB_RE =
+    /\.subscribe\s*\(\s*(?:async\s+)?(?:function\s*\*?\s*(?:\w+\s*)?\(\s*(\w+)|\(\s*(\w+)\s*(?:[,):]|$)|(\w+)\s*=>)/;
+  const lines = sourceCode.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    const m = line.match(SUBSCRIBE_CB_RE);
+    if (!m) continue;
+    const paramName = m[1] ?? m[2] ?? m[3];
+    if (!paramName) continue;
+    if (paramName === 'err' || paramName === 'error') continue;
+    sources.push({
+      type: 'http_body',
+      location: `Observable .subscribe(...) callback param '${paramName}' at line ${i + 1}`,
+      severity: 'high',
+      line: i + 1,
+      confidence: 0.9,
       variable: paramName,
     });
   }
@@ -4111,18 +4562,55 @@ export function buildJavaScriptTaintedVars(sourceCode: string, language: string)
     tainted.set(paramName, i + 1);
   }
 
+  // cognium-dev#582 / #490: scan every assignment on the line; #1149: skip
+  // matches inside string literals so `WHERE name = '…'` in SQL is not a bind.
+  const assignmentRe =
+    /(?:(?:var|let|const)\s+(\w+)\s*:\s*[^=;]+?\s*=(?![>=])|(?:(?:var|let|const)\s+)?(\w+)\s*=)\s*/g;
+
+  function isInsideStringLiteral(line: string, index: number): boolean {
+    let inSingle = false;
+    let inDouble = false;
+    let inTemplate = false;
+    let escape = false;
+    for (let pos = 0; pos < index; pos++) {
+      const c = line[pos]!;
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (c === '\\') {
+        escape = true;
+        continue;
+      }
+      if (!inDouble && !inTemplate && c === "'") inSingle = !inSingle;
+      else if (!inSingle && !inTemplate && c === '"') inDouble = !inDouble;
+      else if (!inSingle && !inDouble && c === '`') inTemplate = !inTemplate;
+    }
+    return inSingle || inDouble || inTemplate;
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trimStart();
     if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
-    const assignMatch = line.match(/(?:(?:var|let|const)\s+)?(\w+)\s*=\s*(.+)/);
-    if (!assignMatch) continue;
-    const [, lhs, rhs] = assignMatch;
-    if (['if', 'while', 'for', 'return', 'true', 'false', 'null', 'undefined', 'case'].includes(lhs)) continue;
-    if (isConstTableLookup(rhs, lookupTables)) continue; // #667
-    const isDirectSource = JS_TAINTED_PATTERNS.some(p => p.pattern.test(rhs));
-    const isTaintedPropagation = tainted.size > 0 && [...tainted.keys()].some(v => new RegExp(`\\b${v}\\b`).test(rhs));
-    if (isDirectSource || isTaintedPropagation) tainted.set(lhs, i + 1);
+    assignmentRe.lastIndex = 0;
+    for (const assignmentMatch of line.matchAll(assignmentRe)) {
+      const matchIndex = assignmentMatch.index ?? 0;
+      if (isInsideStringLiteral(line, matchIndex)) continue;
+      const lhs = assignmentMatch[1] ?? assignmentMatch[2];
+      if (!lhs) continue;
+      if (['if', 'while', 'for', 'return', 'true', 'false', 'null', 'undefined', 'case'].includes(lhs)) {
+        continue;
+      }
+      let rhs = line.slice(matchIndex + assignmentMatch[0].length).trim();
+      const semi = rhs.indexOf(';');
+      if (semi >= 0) rhs = rhs.slice(0, semi).trim();
+      if (isConstTableLookup(rhs, lookupTables)) continue; // #667
+      const isDirectSource = JS_TAINTED_PATTERNS.some((p) => p.pattern.test(rhs));
+      const isTaintedPropagation =
+        tainted.size > 0 && [...tainted.keys()].some((v) => new RegExp(`\\b${v}\\b`).test(rhs));
+      if (isDirectSource || isTaintedPropagation) tainted.set(lhs, i + 1);
+    }
   }
 
   return tainted;
@@ -4336,6 +4824,35 @@ function joinWrappedJavaStatement(lines: readonly string[], i: number): string |
  * consumed by `detectExpressionScanFlows` in `taint-propagation-pass.ts`
  * to synthesize a virtual source for each derived var.
  */
+/** Reference-RHS alias in heap-field stores (no regex — regex-lint budget). */
+function isSimpleJavaLocalIdent(name: string): boolean {
+  if (!name) return false;
+  const first = name.charCodeAt(0);
+  if (
+    !(
+      (first >= 65 && first <= 90) ||
+      (first >= 97 && first <= 122) ||
+      first === 95
+    )
+  ) {
+    return false;
+  }
+  for (let i = 1; i < name.length; i++) {
+    const ch = name.charCodeAt(i);
+    if (
+      !(
+        (ch >= 48 && ch <= 57) ||
+        (ch >= 65 && ch <= 90) ||
+        (ch >= 97 && ch <= 122) ||
+        ch === 95
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function buildJavaTaintedVars(
   sourceCode: string,
   seedVars: Set<string>,
@@ -4403,6 +4920,30 @@ export function buildJavaTaintedVars(
     }
   }
 
+  /** cognium-dev#1198 — `head.next = next` reference alias for heap field reads. */
+  const localRefAlias = new Map<string, string>();
+  const markQualifiedFieldTainted = (
+    qualified: string,
+    lineNo: number,
+  ): void => {
+    if (knownTainted.has(qualified)) return;
+    derived.set(qualified, lineNo);
+    knownTainted.add(qualified);
+    if (!/^[\p{L}\p{N}_]+$/u.test(qualified)) {
+      const esc = qualified.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      complexTaintedRes.push(new RegExp(`(?<![\\p{L}\\p{N}_])${esc}(?![\\p{L}\\p{N}_])`, 'u'));
+    }
+    changed = true;
+    const dot = qualified.lastIndexOf('.');
+    if (dot <= 0) return;
+    const recv = qualified.slice(0, dot);
+    const field = qualified.slice(dot + 1);
+    for (const [aliasPath, targetLocal] of localRefAlias) {
+      if (targetLocal !== recv) continue;
+      markQualifiedFieldTainted(`${aliasPath}.${field}`, lineNo);
+    }
+  };
+
   let changed = true;
   let guard = 0;
   while (changed && guard < lines.length + 2) {
@@ -4453,6 +4994,43 @@ export function buildJavaTaintedVars(
           knownTainted.add(listVar);
           changed = true;
         }
+        continue;
+      }
+
+      const thisFieldListAddRe =
+        /^\s*this\.([A-Za-z_]\w*)\.add\s*\(/;
+      const thisListAdd = thisFieldListAddRe.exec(line);
+      if (thisListAdd) {
+        const field = thisListAdd[1];
+        const argMatch = /this\.\w+\.add\s*\(\s*([^)]+)\)/.exec(line);
+        if (argMatch) {
+          const argCode = argMatch[1]
+            .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
+            .replace(/'(?:[^'\\]|\\.)'/g, ' ');
+          const idents = argCode.match(/[\p{L}\p{N}_]+/gu);
+          const ref =
+            (idents !== null && idents.some(t => knownTainted.has(t))) ||
+            (complexTaintedRes.length > 0 && complexTaintedRes.some(re => re.test(argCode)));
+          if (ref) {
+            const aliases = [field, `this.${field}`];
+            for (const name of aliases) {
+              if (!knownTainted.has(name)) {
+                derived.set(name, i + 1);
+                knownTainted.add(name);
+                changed = true;
+              }
+            }
+          }
+        }
+        continue;
+      }
+
+      const addAllRe = /^\s*([A-Za-z_]\w*)\.addAll\s*\(\s*([A-Za-z_]\w*)\s*\)\s*;?\s*$/;
+      const addAllMatch = addAllRe.exec(line.trimEnd());
+      if (addAllMatch && knownTainted.has(addAllMatch[2]) && !knownTainted.has(addAllMatch[1])) {
+        derived.set(addAllMatch[1], i + 1);
+        knownTainted.add(addAllMatch[1]);
+        changed = true;
         continue;
       }
 
@@ -4525,6 +5103,36 @@ export function buildJavaTaintedVars(
             knownTainted.add(fieldName);
             changed = true;
           }
+        }
+        continue;
+      }
+
+      const localFieldMatch = JAVA_LOCAL_FIELD_ASSIGN_LINE_RE.exec(
+        statement.trim(),
+      );
+      if (localFieldMatch) {
+        const recv = localFieldMatch[1];
+        const field = localFieldMatch[2];
+        const rhs = localFieldMatch[3];
+        const qualified = `${recv}.${field}`;
+        const rhsTrim = rhs.trim();
+        if (
+          isSimpleJavaLocalIdent(rhsTrim) &&
+          !JAVA_KEYWORDS.has(rhsTrim)
+        ) {
+          localRefAlias.set(qualified, rhsTrim);
+        }
+        const rhsCode = rhs
+          .replace(/\$@?"(?:[^"\\]|\\.)*"/g, lit =>
+            ' ' + [...lit.matchAll(/\{([^}]*)\}/g)].map(x => x[1]).join(' ') + ' ')
+          .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
+          .replace(/'(?:[^'\\]|\\.)'/g, ' ');
+        const rhsIdents = rhsCode.match(/[\p{L}\p{N}_]+/gu);
+        const ref =
+          (rhsIdents !== null && rhsIdents.some(t => knownTainted.has(t))) ||
+          (complexTaintedRes.length > 0 && complexTaintedRes.some(re => re.test(rhsCode)));
+        if (ref) {
+          markQualifiedFieldTainted(qualified, i + 1);
         }
         continue;
       }
@@ -5479,7 +6087,7 @@ function findGoMapAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
   // disjunct holds, so falling past it proves the key is in the map. The key
   // may be a selector (`u.Host`). Captures the map identifier in group 1.
   const guardOpen =
-    /^\s*if\s+(?:[^{&|]+\|\|\s*)*!\s*([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?\s*\]\s*(?:\|\|[^{&]+)?\{/;
+    /^\s*if\s+(?:[^{&|]+\|\|)*\s*!\s*([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?\s*\]\s*(?:\|\|[^{&]+)?\{/;
   // Allow-list naming heuristic.
   const allowlistName = /^(?:[A-Z][A-Z0-9_]+|.*?(allowed|accepted|whitelist|permitted|valid|approved).*)$/i;
 
@@ -5936,7 +6544,7 @@ function findRustNumericRangeCheckGuardSanitizers(
         type: 'rust_numeric_range_check_guard',
         method: 'if',
         line: l + 1,
-        sanitizes: ['xss', 'external_taint_escape'],
+        sanitizes: ['xss', 'external_taint_escape', 'format_string'],
       });
     }
   }
@@ -5953,9 +6561,16 @@ function findPythonRangeCheckGuardSanitizers(code: string): TaintSanitizer[] {
   const rangeGuard = /^(\s*)if\s+([A-Za-z_][A-Za-z0-9_]*)\s*[<>]=?\s*(?:\d+|-?\d+\.?\d*|[A-Z][A-Z0-9_]+)\s*(?:(?:or|and)\s+\2\s*[<>]=?\s*(?:\d+|-?\d+\.?\d*|[A-Z][A-Z0-9_]+)\s*)?:\s*$/;
   const terminator = /\b(return|raise|abort\s*\(|sys\.exit\s*\()/;
 
+  const maxGuards = 2000;
+  const maxSanitizers = 50_000;
+  const maxTailLines = 400;
+  let guardCount = 0;
+
   for (let i = 0; i < lines.length; i++) {
+    if (guardCount >= maxGuards || sanitizers.length >= maxSanitizers) break;
     const m = rangeGuard.exec(lines[i]);
     if (!m) continue;
+    guardCount++;
     const guardIndent = m[1].length;
 
     let bodyHasTerminator = false;
@@ -5974,7 +6589,9 @@ function findPythonRangeCheckGuardSanitizers(code: string): TaintSanitizer[] {
     if (blockEnd === -1) blockEnd = Math.min(lines.length - 1, i + 25);
     if (!bodyHasTerminator) continue;
 
-    for (let l = blockEnd + 2; l <= lines.length; l++) {
+    const tailEnd = Math.min(lines.length, blockEnd + 2 + maxTailLines);
+    for (let l = blockEnd + 2; l <= tailEnd; l++) {
+      if (sanitizers.length >= maxSanitizers) break;
       sanitizers.push({
         type: 'python_range_check_guard',
         method: 'if',
@@ -6867,6 +7484,7 @@ function findRustPatInfoHttpOnlyResponseSanitizers(code: string): TaintSanitizer
         'external_taint_escape',
         'open_redirect',
         'log_injection',
+        'format_string',
       ],
     });
   }
@@ -7465,6 +8083,57 @@ function findJsSsrfAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
 }
 
 /**
+ * JS/TS: custom-wrapper SSRF allow-list (flow-combo c08 / #1244).
+ *
+ * Recognizes helpers that validate `new URL(param).hostname` against a
+ * fixed allow-list (`ALLOWED.has` / `includes`) and return the same param,
+ * e.g. flow-sanitize `custom_wrapper` clean probes.
+ */
+function findJsSsrfAllowlistWrapperSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  const fnDeclRe = /\bfunction\s+([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s*\)/;
+  const arrowDeclRe =
+    /\b(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*\(\s*([A-Za-z_]\w*)\s*\)\s*=>/;
+  const allowlistName =
+    /^(?:[A-Z][A-Z0-9_]+|.*?(allowed|accepted|whitelist|permitted|valid|approved).*)$/i;
+  const allowGuard = /!\s*([A-Za-z_]\w*)\s*\.\s*(?:has|includes)\s*\(/;
+
+  const wrappers = new Set<string>();
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = fnDeclRe.exec(lines[i]) ?? arrowDeclRe.exec(lines[i]);
+    if (!m) continue;
+    const name = m[1];
+    const param = m[2];
+    const body = lines.slice(i, Math.min(lines.length, i + 12)).join('\n');
+    if (!new RegExp(`new\\s+URL\\s*\\(\\s*${param}\\b`).test(body)) continue;
+    const gm = allowGuard.exec(body);
+    if (!gm || !allowlistName.test(gm[1]!)) continue;
+    if (!/\b(?:throw|return)\b/.test(body)) continue;
+    if (!new RegExp(`\\breturn\\s+${param}\\b`).test(body)) continue;
+    wrappers.add(name);
+  }
+
+  for (const name of wrappers) {
+    for (let i = 0; i < lines.length; i++) {
+      const declSelf = new RegExp(`\\b(?:function|const|let|var)\\s+${name}\\b`);
+      if (declSelf.test(lines[i])) continue;
+      if (!new RegExp(`\\b${name}\\s*\\(`).test(lines[i])) continue;
+      sanitizers.push({
+        type: 'js_ssrf_allowlist_wrapper',
+        method: name,
+        line: i + 1,
+        sanitizes: ['ssrf', 'external_taint_escape'],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
  * JS/TS: argv-form `execFile`/`spawn`/`execFileSync`/`spawnSync` with
  * a string-literal program and an array literal argv (cognium-dev #216
  * Sprint 77b Pattern X).
@@ -7672,7 +8341,8 @@ function findJsPathResolveStartsWithGuardSanitizers(
       line: c.line,
       sanitizes: ['path_traversal', 'external_taint_escape'],
     });
-    for (let l = c.line; l < lines.length; l++) {
+    // only inside the function the guard is in, and only until `full` is reassigned (#1257 review B1)
+    for (const l of jsGuardCreditLines(lines, c.line, c.fullVar)) {
       if (!varRefRe.test(lines[l])) continue;
       sanitizers.push({
         type: 'js_path_resolve_startswith_guard',
@@ -7680,6 +8350,225 @@ function findJsPathResolveStartsWithGuardSanitizers(
         line: l + 1,
         sanitizes: ['path_traversal', 'external_taint_escape'],
       });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * JS/TS open_redirect: the same-site relative-path guard (CWE-601).
+ *
+ *   if (!next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\')) return res.redirect('/');
+ *   res.redirect(next);
+ *
+ *   if (next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\')) { res.redirect(next); }
+ *   if (/^\/(?![\/\\])/.test(next)) { res.redirect(next); }
+ *   res.redirect(next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\') ? next : '/');
+ *
+ * A path that starts with one `/` and is not `//…` (protocol-relative) or `/\…` (which browsers read as
+ * `//…`) stays on the same site, so the redirect cannot leave it. BOTH `//` and `/\` must be rejected: a guard
+ * that only rejects `//` is still bypassable with `/\evil.example`, and is not credited. The reject form
+ * (conditions joined by `||`, then a terminator) credits every later line that uses the variable; the accept
+ * form (joined by `&&`, or one of the strict regex spellings) credits the lines of its block. Only
+ * `open_redirect` is sanitized. Matching is by substring on the whitespace-free condition (no new regex).
+ */
+function findJsRelativeRedirectGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  if (!code.includes('startsWith') && !code.includes('.test(')) return sanitizers;
+  const lines = code.split('\n');
+  const quotes = ["'", '"', '`'];
+  const lit = (q: string, body: string) => `${q}${body}${q}`;
+  const anyQ = (cond: string, f: (q: string) => string) => quotes.some((q) => cond.includes(f(q)));
+  const strictRegexes = ['/^\\/(?![\\/\\\\])/.test(', '/^\\/(?!\\/|\\\\)/.test(', '/^\\/[^\\/\\\\]/.test('];
+  const terminatorRe =
+    /\b(?:throw|return|res\s*\.\s*status\s*\([^)]*\)\s*\.\s*(?:send|end|json))/;
+  const varRefFor = (v: string) => new RegExp(`(?<![\\w$.])${v.replace(/[.$]/g, '\\$&')}(?![\\w$])`);
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const cond = raw.replace(/\s+/g, '');
+    const isIf = /\bif\s*\(/.test(raw);
+    // the ternary form on the redirect line itself: `res.redirect(<guard> ? next : '/')`
+    if (!isIf && !(cond.includes('?') && cond.includes(':'))) continue;
+    // the guarded variable: the receiver of `.startsWith('//')`, or the argument of a strict regex's `.test(`
+    let v: string | undefined;
+    for (const q of quotes) {
+      const at = cond.indexOf(`.startsWith(${lit(q, '//')})`);
+      if (at > 0) {
+        let k = at;
+        while (k > 0 && /[\w$.]/.test(cond[k - 1])) k--;
+        v = cond.slice(k, at).replace(/^!+/, '');
+        break;
+      }
+    }
+    const regexAccept = strictRegexes.find((r) => cond.includes(r));
+    if (!v && regexAccept) {
+      const after = cond.slice(cond.indexOf(regexAccept) + regexAccept.length);
+      const m = /^([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\)/.exec(after);
+      v = m?.[1];
+    }
+    if (!v || !/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(v)) continue;
+    const slash = (q: string) => `${v}.startsWith(${lit(q, '/')})`;
+    const dbl = (q: string) => `${v}.startsWith(${lit(q, '//')})`;
+    const back = (q: string) => `${v}.startsWith(${lit(q, '/\\\\')})`;
+    const reject =
+      cond.includes('||') && !cond.includes('&&') &&
+      anyQ(cond, (q) => `!${slash(q)}`) && anyQ(cond, dbl) && anyQ(cond, back) &&
+      !anyQ(cond, (q) => `!${dbl(q)}`) && !anyQ(cond, (q) => `!${back(q)}`);
+    const accept =
+      (cond.includes('&&') && !cond.includes('||') &&
+        anyQ(cond, slash) && !anyQ(cond, (q) => `!${slash(q)}`) &&
+        anyQ(cond, (q) => `!${dbl(q)}`) && anyQ(cond, (q) => `!${back(q)}`)) ||
+      (!!regexAccept && !cond.includes(`!${regexAccept}`) && !cond.includes('||'));
+    const ref = varRefFor(v);
+    if (!isIf) {
+      // ternary: credited only when the guarded value is the consequent (`<guard> ? next : <fallback>`)
+      if (accept && cond.includes(`?${v}:`)) sanitizers.push({ type: 'js_relative_redirect_guard', method: 'startsWith', line: i + 1, sanitizes: ['open_redirect'] });
+      continue;
+    }
+    if (reject && guardRejects(lines, i, terminatorRe, 2)) {
+      // from the guard line itself, so a block-form guard's own `{ … }` is counted, not read as the function's end
+      for (const l of jsGuardCreditLines(lines, i, v)) {
+        if (ref.test(lines[l])) sanitizers.push({ type: 'js_relative_redirect_guard', method: 'startsWith', line: l + 1, sanitizes: ['open_redirect'] });
+      }
+    } else if (accept) {
+      const block = jsBracedBlockLines(lines, i);
+      const body = block ?? [raw];
+      for (let k = 0; k < body.length; k++) {
+        if (ref.test(k === 0 ? raw.slice(raw.indexOf(')', raw.indexOf('if')) + 1) : body[k])) {
+          sanitizers.push({ type: 'js_relative_redirect_guard', method: 'startsWith', line: i + k + 1, sanitizes: ['open_redirect'] });
+        }
+      }
+    }
+  }
+  return sanitizers;
+}
+
+/**
+ * The lines a guard on `v` at line index `from` may credit: from `from` to the end of the block that encloses it
+ * (the handler or function the guard is in: the first `}` that closes a brace opened before `from`), stopping
+ * before any reassignment of `v` (`v = …`, `v += …`, `let|const|var v = …`). Another handler in the same file, or the
+ * variable after it is reassigned, is never credited by this guard. Braces inside string literals and comments
+ * are not counted apart (a guard line with unbalanced quoted braces credits less, never more).
+ */
+function jsGuardCreditLines(lines: string[], from: number, v: string): number[] {
+  const esc = v.replace(/[.$]/g, '\\$&');
+  const reassign = new RegExp(
+    `(?:^|[^\\w$.])(?:(?:let|const|var)\\s+)?${esc}\\s*(?:[+\\-*/%|&^]?=)(?!=)`,
+  );
+  const out: number[] = [];
+  let depth = 0;
+  for (let l = from; l < lines.length; l++) {
+    const line = lines[l];
+    if (l > from && reassign.test(line)) break;
+    out.push(l);
+    for (const c of line) {
+      if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth < 0) return out;   // the enclosing block closed on this line
+      }
+    }
+  }
+  return out;
+}
+
+/** Lines of one `{ ... }` block starting at `startLineIdx` (inclusive). */
+function jsBracedBlockLines(lines: string[], startLineIdx: number): string[] | null {
+  let depth = 0;
+  let started = false;
+  const out: string[] = [];
+  for (let i = startLineIdx; i < lines.length; i++) {
+    const l = lines[i];
+    for (const c of l) {
+      if (c === '{') {
+        depth++;
+        started = true;
+      } else if (c === '}') {
+        depth--;
+      }
+    }
+    out.push(l);
+    if (started && depth === 0) return out;
+  }
+  return null;
+}
+
+/**
+ * True when `bodyLines` contains a rejecting allow-list guard on canonical path
+ * variable `canon` (single-root startsWith or multi-root `.some` equality/prefix).
+ */
+function jsPathCanonicalAllowlistGuardRejects(
+  bodyLines: string[],
+  canon: string,
+  terminatorRe: RegExp,
+): boolean {
+  const esc = canon.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const singleRoot = new RegExp(
+    `if\\s*\\(\\s*!\\s*${esc}\\s*\\.\\s*startsWith\\s*\\(`,
+  );
+  const multiRootLine = (line: string): boolean =>
+    /if\s*\(\s*!\s*[A-Za-z_\w]*\.some\s*\(/.test(line) &&
+    new RegExp(`\\b${esc}\\b\\s*===\\s*\\w+\\s*\\|\\|\\s*\\b${esc}\\b\\.startsWith\\s*\\(`).test(line);
+  for (let j = 0; j < bodyLines.length; j++) {
+    const line = bodyLines[j];
+    if (!singleRoot.test(line) && !multiRootLine(line)) continue;
+    if (guardRejects(bodyLines, j, terminatorRe, 2)) return true;
+  }
+  return false;
+}
+
+/**
+ * JS/TS: a helper returns `path.resolve(param)` only after a constant-root
+ * allow-list guard (startsWith or ROOTS.some equality/prefix) with throw/return
+ * on failure (cognium-dev#1146).
+ */
+function findJsPathAllowlistHelperSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const terminatorRe = /\b(?:throw|return)\b/;
+  const qualified = new Set<string>();
+
+  for (let i = 0; i < lines.length; i++) {
+    const fnStart = lines[i].match(
+      /\bfunction\s+([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\{/,
+    );
+    if (!fnStart) continue;
+    const fnName = fnStart[1];
+    const param = fnStart[2];
+    const bodyLines = jsBracedBlockLines(lines, i);
+    if (!bodyLines) continue;
+    const bodyText = bodyLines.join('\n');
+    const resolveRe = new RegExp(
+      `\\b(?:const|let|var)\\s+([A-Za-z_\\w]*)\\s*=\\s*(?:(?:node:)?path|nodePath|Path)\\s*\\.\\s*(?:resolve|normalize)\\s*\\(\\s*${param}\\s*\\)`,
+    );
+    const resolveM = resolveRe.exec(bodyText);
+    if (!resolveM) continue;
+    const canon = resolveM[1];
+    if (!jsPathCanonicalAllowlistGuardRejects(bodyLines, canon, terminatorRe)) continue;
+    if (!new RegExp(`\\breturn\\s+${canon}\\b`).test(bodyText)) continue;
+    qualified.add(fnName);
+  }
+
+  for (const fnName of qualified) {
+    const escFn = fnName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const callAssign = new RegExp(
+      `\\b(?:const|let|var)\\s+([A-Za-z_\\w]*)\\s*=\\s*${escFn}\\s*\\(`,
+    );
+    for (let i = 0; i < lines.length; i++) {
+      const m = callAssign.exec(lines[i]);
+      if (!m) continue;
+      const outVar = m[1];
+      const varRef = new RegExp(`\\b${outVar}\\b`);
+      for (let l = i; l < lines.length; l++) {
+        if (!varRef.test(lines[l])) continue;
+        sanitizers.push({
+          type: 'js_path_allowlist_helper',
+          method: fnName,
+          line: l + 1,
+          sanitizes: ['path_traversal', 'external_taint_escape'],
+        });
+      }
     }
   }
 
@@ -8003,8 +8892,8 @@ const JAVA_LITERAL_COLLECTION_IDENTS = new Set([
  * file whose initializer is nothing but string literals inside the standard
  * collection factories, and the guard must reject (throw / return). Credits
  * `<v>` on later lines of the enclosing method until `<v>` is reassigned.
- * Scoped to `code_injection` (reflective class loading); other sink types
- * are untouched.
+ * Scoped to reflective instantiation sinks (`code_injection`, `deserialization`);
+ * other sink types are untouched.
  */
 function findJavaReflectionAllowlistGuardSanitizers(
   code: string,
@@ -8105,7 +8994,7 @@ function findJavaReflectionAllowlistGuardSanitizers(
         type: 'java_reflection_allowlist_guard',
         method: 'contains',
         line: l + 1,
-        sanitizes: ['code_injection'],
+        sanitizes: ['code_injection', 'deserialization'],
       });
     }
   }
@@ -12830,6 +13719,171 @@ export function findRustLdapInjectionFindings(
   return findings;
 }
 
+/** Identifier mention with word boundaries; avoids dynamic `RegExp` (regex-lint). */
+function exprMentionsIdent(expr: string, ident: string): boolean {
+  if (!ident) return false;
+  let from = 0;
+  for (;;) {
+    const idx = expr.indexOf(ident, from);
+    if (idx === -1) return false;
+    const before = idx > 0 ? expr.charAt(idx - 1) : ' ';
+    const after = expr.charAt(idx + ident.length);
+    if (!/[A-Za-z0-9_]/.test(before) && !/[A-Za-z0-9_]/.test(after)) return true;
+    from = idx + 1;
+  }
+}
+
+/**
+ * flow-quartet tier-1 rust `format_string` (#1245): `HttpResponse::Ok().body(format!(...))`
+ * with actix `web::Query` / path data in the macro arguments. Gates classify this as
+ * CWE-134 (`format_string`), not only CWE-79 xss on `.body(...)`.
+ */
+export function findRustActixBodyFormatFormatStringSinks(
+  code: string,
+): { sinkLine: number }[] {
+  const sinks: { sinkLine: number }[] = [];
+  if (typeof code !== 'string' || code.length === 0) return sinks;
+  if (!/HttpResponse::\w+\(\)\s*\.\s*body\s*\(\s*format!\s*\(/.test(code)) {
+    return sinks;
+  }
+
+  const lines = code.split('\n');
+  const extractorTypeRe =
+    /:\s*(?:String|Bytes|bytes::Bytes|axum::body::Bytes|web::Query\b|web::Path\b|web::Form\b|web::Json\b|HttpRequest\b|actix_web::HttpRequest\b)/;
+  const httpGetRe = /\.get\s*\(\s*"[^"]+"\s*\)/;
+
+  type Fn = { start: number; end: number; tainted: Set<string> };
+  const fns: Fn[] = [];
+  let cur: Fn | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i];
+    if (/^\s*(?:pub\s+)?(?:async\s+)?fn\s+\w+\s*\(/.test(t)) {
+      if (cur) {
+        cur.end = i - 1;
+        fns.push(cur);
+      }
+      cur = { start: i, end: lines.length - 1, tainted: new Set() };
+      let headerJoined = '';
+      for (let j = i; j < Math.min(i + 12, lines.length); j++) {
+        headerJoined += lines[j];
+        if (/\{\s*$/.test(lines[j])) break;
+      }
+      const open = headerJoined.indexOf('(');
+      const close = headerJoined.lastIndexOf(')');
+      if (open !== -1 && close > open) {
+        const params = headerJoined.substring(open + 1, close);
+        let depth = 0;
+        let buf = '';
+        const parts: string[] = [];
+        for (const ch of params) {
+          if (ch === '<' || ch === '(') depth++;
+          else if (ch === '>' || ch === ')') depth--;
+          if (ch === ',' && depth === 0) {
+            parts.push(buf);
+            buf = '';
+            continue;
+          }
+          buf += ch;
+        }
+        if (buf.trim().length > 0) parts.push(buf);
+        for (const p of parts) {
+          const pm = p.match(/(?:mut\s+)?(\w+)\s*:/);
+          if (!pm) continue;
+          if (extractorTypeRe.test(p)) cur!.tainted.add(pm[1]);
+        }
+      }
+    }
+  }
+  if (cur) fns.push(cur);
+
+  const bodyFormatRe =
+    /HttpResponse::\w+\(\)\s*\.\s*body\s*\(\s*format!\s*\(\s*([^)]+)\)\s*\)/;
+
+  const splitFormatArgs = (argSpan: string): string[] => {
+    const parts: string[] = [];
+    let d = 0;
+    let b = '';
+    let inStr: string | null = null;
+    for (let k = 0; k < argSpan.length; k++) {
+      const ch = argSpan[k];
+      if (inStr) {
+        if (ch === '\\') {
+          b += ch + (argSpan[k + 1] ?? '');
+          k++;
+          continue;
+        }
+        if (ch === inStr) inStr = null;
+        b += ch;
+        continue;
+      }
+      if (ch === '"') {
+        inStr = ch;
+        b += ch;
+        continue;
+      }
+      if (ch === '(' || ch === '[' || ch === '{') d++;
+      else if (ch === ')' || ch === ']' || ch === '}') d--;
+      if (ch === ',' && d === 0) {
+        parts.push(b);
+        b = '';
+        continue;
+      }
+      b += ch;
+    }
+    if (b.trim().length > 0) parts.push(b);
+    return parts;
+  };
+
+  for (const fn of fns) {
+    for (let pass = 0; pass < 3; pass++) {
+      const before = fn.tainted.size;
+      for (let i = fn.start; i <= fn.end; i++) {
+        const t = lines[i].trim();
+        const letM = t.match(/^let\s+(?:mut\s+)?(\w+)\s*(?::\s*[^=]+)?=\s*(.+?);?$/);
+        if (letM) {
+          const lhs = letM[1];
+          const rhs = letM[2];
+          if (!fn.tainted.has(lhs)) {
+            if (httpGetRe.test(rhs)) fn.tainted.add(lhs);
+            else {
+              for (const v of fn.tainted) {
+                if (exprMentionsIdent(rhs, v)) {
+                  fn.tainted.add(lhs);
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+      if (fn.tainted.size === before) break;
+    }
+    if (fn.tainted.size === 0) continue;
+    for (let i = fn.start; i <= fn.end; i++) {
+      const line = lines[i];
+      const m = bodyFormatRe.exec(line);
+      if (!m) continue;
+      const argParts = splitFormatArgs(m[1]);
+      if (argParts.length < 2) continue;
+      let hit = false;
+      for (let p = 1; p < argParts.length; p++) {
+        for (const v of fn.tainted) {
+          if (exprMentionsIdent(argParts[p], v)) {
+            hit = true;
+            break;
+          }
+        }
+        if (hit) break;
+      }
+      if (!hit) continue;
+      if (!sinks.some((s) => s.sinkLine === i + 1)) {
+        sinks.push({ sinkLine: i + 1 });
+      }
+    }
+  }
+  return sinks;
+}
+
 /**
  * Sprint 87 detector D (#189) — Rust log injection via the `log` crate
  * macros (`info!`, `warn!`, `error!`, `debug!`, `trace!`) where a
@@ -13492,8 +14546,108 @@ export function findPythonJinjaTemplateSstiFindings(
 }
 
 /**
+ * The text of the first argument of a call whose `(` ends just before
+ * `start` on `line`: up to the first top-level `,` or the closing `)`, or
+ * to the end of the line when the call continues on the next one.
+ */
+export function firstJsCallArg(line: string, start: number): string {
+  let depth = 0;
+  for (let k = start; k < line.length; k++) {
+    const ch = line[k];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const end = line.indexOf(ch, k + 1);
+      if (end < 0) return line.slice(start);
+      // Skip escaped quotes.
+      let e = end;
+      while (e > 0 && line[e - 1] === '\\') {
+        const next = line.indexOf(ch, e + 1);
+        if (next < 0) return line.slice(start);
+        e = next;
+      }
+      k = e;
+      continue;
+    }
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (depth === 0) return line.slice(start, k);
+      depth--;
+    } else if (ch === ',' && depth === 0) return line.slice(start, k);
+  }
+  return line.slice(start);
+}
+
+/**
+ * For `const { a, b: c, d = 1 } = <rhs>` whose `<rhs>` reads the request
+ * (`reqRe`), the bound names (`a`, `c`, `d`); otherwise null.
+ */
+export function jsDestructuredFromRequest(stmt: string, reqRe: RegExp): string[] | null {
+  const kw = ['const ', 'let ', 'var '].find(k => stmt.startsWith(k));
+  if (!kw) return null;
+  const t = stmt.slice(kw.length).trimStart();
+  if (!t.startsWith('{')) return null;
+  const close = t.indexOf('}');
+  if (close < 0) return null;
+  const rest = t.slice(close + 1).trimStart();
+  if (!rest.startsWith('=') || !reqRe.test(blankJsStringText(rest.slice(1)))) return null;
+  const names: string[] = [];
+  for (const raw of t.slice(1, close).split(',')) {
+    let p = raw.trim();
+    const eq = p.indexOf('=');
+    if (eq >= 0) p = p.slice(0, eq).trim();
+    const colon = p.indexOf(':');
+    const bound = (colon >= 0 ? p.slice(colon + 1) : p).trim();
+    if (/^[A-Za-z_$][\w$]*$/.test(bound)) names.push(bound);
+  }
+  return names.length > 0 ? names : null;
+}
+
+/**
+ * `expr` with the text of its string literals blanked: quoted strings become
+ * `''`, a template literal keeps only its `${…}` substitutions. What remains
+ * is the code that can read a variable.
+ */
+export function blankJsStringText(expr: string): string {
+  let out = '';
+  let k = 0;
+  while (k < expr.length) {
+    const ch = expr[k];
+    if (ch === "'" || ch === '"') {
+      let e = k + 1;
+      while (e < expr.length && expr[e] !== ch) e += expr[e] === '\\' ? 2 : 1;
+      out += "''";
+      k = e + 1;
+      continue;
+    }
+    if (ch === '`') {
+      let e = k + 1;
+      let subs = '';
+      while (e < expr.length && expr[e] !== '`') {
+        if (expr[e] === '\\') { e += 2; continue; }
+        if (expr[e] === '$' && expr[e + 1] === '{') {
+          const close = expr.indexOf('}', e + 2);
+          if (close < 0) { subs += ` ${expr.slice(e + 2)}`; e = expr.length; break; }
+          subs += ` ${expr.slice(e + 2, close)}`;
+          e = close + 1;
+          continue;
+        }
+        e++;
+      }
+      out += `''${subs}`;
+      k = e + 1;
+      continue;
+    }
+    out += ch;
+    k++;
+  }
+  return out;
+}
+
+/**
  * Sprint 90 detector C (#189) — JS SSTI via `Handlebars.compile(<tainted>)`
- * or `ejs.render(<tainted>, ...)` / `ejs.compile(<tainted>)`.
+ * or `ejs.render(<tainted>, ...)` / `ejs.compile(<tainted>)`; also
+ * `handlebars.compile`, `pug.render` / `pug.compile` and
+ * `nunjucks.renderString`. Only the code of the first argument counts: a
+ * fixed template literal that names a context variable is not tainted.
  *
  * Compiling an attacker-controlled template lets the attacker execute
  * arbitrary code through helper-shadowing / prototype gadgets
@@ -13506,8 +14660,9 @@ export function findJsTemplateInjectionSstiFindings(
   const findings: SastFinding[] = [];
   if (typeof code !== 'string' || code.length === 0) return findings;
   if (
-    !/\bHandlebars\s*\.\s*compile\s*\(/.test(code) &&
-    !/\bejs\s*\.\s*(?:render|compile)\s*\(/.test(code)
+    !/\b[Hh]andlebars\s*\.\s*compile\s*\(/.test(code) &&
+    !/\b(?:ejs|pug)\s*\.\s*(?:render|compile)\s*\(/.test(code) &&
+    !/\bnunjucks\s*\.\s*renderString\s*\(/.test(code)
   ) {
     return findings;
   }
@@ -13523,10 +14678,17 @@ export function findJsTemplateInjectionSstiFindings(
     for (let i = 0; i < lines.length; i++) {
       const t = lines[i].trim();
       if (t.startsWith('//')) continue;
+      // `const { a, b: c } = req.body;` binds every destructured name.
+      const destructured = jsDestructuredFromRequest(t, reqExtractRe);
+      if (destructured) {
+        for (const name of destructured) taintedVars.add(name);
+        continue;
+      }
       const m = t.match(/^(?:const|let|var)\s+(\w+)(?:\s*:\s*[^=]+)?\s*=\s*(.+?);?$/);
       if (!m) continue;
       const lhs = m[1];
-      const rhs = m[2];
+      // A name inside a string literal is text, not a read (`'<p><%= name %></p>'`).
+      const rhs = blankJsStringText(m[2]);
       if (taintedVars.has(lhs)) continue;
       if (reqExtractRe.test(rhs)) {
         taintedVars.add(lhs);
@@ -13544,14 +14706,18 @@ export function findJsTemplateInjectionSstiFindings(
   if (taintedVars.size === 0) return findings;
 
   const callRe =
-    /\b(Handlebars\s*\.\s*compile|ejs\s*\.\s*(?:render|compile))\s*\(\s*([^,)]+)/;
+    /\b([Hh]andlebars\s*\.\s*compile|(?:ejs|pug)\s*\.\s*(?:render|compile)|nunjucks\s*\.\s*renderString)\s*\(/;
   const seen = new Set<number>();
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line.trim().startsWith('//')) continue;
     const m = line.match(callRe);
-    if (!m) continue;
-    const arg = m[2].trim();
+    if (!m || m.index === undefined) continue;
+    // The template source is the first argument; only its code counts —
+    // the text of a string literal (a fixed template that names a context
+    // variable) and the context object after it do not.
+    const arg = blankJsStringText(firstJsCallArg(line, m.index + m[0].length)).trim();
+    if (arg === '') continue;
     let tainted = reqExtractRe.test(arg);
     if (!tainted) {
       for (const v of taintedVars) {
@@ -13575,7 +14741,8 @@ export function findJsTemplateInjectionSstiFindings(
       message:
         'Server-side template injection: compiling/rendering a template ' +
         'whose source is attacker-controlled (`Handlebars.compile(...)` / ' +
-        '`ejs.render(...)`) opens helper-shadowing and prototype-gadget RCE ' +
+        '`ejs.render(...)` / `pug.render(...)` / `nunjucks.renderString(...)`) ' +
+        'opens helper-shadowing, prototype-gadget and template-code RCE ' +
         'paths. Use a fixed template and pass user data as context.',
       file,
       line: i + 1,

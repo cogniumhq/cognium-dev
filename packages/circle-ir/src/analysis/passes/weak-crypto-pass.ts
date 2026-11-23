@@ -51,6 +51,7 @@
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { CallInfo } from '../../types/index.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
+import { jsCryptoBindings, cryptoCallAsMember } from './_js-crypto-binding.js';
 import { isProtocolMandatedCryptoFile } from './_fp-allowlists.js';
 import { isTestPath } from '../path-classification.js';
 
@@ -481,7 +482,13 @@ export class WeakCryptoPass implements AnalysisPass<WeakCryptoResult> {
       });
     };
 
-    for (const call of graph.ir.calls) {
+    // JS/TS: `createCipher` / `createCipheriv` reached through a named import,
+    // destructured require or module alias count as `crypto.<api>`.
+    const isJs = language === 'javascript' || language === 'typescript';
+    const cryptoBindings = isJs ? jsCryptoBindings(graph.ir.imports, graph.ir) : null;
+
+    for (const irCall of graph.ir.calls) {
+      const call = cryptoBindings ? cryptoCallAsMember(irCall, cryptoBindings) : irCall;
       for (const det of this.detect(call, language, constProp, literalBindings)) {
         emit(call.location.line, det);
       }

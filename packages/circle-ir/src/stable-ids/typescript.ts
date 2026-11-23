@@ -359,6 +359,24 @@ class Extractor {
   }
 }
 
+function buildTypeScriptStableIdFile(
+  builder: Builder,
+  filePath: string,
+  language: 'javascript' | 'typescript',
+  module: string,
+  parseError: ReturnType<typeof firstDeclarationHidingError>,
+): StableIdFile {
+  return {
+    scheme: STABLE_ID_SCHEME,
+    file: filePath,
+    language,
+    module,
+    decls: builder.decls,
+    partial: parseError !== undefined,
+    ...(parseError ? { parseError } : {}),
+  };
+}
+
 /** Derive `ids@0.1` ids from an already-parsed TypeScript/JavaScript tree. */
 export function deriveTypeScriptIds(
   tree: Tree,
@@ -372,13 +390,38 @@ export function deriveTypeScriptIds(
   const moduleDecl = builder.add('module', module, module, '', root, null);
   new Extractor(builder).module(root, moduleDecl);
   const parseError = firstDeclarationHidingError(root);
-  return {
-    scheme: STABLE_ID_SCHEME,
-    file: filePath,
-    language,
-    module,
-    decls: builder.decls,
-    partial: parseError !== undefined,
-    ...(parseError ? { parseError } : {}),
-  };
+  return buildTypeScriptStableIdFile(builder, filePath, language, module, parseError);
+}
+
+/**
+ * When a full-file parse leaves a program-level ERROR, derive ids from each top-level
+ * export in isolation (cognium-dev#1193).
+ */
+export async function deriveTypeScriptIdsWithExportRecovery(
+  code: string,
+  filePath: string,
+  language: 'javascript' | 'typescript',
+  options: StableIdOptions = {},
+): Promise<StableIdFile> {
+  const { parseTypeScriptExportChunkTrees } = await import('../core/ts-grammar-workarounds.js');
+  const { disposeTree } = await import('../core/parser.js');
+  const module = options.module ?? moduleNameFor(filePath, options);
+  const builder = new Builder(language, options.keepBodyTokens === true);
+  const trees = await parseTypeScriptExportChunkTrees(code, language);
+  let moduleDecl: StableDecl | null = null;
+  let parseError: ReturnType<typeof firstDeclarationHidingError>;
+  try {
+    for (const tree of trees) {
+      const root = tree.rootNode;
+      if (!moduleDecl) {
+        moduleDecl = builder.add('module', module, module, '', root, null);
+      }
+      new Extractor(builder).module(root, moduleDecl);
+      const err = firstDeclarationHidingError(root);
+      if (err) parseError = err;
+    }
+  } finally {
+    for (const t of trees) disposeTree(t);
+  }
+  return buildTypeScriptStableIdFile(builder, filePath, language, module, parseError);
 }

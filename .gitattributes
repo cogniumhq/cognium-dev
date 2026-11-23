@@ -1,0 +1,4 @@
+# Paths the Loop does not plan, test or fix (see .loop/third-party.json).
+# linguist-vendored only: no eol, binary, diff or filter change.
+bench/** linguist-vendored
+.claude/** linguist-vendored

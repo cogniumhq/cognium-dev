@@ -43,7 +43,7 @@ const ESCAPE = 'external_taint_escape';
  */
 function textOf(expr: string): string {
   return expr.replace(
-    /\$@?"(?:[^"\\]|\\.|\{[^}]*\})*"|\$?"(?:[^"\\]|\\.|\{[^}]*\})*"|@?"(?:[^"\\]|\\.)*"/g,
+    /\$@?"(?:[^"\\{]|\\.|\{[^{}]*\}|\{(?![^{}]*\}))*"|\$?"(?:[^"\\{]|\\.|\{[^{}]*\}|\{(?![^{}]*\}))*"|@?"(?:[^"\\]|\\.)*"/g,
     (lit) => {
       if (lit.startsWith('$')) {
         const holes = [...lit.matchAll(/\{([^}]*)\}/g)].map(m => m[1]).join(' ');

@@ -1,0 +1,39 @@
+{
+  "schema": "third-party/v0",
+  "about": "Paths the Loop must not plan, test or fix in this repository. 'prefix' is a path prefix, the same rule as a Loop start request's scope.exclude. .gitattributes marks the same paths linguist-vendored. Neither path is part of a published package.",
+  "default_policy": {
+    "test": false,
+    "fix": false,
+    "report": "opt-in"
+  },
+  "entries": [
+    {
+      "path": "bench/",
+      "match": "prefix",
+      "origin": "this repository: benchmark scripts and their labelled fixtures (bench/README.md)",
+      "version": "n/a",
+      "licence": "n/a (not published; outside every package's files)",
+      "modified_locally": false,
+      "notes": "Benchmark fixtures and the scripts that produce the resolver's published numbers. Not product code: a chore here would change benchmark inputs, not the engine.",
+      "policy": {
+        "test": false,
+        "fix": false,
+        "report": "opt-in"
+      }
+    },
+    {
+      "path": ".claude/",
+      "match": "prefix",
+      "origin": "this repository: coding-agent configuration (skills)",
+      "version": "n/a",
+      "licence": "n/a (not published; outside every package's files)",
+      "modified_locally": false,
+      "notes": "Agent configuration, not product code.",
+      "policy": {
+        "test": false,
+        "fix": false,
+        "report": "opt-in"
+      }
+    }
+  ]
+}

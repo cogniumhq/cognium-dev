@@ -46,6 +46,7 @@ export class ConstantPropagationPass implements AnalysisPass<ConstantPropagatorR
     const result = analyzeConstantPropagation(this.tree, code, {
       sanitizerMethods: taintMatcher.sanitizerMethods,
       taintedParameters,
+      language: ctx.language,
     });
     if (ctx.language === 'java') pruneDeadChains(ctx, result.unreachableLines);
     return result;

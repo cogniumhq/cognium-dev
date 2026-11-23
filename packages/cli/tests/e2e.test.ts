@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { resolve, join } from 'path';
-import { writeFileSync, unlinkSync, existsSync } from 'fs';
+import { writeFileSync, unlinkSync, existsSync, mkdtempSync, mkdirSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -109,6 +110,120 @@ describe('scan (sarif)', () => {
   }, 30_000);
 });
 
+// ─── Files not fully analysed are reported, never shown as clean ────────────
+
+describe('files not fully analysed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cognium-partial-'));
+  const syntaxError = join(dir, 'A.java');
+  // Line 3 lacks its semicolon.
+  writeFileSync(syntaxError, 'class A {\n  void a() {\n    int y = 2\n    System.out.println(y);\n  }\n}\n');
+  const slowDir = join(dir, 'slow');
+  // Large enough that parsing alone passes a 1 ms per-file limit.
+  mkdirSync(slowDir);
+  writeFileSync(join(slowDir, 'big.sh'), Array.from({ length: 4000 }, (_, i) => `v${i}=$(echo "$x${i}" | grep foo)`).join('\n'));
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('a syntax error is counted in JSON (errors: 0 alone no longer hides it)', async () => {
+    const { stdout, stderr } = await run('scan', syntaxError, '-f', 'json');
+    const parsed = JSON.parse(stdout);
+    expect(parsed.summary.filesWithParseErrors).toBe(1);
+    expect(parsed.results[0].parse_errors.lines).toContain(3);
+    expect(stderr).toContain('1 with syntax errors');
+  }, 30_000);
+
+  test('a syntax error is marked in text output and counted in the summary', async () => {
+    const { stdout } = await run('scan', syntaxError);
+    expect(stdout).toContain('[PARTIAL]');
+    expect(stdout).toContain('1 file(s) had syntax errors; findings in them may be incomplete');
+  }, 30_000);
+
+  test('a syntax error is a SARIF warning at its line', async () => {
+    const { stdout } = await run('scan', syntaxError, '-f', 'sarif', '-q');
+    const inv = JSON.parse(stdout).runs[0].invocations[0];
+    expect(inv.executionSuccessful).toBe(true);
+    expect(inv.toolExecutionNotifications[0].properties.reason).toBe('parse-error');
+    expect(inv.toolExecutionNotifications[0].locations[0].physicalLocation.region.startLine).toBe(3);
+  }, 30_000);
+
+  test('a directory scan reports a timed-out file in SARIF and marks the run unsuccessful', async () => {
+    const { stdout, stderr } = await run('scan', slowDir, '-f', 'sarif', '--file-timeout-ms', '1');
+    const run0 = JSON.parse(stdout).runs[0];
+    expect(run0.results).toHaveLength(0);
+    expect(run0.invocations[0].executionSuccessful).toBe(false);
+    const n = run0.invocations[0].toolExecutionNotifications[0];
+    expect(n.level).toBe('error');
+    expect(n.properties.reason).toBe('file-timeout');
+    expect(n.locations[0].physicalLocation.artifactLocation.uri).toEndWith('big.sh');
+    expect(stderr).toContain('1 not analysed');
+  }, 30_000);
+
+  test('a single-file scan reports a timed-out file as a timeout', async () => {
+    const { stdout } = await run('scan', join(slowDir, 'big.sh'), '-f', 'sarif', '-q', '--file-timeout-ms', '1');
+    const n = JSON.parse(stdout).runs[0].invocations[0].toolExecutionNotifications[0];
+    expect(n.properties.reason).toBe('file-timeout');
+  }, 30_000);
+});
+
+// ─── The entry-path gate's drops are counted, with the flag that keeps them ─
+
+describe('require-entry-path drops are reported', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cognium-gate-'));
+  const servlet = (name: string, method: string, base: string) =>
+    `import javax.servlet.http.*;\npublic class ${name}${base} {\n  public void ${method}(HttpServletRequest req, HttpServletResponse resp) throws Exception {\n    Runtime.getRuntime().exec(req.getParameter("c"));\n  }\n}\n`;
+  writeFileSync(join(dir, 'Entry.java'), servlet('Entry', 'doGet', ' extends HttpServlet'));
+  // Nothing calls Helper.util, so the gate drops its command injection.
+  writeFileSync(join(dir, 'Helper.java'), servlet('Helper', 'util', ''));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('SARIF carries a note with the count and the flag; JSON counts it', async () => {
+    const sarif = JSON.parse((await run('scan', dir, '-f', 'sarif', '-q')).stdout);
+    const notes = sarif.runs[0].invocations[0].toolExecutionNotifications
+      .filter((n: { properties: { reason: string } }) => n.properties.reason === 'entry-path-gate');
+    expect(notes).toHaveLength(1);
+    expect(notes[0].level).toBe('note');
+    expect(notes[0].message.text).toContain('--disable-pass require-entry-path');
+    expect(sarif.runs[0].invocations[0].executionSuccessful).toBe(true);
+  }, 60_000);
+
+  test('the flag in the note brings the finding back and the count to 0', async () => {
+    const gated = JSON.parse((await run('scan', dir, '-f', 'json', '-q', '--category', 'security')).stdout);
+    const ungated = JSON.parse((await run('scan', dir, '-f', 'json', '-q', '--category', 'security', '--disable-pass', 'require-entry-path')).stdout);
+    const helperVulns = (j: { results: Array<{ file: string; vulnerabilities: unknown[] }> }) =>
+      j.results.find(r => r.file.endsWith('Helper.java'))?.vulnerabilities.length ?? 0;
+    expect(gated.summary.entryPathDropped).toBeGreaterThanOrEqual(1);
+    expect(helperVulns(gated)).toBe(0);
+    expect(ungated.summary.entryPathDropped).toBe(0);
+    expect(helperVulns(ungated)).toBeGreaterThanOrEqual(1);
+  }, 60_000);
+});
+
+// ─── An empty scan still writes a valid report ──────────────────────────────
+
+describe('empty directory', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cognium-empty-'));
+  const outFile = join(dir, 'out.sarif');
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('-f sarif -o writes a valid empty SARIF run and exits 0', async () => {
+    const { exitCode, stderr } = await run('scan', dir, '-f', 'sarif', '-o', outFile);
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain('No supported files found');
+    expect(existsSync(outFile)).toBe(true);
+    const doc = JSON.parse(await Bun.file(outFile).text());
+    expect(doc.version).toBe('2.1.0');
+    expect(doc.runs[0].results).toEqual([]);
+    expect(doc.runs[0].invocations[0].executionSuccessful).toBe(true);
+    expect(doc.runs[0].invocations[0].toolExecutionNotifications[0].properties.reason).toBe('no-files');
+  }, 30_000);
+
+  test('-f json writes an empty report to stdout', async () => {
+    const { stdout, exitCode } = await run('scan', dir, '-f', 'json', '-q');
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout).summary.filesScanned).toBe(0);
+  }, 30_000);
+});
+
 // ─── Scan: exit codes ───────────────────────────────────────────────────────
 
 describe('exit codes', () => {
@@ -126,6 +241,46 @@ describe('exit codes', () => {
     const { exitCode } = await run('scan', '/nonexistent/path/file.java', '-q');
     expect(exitCode).toBe(2);
   }, 30_000);
+
+  // 1 means findings. A usage or config error used to exit 1 as well, so a CI
+  // gate could not tell a typo from a vulnerable codebase.
+  test('a usage error exits 2, not the findings code', async () => {
+    for (const args of [
+      ['scan', VULN_FILE, '-f', 'xml'],
+      ['scan', VULN_FILE, '--severity', 'urgent'],
+      ['scan', VULN_FILE, '--threads', '0'],
+      ['scan'],
+      ['frobnicate'],
+      ['scan', VULN_FILE, '--frobnicate'],
+    ]) {
+      const { exitCode, stderr } = await run(...args);
+      expect(exitCode).toBe(2);
+      expect(stderr).toContain('Error');
+    }
+  }, 60_000);
+
+  // An unknown option used to be ignored: `--severty high` ran a full scan at
+  // the default severity and exited by its findings.
+  test('an unknown option is refused before any scan work', async () => {
+    const { exitCode, stdout, stderr } = await run('scan', VULN_FILE, '-f', 'json', '--severty', 'high');
+    expect(exitCode).toBe(2);
+    expect(stdout).toBe('');
+    expect(stderr).toContain("unknown option '--severty' for 'scan'");
+  }, 30_000);
+
+  test('a config error exits 2', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cognium-config-'));
+    try {
+      const badJson = join(dir, 'bad.json');
+      writeFileSync(badJson, '{ not json');
+      const badSeverity = join(dir, 'severity.json');
+      writeFileSync(badSeverity, JSON.stringify({ severity: 'urgent' }));
+      expect((await run('scan', VULN_FILE, '-q', '--profile', badJson)).exitCode).toBe(2);
+      expect((await run('scan', VULN_FILE, '-q', '--profile', badSeverity)).exitCode).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 // ─── Scan: filtering ────────────────────────────────────────────────────────
@@ -175,17 +330,17 @@ describe('scan directory', () => {
     }
   }, 60_000);
 
-  test('invalid --language exits 1 instead of scanning nothing (cognium-dev#443)', async () => {
+  test('invalid --language exits 2 instead of scanning nothing (cognium-dev#443)', async () => {
     const { stdout, stderr, exitCode } = await run('scan', FIXTURES, '-f', 'json', '-q', '--language', 'ruby');
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(2);
     expect(stderr).toContain('Invalid language: ruby');
     expect(stderr).toContain('Valid options:');
     expect(stdout.trim()).toBe('');
   }, 30_000);
 
-  test('typo --language jaba exits 1 (cognium-dev#443)', async () => {
+  test('typo --language jaba exits 2 (cognium-dev#443)', async () => {
     const { stderr, exitCode } = await run('scan', '.', '-q', '-l', 'jaba');
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(2);
     expect(stderr).toContain('Invalid language: jaba');
     expect(stderr).toContain('java');
   }, 30_000);

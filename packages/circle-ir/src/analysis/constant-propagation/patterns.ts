@@ -2,6 +2,8 @@
  * Taint source patterns, sanitizer methods, and propagator methods.
  */
 
+import { SINK_TYPES } from '../../types/index.js';
+
 // =============================================================================
 // Taint Source Patterns
 // =============================================================================
@@ -31,6 +33,10 @@ export const TAINT_PATTERNS = [
   '.getValue(',  // Cookie.getValue()
   '.getCookies(',
   '.getReader(',
+
+  // Express / Connect request bodies (interop IL-22, #1149)
+  'req.body',
+  'request.body',
 
   // Enumeration iteration (from request.getHeaders(), etc.)
   'headers.nextElement(',
@@ -144,10 +150,11 @@ export const SANITIZER_METHODS = new Set([
 /**
  * Context-specific HTML / markup / script encoders (cognium-dev#589).
  *
- * A local assigned from one of these is clean for the output-encoding sinks but
- * not for `trust_boundary`. The constant propagator records this per variable so
- * that the clean-variable sink filter does not drop a `trust_boundary` sink on a
- * session `setAttribute`. Every method here is a registered sanitizer
+ * A local assigned from one of these is clean for the output-encoding sinks
+ * only (`encodeForHTML` must not clear SQL injection). The constant
+ * propagator records this per variable so that the clean-variable sink filter
+ * keeps a `trust_boundary`, `sql_injection`, `command_injection`, … sink on the
+ * encoded value. Every method here is a registered sanitizer
  * whose config row removes `xss` and nothing else; a drift test pins that.
  * Families that are NOT listed (type casts, SQL/LDAP/path codecs, URL encoders)
  * keep their existing all-sinks behaviour.
@@ -169,12 +176,22 @@ export const HTML_CONTEXT_ENCODER_METHODS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Sink types an HTML-context encoder does NOT clean. `trust_boundary`
- * (CWE-501, a tainted value stored in a session / trusted container) is not an
- * output-encoding concern: an encoded value is still untrusted data crossing
- * the boundary (#589). Every other sink type keeps its existing credit.
+ * Sink types an HTML-context encoder cleans: what its config row removes
+ * (`xss`), plus the bare-helper `external_taint_escape` credit that row carries.
  */
-export const HTML_CONTEXT_ENCODER_UNCOVERED_SINKS: ReadonlySet<string> = new Set(['trust_boundary']);
+export const HTML_CONTEXT_ENCODER_COVERED_SINKS: ReadonlySet<string> = new Set(['xss', 'external_taint_escape']);
+
+/**
+ * Sink types an HTML-context encoder does NOT clean: every other sink type.
+ * HTML entity encoding leaves `'`-free SQL, shell, LDAP, XPath and path
+ * payloads intact, and an encoded value stored in a session is still untrusted
+ * data crossing the boundary (`trust_boundary`, #589). Until this fix only
+ * `trust_boundary` was listed, so `encodeForHTML(x)` cleared a later SQL
+ * injection on `x`.
+ */
+export const HTML_CONTEXT_ENCODER_UNCOVERED_SINKS: ReadonlySet<string> = new Set(
+  SINK_TYPES.filter(t => !HTML_CONTEXT_ENCODER_COVERED_SINKS.has(t)),
+);
 
 // =============================================================================
 // Anti-Sanitizer Methods

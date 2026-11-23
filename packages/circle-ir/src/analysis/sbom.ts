@@ -48,13 +48,14 @@ export interface Dependency {
   license?: string;
   /**
    * Whether the project declares this dependency itself. Set only by inputs
-   * that carry the graph (`mvn dependency:tree`); absent when unknown.
+   * that carry the graph (`mvn dependency:tree`, lockfiles); absent when unknown.
    */
   direct?: boolean;
   /**
-   * The path from a direct dependency down to this one's parent, as
-   * `groupId:artifactId` names: `[]` for a direct dependency. Set only by
-   * inputs that carry the graph (`mvn dependency:tree`); absent when unknown.
+   * The path from a direct dependency down to this one's parent, as package
+   * names (`groupId:artifactId` for Maven): `[]` for a direct dependency. Set
+   * only by inputs that carry the graph (`mvn dependency:tree`,
+   * `parsePnpmLockImporterDependencies`); absent when unknown.
    */
   via?: string[];
 }
@@ -163,18 +164,29 @@ export function parseNpmDependencies(packageJson: string): Dependency[] {
  * Parse a single PEP 508 requirement string (`name[extras] (>=|==|~=…)ver ; marker`)
  * into `{ name, version }`, or `null` when no name can be read. Shared by the
  * `requirements.txt` and `pyproject.toml` parsers.
+ *
+ * The version is the declared spec verbatim (whitespace removed), as for npm
+ * and Poetry: `>=2.0` stays `>=2.0`, `>=2.28,<3` stays `>=2.28,<3`. Only one
+ * exact pin (`==2.0` or `===2.0`, no wildcard) becomes the bare version
+ * `2.0`. So a lower bound is never taken for the installed version (#1127).
  */
 function parsePep508(spec: string): { name: string; version: string } | null {
   let s = spec.trim();
-  s = s.split(';')[0].trim(); // strip environment marker
+  // The requirement ends at an environment marker (`;`), or at whitespace
+  // followed by pip's line continuation (`\`), a per-requirement option
+  // (`--hash=…`, `--global-option=…`) or a comment (`#`). This runs before
+  // whitespace is removed below, so `a==1.0 \` and `a==1.0 --hash=…` read as
+  // `1.0` (#1131 review). A `\` at the very end is a continuation too.
+  s = s.split(/;|\s+(?:\\|-{1,2}[A-Za-z]|#)/)[0].replace(/\\$/, '').trim();
   if (!s) return null;
   const m = s.match(/^([A-Za-z0-9._-]+)\s*(?:\[[^\]]*\])?\s*(.*)$/);
   if (!m) return null;
-  const rest = m[2].trim();
-  // First comparator clause's version (drop `,` compound ranges and `(` groups).
-  const verMatch = rest.replace(/^\(/, '').match(/^(?:==|>=|<=|~=|!=|>|<|===)?\s*([^,\s)]+)/);
-  const version = verMatch && verMatch[1] ? verMatch[1] : 'unknown';
-  return { name: m[1], version };
+  // `name (>=1.0)` is the older parenthesised form of `name>=1.0`.
+  const rest = m[2].trim().replace(/^\((.*)\)$/, '$1').replace(/\s+/g, '');
+  // No spec, or a direct reference (`name @ https://…`): no version.
+  if (!rest || rest.startsWith('@')) return { name: m[1], version: 'unknown' };
+  const pin = rest.match(/^={2,3}([^,*=<>~]+)$/);
+  return { name: m[1], version: pin ? pin[1] : rest };
 }
 
 /**
@@ -369,6 +381,33 @@ function asRecord(v: unknown): Record<string, unknown> | undefined {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
 }
 
+/** The package graph of a parsed `pnpm-lock.yaml`, keyed `name@version` (peer variants collapsed). */
+function pnpmLockNodes(root: Record<string, unknown>): Map<string, LockNode> {
+  const nodes = new Map<string, LockNode>();
+  const addNode = (rawKey: string, info: Record<string, unknown> | undefined): void => {
+    const id = parsePnpmKey(rawKey);
+    if (!id) return;
+    const key = `${id.name}@${id.version}`;
+    const node = nodes.get(key) ?? { name: id.name, version: id.version, deps: [] };
+    if (info) {
+      for (const section of ['dependencies', 'optionalDependencies']) {
+        for (const [n, ref] of Object.entries(asRecord(info[section]) ?? {})) {
+          const k = pnpmRef(n, ref);
+          if (k && !node.deps.includes(k)) node.deps.push(k);
+        }
+      }
+      if (info.dev === true) node.flagDev = true;
+      if (info.optional === true) node.flagOptional = true;
+    }
+    nodes.set(key, node);
+  };
+  for (const [k, v] of Object.entries(asRecord(root.packages) ?? {})) addNode(k, asRecord(v));
+  // v9 keeps the graph in `snapshots`, identities in `packages`.
+  for (const [k, v] of Object.entries(asRecord(root.snapshots) ?? {})) addNode(k, asRecord(v));
+
+  return nodes;
+}
+
 /**
  * Parse a `pnpm-lock.yaml` (lockfile formats 5.x, 6.0 and 9.0) into exact
  * resolved npm dependencies, direct and transitive.
@@ -396,28 +435,7 @@ export function parsePnpmLockDependencies(pnpmLock: string): Dependency[] {
   }
   if (!root) return [];
 
-  const nodes = new Map<string, LockNode>();
-  const addNode = (rawKey: string, info: Record<string, unknown> | undefined): void => {
-    const id = parsePnpmKey(rawKey);
-    if (!id) return;
-    const key = `${id.name}@${id.version}`;
-    const node = nodes.get(key) ?? { name: id.name, version: id.version, deps: [] };
-    if (info) {
-      for (const section of ['dependencies', 'optionalDependencies']) {
-        for (const [n, ref] of Object.entries(asRecord(info[section]) ?? {})) {
-          const k = pnpmRef(n, ref);
-          if (k && !node.deps.includes(k)) node.deps.push(k);
-        }
-      }
-      if (info.dev === true) node.flagDev = true;
-      if (info.optional === true) node.flagOptional = true;
-    }
-    nodes.set(key, node);
-  };
-  for (const [k, v] of Object.entries(asRecord(root.packages) ?? {})) addNode(k, asRecord(v));
-  // v9 keeps the graph in `snapshots`, identities in `packages`.
-  for (const [k, v] of Object.entries(asRecord(root.snapshots) ?? {})) addNode(k, asRecord(v));
-
+  const nodes = pnpmLockNodes(root);
   const roots: LockRoots = { required: [], optional: [], dev: [] };
   const importers = asRecord(root.importers);
   const projects: Record<string, unknown>[] = importers
@@ -455,6 +473,165 @@ export function pnpmLockImporters(pnpmLock: string): string[] {
   if (!root) return [];
   const importers = asRecord(root.importers);
   return importers ? Object.keys(importers).sort() : ['.'];
+}
+
+/** One workspace project of a `pnpm-lock.yaml` and the packages it reaches. */
+export interface PnpmImporterDependencies {
+  /** The importer's directory relative to the lockfile (`.` for the root). */
+  importer: string;
+  /**
+   * The npm packages this importer reaches, in `name` then `version` order.
+   * `scope` is the strongest way the importer reaches the package
+   * (`required` > `optional` > `dev`); `direct` is `true` when the importer
+   * declares it; `via` is a shortest path of package names from a declared
+   * dependency (or a linked workspace package) down to the package's parent,
+   * among the paths of that strongest scope (`[]` when direct). A workspace
+   * package the importer links to (`link:`) is followed: its `dependencies`
+   * and `optionalDependencies` are reached through it and its name heads `via`.
+   */
+  dependencies: Dependency[];
+}
+
+/** Resolve `rel` against importer `base` (both `/`-separated, `.` = lockfile directory). */
+function joinImporterPath(base: string, rel: string): string {
+  const out: string[] = [];
+  for (const seg of [...base.split('/'), ...rel.split('/')]) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') {
+      if (out.length === 0) return '';
+      out.pop();
+    } else out.push(seg);
+  }
+  return out.length === 0 ? '.' : out.join('/');
+}
+
+const SCOPE_RANK: Record<DependencyScope, number> = { required: 0, optional: 1, dev: 2 };
+const weaker = (a: DependencyScope, b: DependencyScope): DependencyScope => (SCOPE_RANK[a] >= SCOPE_RANK[b] ? a : b);
+
+/**
+ * Parse a `pnpm-lock.yaml` (5.x / 6.0 / 9.0) into one dependency set per
+ * importer: what each workspace project reaches on its own, so an advisory
+ * match can name the projects it affects (`matchAdvisories` per set).
+ *
+ * Unlike `parsePnpmLockDependencies`, which merges every importer, a package
+ * appears in an importer's set only if that importer reaches it — through its
+ * own declarations or through a linked workspace package's production and
+ * optional dependencies (a linked package's `devDependencies` are not
+ * installed for its consumers). A single-project lockfile yields one set for
+ * `.`. Importers are in path order; malformed YAML yields `[]`.
+ */
+export function parsePnpmLockImporterDependencies(pnpmLock: string): PnpmImporterDependencies[] {
+  if (!pnpmLock) return [];
+  let root: Record<string, unknown> | undefined;
+  try {
+    root = asRecord(parseYaml(pnpmLock, { uniqueKeys: false }));
+  } catch {
+    return [];
+  }
+  if (!root) return [];
+  const nodes = pnpmLockNodes(root);
+  const importerMap = asRecord(root.importers);
+  const projects = new Map<string, Record<string, unknown>>();
+  if (importerMap) {
+    for (const [k, v] of Object.entries(importerMap)) {
+      const rec = asRecord(v);
+      if (rec) projects.set(k, rec);
+    }
+  } else {
+    projects.set('.', root);
+  }
+
+  const SECTIONS = [
+    ['dependencies', 'required'],
+    ['optionalDependencies', 'optional'],
+    ['devDependencies', 'dev'],
+  ] as const;
+  const SCOPES = ['required', 'optional', 'dev'] as const;
+
+  const out: PnpmImporterDependencies[] = [];
+  for (const importer of [...projects.keys()].sort()) {
+    // One search over workspace projects ("p:<dir>") and packages ("n:<name@version>"),
+    // taking labels in (scope strength, path length) order. Scope only weakens and
+    // paths only grow along an edge, so the first time a package is taken it has its
+    // strongest scope and, within that scope, a shortest path — also when workspace
+    // links form a diamond. A linked project is settled once per scope
+    // ("p:<dir>@<scope>", at most three times): a project reached as required on a
+    // long path and as optional on a short one passes the short path on to what it
+    // reaches only through its optionalDependencies. The importer itself is settled
+    // once, at required with an empty path, which no later route improves on.
+    type Item = { node: string; scope: DependencyScope; via: string[] };
+    const buckets: Item[][][] = [[], [], []];
+    const push = (it: Item): void => {
+      const byLen = buckets[SCOPE_RANK[it.scope]];
+      (byLen[it.via.length] ??= []).push(it);
+    };
+    const settled = new Map<string, { scope: DependencyScope; via: string[] }>();
+    const declared = new Set<string>();
+    push({ node: `p:${importer}`, scope: 'required', via: [] });
+
+    for (const scope of SCOPES) {
+      const byLen = buckets[SCOPE_RANK[scope]];
+      for (let len = 0; len < byLen.length; len++) {
+        const bucket = byLen[len];
+        if (!bucket) continue;
+        // Items pushed into this bucket while it is read are taken in this pass.
+        for (let i = 0; i < bucket.length; i++) {
+          const { node, via } = bucket[i];
+          const isProject = node.startsWith('p:');
+          const isImporter = isProject && node.slice(2) === importer;
+          const key = isProject && !isImporter ? `${node}@${scope}` : node;
+          if (settled.has(key)) continue;
+          settled.set(key, { scope, via });
+          if (isProject) {
+            const dir = node.slice(2);
+            const project = projects.get(dir);
+            if (!project) continue;
+            for (const [section, sectionScope] of SECTIONS) {
+              // A linked package's own dev dependencies are not installed for its consumers.
+              if (!isImporter && section === 'devDependencies') continue;
+              const next = weaker(scope, sectionScope);
+              for (const [n, entry] of Object.entries(asRecord(project[section]) ?? {})) {
+                const ref = importerVersion(entry);
+                if (typeof ref === 'string' && ref.startsWith('link:')) {
+                  const target = joinImporterPath(dir, ref.slice('link:'.length));
+                  if (projects.has(target)) push({ node: `p:${target}`, scope: next, via: [...via, n] });
+                  continue;
+                }
+                const k = pnpmRef(n, ref);
+                if (!k || !nodes.has(k)) continue;
+                if (isImporter) declared.add(k);
+                push({ node: `n:${k}`, scope: next, via });
+              }
+            }
+          } else {
+            const pkg = nodes.get(node.slice(2)) as LockNode;
+            for (const k of pkg.deps) {
+              if (nodes.has(k)) push({ node: `n:${k}`, scope, via: [...via, pkg.name] });
+            }
+          }
+        }
+      }
+    }
+
+    const reached = new Map<string, { scope: DependencyScope; via: string[]; direct: boolean }>();
+    for (const [node, r] of settled) {
+      if (!node.startsWith('n:')) continue;
+      const key = node.slice(2);
+      reached.set(key, { scope: r.scope, via: r.via, direct: declared.has(key) });
+    }
+
+    const deps: Dependency[] = [];
+    for (const [key, r] of reached) {
+      const n = nodes.get(key) as LockNode;
+      const d = dep('npm', n.name, n.version, r.scope);
+      d.direct = r.direct;
+      d.via = r.direct ? [] : r.via;
+      deps.push(d);
+    }
+    deps.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.version < b.version ? -1 : a.version > b.version ? 1 : 0));
+    out.push({ importer, dependencies: deps });
+  }
+  return out;
 }
 
 /** Unquote a yarn v1 token: `"@babel/core@^7.0.0"` → `@babel/core@^7.0.0`. */
@@ -619,6 +796,7 @@ export function parsePoetryLockDependencies(poetryLock: string): Dependency[] {
 /**
  * Parse a pip `requirements.txt`. Handles `name==1.2`, `name>=1.2`, `name~=1`,
  * bare `name`, extras (`name[x]`), and environment markers (`; marker`).
+ * An exact pin's version is bare (`1.2`); any other spec is kept verbatim.
  * Skips comments, blank lines, and option lines (`-r`, `-e`, `--hash`, URLs).
  */
 export function parsePypiDependencies(requirementsTxt: string): Dependency[] {
@@ -819,9 +997,12 @@ export function parseTychoTargetDependencies(targetXml: string): Dependency[] {
     if (version.includes('${')) version = 'unknown';
     out.push(dep('maven', `${gid}:${aid}`, version, 'required'));
   };
-  const locRe = /<location\b([^>]*)>([\s\S]*?)<\/location>/g;
+  // A self-closing `<location … />` (e.g. `type="Target"` or `type="Directory"`) has no
+  // body; it must not open a block that runs on into the next location's content.
+  const locRe = /<location\b([^>]*?)(?:\/>|>([\s\S]*?)<\/location>)/g;
   let m: RegExpExecArray | null;
   while ((m = locRe.exec(text)) !== null) {
+    if (m[2] === undefined) continue;
     if (!/\btype\s*=\s*["']Maven["']/i.test(m[1])) continue;
     const body = m[2];
     const deps = body.match(/<dependency>[\s\S]*?<\/dependency>/g);
@@ -947,6 +1128,146 @@ export function parseMavenResolvedDependencies(output: string): Dependency[] {
       d.via = via;
     }
     out.push(d);
+  }
+  return out;
+}
+
+/** One module of a Maven reactor build and the dependency set Maven resolved for it. */
+export interface MavenModuleDependencies {
+  /**
+   * The module as its tree prints it, `groupId:artifactId`; from
+   * `dependency:list` output, where only the plugin header names it, the bare
+   * `artifactId`. `""` for output with no module boundary at all.
+   */
+  module: string;
+  /** The module's version and packaging, from a tree's root line. */
+  version?: string;
+  packaging?: string;
+  /** As `parseMavenResolvedDependencies` reads them, for this module only. */
+  dependencies: Dependency[];
+}
+
+/** A tree's root (project) line: `groupId:artifactId:packaging[:classifier]:version`, no scope. */
+const MAVEN_MODULE_ROOT = /^([\w.-]+):([\w.-]+):([\w.-]+)(?::[\w.-]+)?:([^:\s()]+)$/;
+/** The plugin header Maven prints before each module's goal: `--- …:tree (default-cli) @ module ---`. */
+const MAVEN_GOAL_HEADER = /^-{3,}\s.*?:(?:tree|list)\b.*@\s*([\w.-]+)\s+-{3,}$/;
+
+/**
+ * Parse `mvn dependency:tree` or `dependency:list` output of a reactor build
+ * (several modules in one file or console log) into one resolved set per
+ * module, in the order Maven printed them. A module boundary is a tree's root
+ * line, or the plugin header that names the module (`--- …:tree … @ module ---`).
+ *
+ * Unlike {@link parseMavenResolvedDependencies}, which merges every module into
+ * one set and keeps only the first of identical entries, each module keeps its
+ * own entries with its own `direct` and `via`, so a match can say which modules
+ * it reaches. Output with a single module gives one entry; output with no
+ * module boundary gives one entry with `module: ""`.
+ */
+export function parseMavenModuleDependencies(output: string): MavenModuleDependencies[] {
+  if (!output) return [];
+  const segments: Array<{ module: string; version?: string; packaging?: string; lines: string[] }> = [];
+  let current: (typeof segments)[number] | undefined;
+  let headerModule: string | undefined;
+  for (const raw of output.split(/\r?\n/)) {
+    let line = raw.replace(/^\s*\[(?:INFO|WARNING|DEBUG)\]\s?/, '').trimEnd();
+    // The module suffix newer plugins print (`… -- module x`), matched literally (linear).
+    const suffix = line.lastIndexOf(' -- module ');
+    if (suffix >= 0 && !/\s/.test(line.slice(suffix + 11))) line = line.slice(0, suffix);
+    const header = MAVEN_GOAL_HEADER.exec(line.trim());
+    if (header) {
+      headerModule = header[1];
+      current = { module: headerModule, lines: [] };
+      segments.push(current);
+      continue;
+    }
+    const rootMatch = /^[\s|+\\`-]/.test(line) ? null : MAVEN_MODULE_ROOT.exec(line.trim());
+    // `g:a:jar:1.0:compile` is a list entry, not a root: a root line ends in a version, never a scope.
+    const root = rootMatch && !new RegExp(`^(?:${MAVEN_SCOPES})$`).test(rootMatch[4]) ? rootMatch : null;
+    if (root) {
+      const module = `${root[1]}:${root[2]}`;
+      // A root line right after its own plugin header belongs to that segment.
+      if (current && current.lines.length === 0 && current.module === headerModule && headerModule === root[2]) {
+        current.module = module;
+      } else {
+        current = { module, lines: [] };
+        segments.push(current);
+      }
+      current.version = root[4];
+      current.packaging = root[3];
+      headerModule = undefined;
+      current.lines.push(raw);
+      continue;
+    }
+    if (!current) {
+      current = { module: '', lines: [] };
+      segments.push(current);
+    }
+    current.lines.push(raw);
+  }
+  return segments
+    .map(seg => ({
+      module: seg.module,
+      ...(seg.version !== undefined ? { version: seg.version } : {}),
+      ...(seg.packaging !== undefined ? { packaging: seg.packaging } : {}),
+      dependencies: parseMavenResolvedDependencies(seg.lines.join('\n')),
+    }))
+    .filter(m => m.module !== '' || m.dependencies.length > 0);
+}
+
+/** One Gradle project (a directory holding lockfiles) and the dependencies its lockfiles resolve. */
+export interface GradleProjectDependencies {
+  /** The project directory, relative and `/`-separated as the paths were given (`.` for the root). */
+  project: string;
+  /** The lockfiles read for it, in path order. */
+  lockfiles: string[];
+  /** As `parseGradleLockfile` reads them, merged over the project's lockfiles. */
+  dependencies: Dependency[];
+}
+
+/**
+ * Group the Gradle lockfiles of a multi-project build into one resolved set
+ * per project directory. `<project>/gradle.lockfile` is the project's lockfile;
+ * the older `<project>/gradle/dependency-locks/<configuration>.lockfile` files
+ * are read, with the configuration from the file name, only when that project
+ * has no `gradle.lockfile`. Other paths (`buildscript-gradle.lockfile`, the
+ * build's own classpath, among them) are ignored. Pure: the caller reads the
+ * files and passes `{ path, text }`.
+ */
+export function parseGradleProjectDependencies(files: ReadonlyArray<{ path: string; text: string }>): GradleProjectDependencies[] {
+  const byProject = new Map<string, { single?: { path: string; text: string }; legacy: Array<{ path: string; text: string; configuration: string }> }>();
+  const at = (project: string) => {
+    let e = byProject.get(project);
+    if (!e) byProject.set(project, (e = { legacy: [] }));
+    return e;
+  };
+  for (const f of files) {
+    const path = f.path.replace(/\\/g, '/').replace(/^\.\//, '');
+    const single = /^(?:(.*)\/)?gradle\.lockfile$/.exec(path);
+    if (single) { at(single[1] ?? '.').single = { path, text: f.text }; continue; }
+    const legacy = /^(?:(.*)\/)?gradle\/dependency-locks\/([^/]+)\.lockfile$/.exec(path);
+    if (legacy) at(legacy[1] ?? '.').legacy.push({ path, text: f.text, configuration: legacy[2] });
+  }
+  const out: GradleProjectDependencies[] = [];
+  for (const [project, e] of [...byProject].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    if (e.single) {
+      out.push({ project, lockfiles: [e.single.path], dependencies: parseGradleLockfile(e.single.text) });
+      continue;
+    }
+    const legacy = [...e.legacy].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    // A coordinate on several configurations is `dev` only when every one of them is a test configuration.
+    const configs = new Map<string, { dep: Dependency; configs: string[] }>();
+    for (const l of legacy) {
+      for (const d of parseGradleLockfile(l.text, l.configuration)) {
+        const key = `${d.name}|${d.version}`;
+        const seen = configs.get(key);
+        if (seen) seen.configs.push(l.configuration);
+        else configs.set(key, { dep: d, configs: [l.configuration] });
+      }
+    }
+    const dependencies = [...configs.values()].map(({ dep: d, configs: c }) =>
+      ({ ...d, scope: (c.every(isGradleTestConfiguration) ? 'dev' : 'required') as DependencyScope }));
+    out.push({ project, lockfiles: legacy.map(l => l.path), dependencies });
   }
   return out;
 }

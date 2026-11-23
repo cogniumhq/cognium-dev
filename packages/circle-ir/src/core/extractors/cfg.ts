@@ -16,6 +16,11 @@ import { getNodesFromCache, type NodeCache } from '../parser.js';
  */
 type Dialect = 'js' | 'java' | 'csharp';
 
+/** 0-based column of the last character of `node`: where a block placed on a statement's end starts. */
+function lastColumn(node: Node): number {
+  return Math.max(0, node.endPosition.column - 1);
+}
+
 /**
  * Detect language from tree structure.
  */
@@ -107,6 +112,7 @@ export function buildCFG(tree: Tree, language?: SupportedLanguage, cache?: NodeC
           type: 'normal',
           start_line: body.startPosition.row + 1,
           end_line: body.endPosition.row + 1,
+          start_column: body.startPosition.column,
         };
         allBlocks.push(block);
       }
@@ -198,6 +204,7 @@ function buildMethodCFG(
     type: 'entry',
     start_line: body.startPosition.row + 1,
     end_line: body.startPosition.row + 1,
+    start_column: body.startPosition.column,
   };
   blocks.push(entryBlock);
 
@@ -220,6 +227,7 @@ function buildMethodCFG(
     type: 'exit',
     start_line: body.endPosition.row + 1,
     end_line: body.endPosition.row + 1,
+    start_column: lastColumn(body),
   };
   blocks.push(exitBlock);
 
@@ -373,6 +381,7 @@ function processSimpleStatement(
     type: 'normal',
     start_line: stmt.startPosition.row + 1,
     end_line: stmt.endPosition.row + 1,
+    start_column: stmt.startPosition.column,
   };
   blocks.push(block);
 
@@ -401,6 +410,7 @@ function processIfStatement(
     type: 'conditional',
     start_line: stmt.startPosition.row + 1,
     end_line: stmt.startPosition.row + 1,
+    start_column: stmt.startPosition.column,
   };
   blocks.push(condBlock);
 
@@ -464,6 +474,7 @@ function processForStatement(
     type: 'loop',
     start_line: stmt.startPosition.row + 1,
     end_line: stmt.startPosition.row + 1,
+    start_column: stmt.startPosition.column,
   };
   blocks.push(loopBlock);
 
@@ -541,6 +552,7 @@ function processDoWhileStatement(
     type: 'loop',
     start_line: stmt.endPosition.row + 1,
     end_line: stmt.endPosition.row + 1,
+    start_column: lastColumn(stmt),
   };
   blocks.push(condBlock);
 
@@ -671,6 +683,7 @@ function processSwitchStatement(
     type: 'conditional',
     start_line: stmt.startPosition.row + 1,
     end_line: stmt.startPosition.row + 1,
+    start_column: stmt.startPosition.column,
   };
   blocks.push(switchBlock);
 

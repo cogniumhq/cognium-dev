@@ -8,6 +8,14 @@
  *   node scripts/osv-snapshot.mjs build  --ecosystem npm --out <dir> [--from-zip <all.zip> | --from-dir <records>] [--include-malicious]
  *   node scripts/osv-snapshot.mjs verify <dir>
  *   node scripts/osv-snapshot.mjs digest <dir>
+ *   node scripts/osv-snapshot.mjs match  <dir> <pnpm-lock.yaml> [--pin sha256:<hex>]
+ *
+ * `match` checks the snapshot against its PROVENANCE (and against `--pin`
+ * when given), then matches the lockfile's exact versions per importer with
+ * the built library (`dist/index.js`; run `npm run build` first). It reads
+ * two local inputs and sends nothing anywhere. Without `--pin` the snapshot
+ * is checked only against its own PROVENANCE, which is not authenticated:
+ * pass `--pin` with the digest recorded where the snapshot was placed.
  *
  * A snapshot is a directory of OSV JSON records exactly as `unzip
  * <Ecosystem>/all.zip` leaves it, plus one `PROVENANCE` file (JSON, no
@@ -109,6 +117,77 @@ export function dropPrefixes(dir, prefixes) {
   return dropped;
 }
 
+/**
+ * Match a `pnpm-lock.yaml` against a verified snapshot, per importer.
+ * `lib` is the circle-ir module (injected so tests can pass the sources).
+ * Throws when the snapshot does not verify or differs from `pin`.
+ */
+export function matchPnpmLock(dir, pnpmLock, lib, pin) {
+  const v = verifySnapshot(dir);
+  if (!v.ok) throw new Error(`snapshot ${dir} does not verify:\n${v.problems.join('\n')}`);
+  if (pin !== undefined && pin !== v.digest) throw new Error(`snapshot digest ${v.digest} ≠ pinned ${pin}`);
+  const provenance = JSON.parse(readFileSync(join(dir, PROVENANCE), 'utf-8'));
+  const records = [];
+  for (const n of recordFiles(dir)) {
+    const r = lib.parseOsvRecord(readFileSync(join(dir, n), 'utf-8'));
+    if (r) records.push(r);
+  }
+  const index = lib.buildAdvisoryIndex(records, 'npm');
+  const importers = lib.parsePnpmLockImporterDependencies(pnpmLock).map(({ importer, dependencies }) => ({
+    importer,
+    dependencies: dependencies.length,
+    matches: lib.matchAdvisories(dependencies, index).map((m) => ({
+      id: m.advisory.id,
+      aliases: m.advisory.aliases,
+      ...(m.advisory.databaseSeverity ? { databaseSeverity: m.advisory.databaseSeverity } : {}),
+      package: m.dependency.name,
+      version: m.dependency.version,
+      scope: m.dependency.scope,
+      direct: m.dependency.direct,
+      via: m.dependency.via,
+      fixedIn: m.fixedIn,
+    })),
+  }));
+  return {
+    snapshot: { digest: v.digest, snapshotDate: provenance.snapshotDate, records: provenance.records, source: provenance.source },
+    withdrawn: index.withdrawn.length,
+    importers,
+  };
+}
+
+const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+
+/**
+ * Arguments of `match`: two positionals and an optional `--pin <digest>` or
+ * `--pin=<digest>`. Fails closed: a `--pin` without a well-formed digest, a
+ * repeated or unknown flag, or a wrong positional count is an error.
+ */
+export function parseMatchArgs(argv) {
+  const positional = [];
+  let pin;
+  let pinSeen = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--') {
+      positional.push(...argv.slice(i + 1));
+      break;
+    }
+    if (a === '--pin' || a.startsWith('--pin=')) {
+      if (pinSeen) throw new Error('--pin given more than once');
+      pinSeen = true;
+      pin = a === '--pin' ? argv[++i] : a.slice('--pin='.length);
+      if (typeof pin !== 'string' || !DIGEST_RE.test(pin)) {
+        throw new Error('--pin needs a digest of the form sha256:<64 lowercase hex>');
+      }
+      continue;
+    }
+    if (a.startsWith('-')) throw new Error(`unknown option ${a}`);
+    positional.push(a);
+  }
+  if (positional.length !== 2) throw new Error('match needs <snapshot dir> <pnpm-lock.yaml>');
+  return { dir: positional[0], lockPath: positional[1], ...(pin ? { pin } : {}) };
+}
+
 function arg(argv, name) {
   const i = argv.indexOf(name);
   return i >= 0 ? argv[i + 1] : undefined;
@@ -167,7 +246,14 @@ async function main(argv) {
     if (!r.ok) process.exitCode = 1;
     return;
   }
-  process.stderr.write('usage: osv-snapshot.mjs build --ecosystem <eco> --out <dir> [--from-zip <zip> | --from-dir <dir>] [--include-malicious] | verify <dir> | digest <dir>\n');
+  if (cmd === 'match') {
+    const { dir, lockPath, pin } = parseMatchArgs(rest);
+    const lib = await import(new URL('../dist/index.js', import.meta.url).href);
+    const result = matchPnpmLock(dir, readFileSync(lockPath, 'utf-8'), lib, pin);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  process.stderr.write('usage: osv-snapshot.mjs build --ecosystem <eco> --out <dir> [--from-zip <zip> | --from-dir <dir>] [--include-malicious] | verify <dir> | digest <dir> | match <dir> <pnpm-lock.yaml> [--pin sha256:<hex>]\n');
   process.exitCode = 2;
 }
 

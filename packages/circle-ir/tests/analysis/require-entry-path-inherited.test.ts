@@ -93,3 +93,32 @@ describe('require-entry-path: inherited servlet lifecycle methods', () => {
     expect(flows).toHaveLength(0);
   });
 });
+
+describe('require-entry-path: the drop is counted on ProjectAnalysis', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  const project = (method: string, disabledPasses?: string[]) => analyzeProject(
+    [['App.java', MAIN], ['Handler.java', handler('Handler', 'javax.servlet.http.HttpServlet', method)]]
+      .map(([filePath, code]) => ({ filePath, code, language: 'java' as const })),
+    disabledPasses ? { disabledPasses } : {},
+  );
+
+  it('sets entry_path_dropped when the gate removes a flow', async () => {
+    const result = await project('lookup');
+    expect(result.entry_path_dropped).toBeGreaterThanOrEqual(1);
+  });
+
+  it('omits it when nothing was removed', async () => {
+    const result = await project('doGet');
+    expect(result.entry_path_dropped).toBeUndefined();
+  });
+
+  it('omits it when the gate is disabled, and the flow is kept', async () => {
+    const result = await project('lookup', ['require-entry-path']);
+    expect(result.entry_path_dropped).toBeUndefined();
+    const flows = result.files.find(f => f.file === 'Handler.java')?.analysis.taint.flows ?? [];
+    expect(flows.some(f => f.sink_type === 'sql_injection')).toBe(true);
+  });
+});

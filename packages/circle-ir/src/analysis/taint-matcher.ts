@@ -5,7 +5,7 @@
  */
 
 import { runsArgvAsCommand } from './arg-executing-programs.js';
-import { jsHelperReturnsNoParam } from './js-helper-return.js';
+import { jsHelperReturnsNoParam, jsHelperReturnsNumber } from './js-helper-return.js';
 import type { ArgumentInfo, CallInfo, TypeInfo, ImportInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SinkType, SupportedLanguage } from '../types/index.js';
 import { javaWikiTagInheritedContextReceiver } from './passes/language-sources-pass.js';
 import { DOM_ASSIGNMENT_SINK_METHODS, isProvablyLiteralExpression } from './literal-expression.js';
@@ -586,12 +586,16 @@ function findSources(
       if (arg.expression) {
         const taintCheck = isJavaScriptTaintedArgument(arg.expression, hasPropertyPatterns ? patterns : undefined);
         if (taintCheck.isTainted && taintCheck.sourceType) {
-          // Check if we already have a source at this line
-          const alreadyExists = sources.some(s => s.line === call.location.line && s.type === taintCheck.sourceType);
+          const location = `${arg.expression} in ${call.in_method || 'anonymous'}`;
+          // cognium-dev #900 S2 — multiple `req.query.*` / `req.params.*` on one
+          // line must each register (dedup was line+type only, dropping the 2nd arg).
+          const alreadyExists = sources.some(
+            s => s.line === call.location.line && s.type === taintCheck.sourceType && s.location === location,
+          );
           if (!alreadyExists) {
             sources.push({
               type: taintCheck.sourceType,
-              location: `${arg.expression} in ${call.in_method || 'anonymous'}`,
+              location,
               severity: 'high',
               line: call.location.line,
               confidence: 1.0,
@@ -646,7 +650,7 @@ function findSources(
     const key =
       source.type === 'interprocedural_param' && source.variable
         ? `${source.line}:${source.type}:${source.variable}`
-        : `${source.line}:${source.type}`;
+        : `${source.line}:${source.type}:${source.location}`;
     const existing = sourceMap.get(key);
     if (!existing || source.confidence > existing.confidence) {
       sourceMap.set(key, source);
@@ -1933,6 +1937,63 @@ function isNavigationReceiverName(receiver: string | null | undefined): boolean 
  * `memoryCache.get(digest)`) were misclassified as SQL executes. Same class of
  * bug as #358's `/re/.exec` → sql_injection pairing.
  */
+/**
+ * cognium-dev#900 S2 — the key of a cache write (argument 0) names the viewer
+ * (`'mr-title-' + mr.id + '-' + viewer.id`), so each viewer gets their own entry:
+ * what one caller wrote is not served to another. An identifier of the key, or
+ * its first member, is matched as a whole word against the viewer names below.
+ */
+const CACHE_VIEWER_KEY_NAMES = new Set([
+  'viewer', 'user', 'currentuser', 'userid', 'user_id', 'session', 'sessionid', 'principal', 'account', 'accountid', 'actor', 'actorid',
+]);
+function cacheKeyNamesViewer(call: CallInfo): boolean {
+  const raw = call.arguments.find((a) => a.position === 0)?.expression;
+  if (!raw) return false;
+  // string text is not a name: drop quoted strings, keep only the `${…}` parts of a template
+  const key = raw
+    .replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g, '""')
+    .replace(/`(?:\\.|[^`\\])*`/g, (t) => [...t.matchAll(/\$\{([^}]*)\}/g)].map((x) => x[1]).join(' + '));
+  for (const m of key.matchAll(/(?<![\w$.'"`])([A-Za-z_$][\w$]*)(?:\s*\.\s*([A-Za-z_$][\w$]*))?/g)) {
+    if (CACHE_VIEWER_KEY_NAMES.has(m[1].toLowerCase())) return true;
+    if (m[1] === 'req' || m[1] === 'request' || m[1] === 'ctx') {
+      if (m[2] && CACHE_VIEWER_KEY_NAMES.has(m[2].toLowerCase())) return true;
+    }
+  }
+  return false;
+}
+
+/** cognium-dev#584 / #985 — local Map receiver never passed as a call argument. */
+function localMapReceiverDoesNotEscape(lines: string[], recv: string): boolean {
+  const escapeRe = new RegExp(`\\w\\s*\\([^)]*(?<![\\w.])${recv}(?![\\w.])[^)]*\\)`);
+  for (const l of lines) {
+    if (!escapeRe.test(l)) continue;
+    const stripped = l.replace(new RegExp(`\\b(?:this\\.)?${recv}\\s*\\.\\s*\\w+\\s*\\(`, 'g'), 'X(');
+    if (escapeRe.test(stripped)) return false;
+  }
+  return true;
+}
+
+/** True when `receiver` is declared as `new Map()` / typed Map in this file (#985, #900). */
+function isJsMapTypedReceiver(
+  receiver: string | null | undefined,
+  sourceLines?: string[],
+): boolean {
+  const raw = (receiver ?? '').trim();
+  if (!raw || !sourceLines) return false;
+  const lastDot = raw.lastIndexOf('.');
+  let r = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
+  if (r.startsWith('#')) r = r.slice(1);
+  if (!/^[A-Za-z_$][\w$]*$/.test(r)) return false;
+  const n = escapeRe(r);
+  const mapCtor = new RegExp(
+    `\\b#?${n}\\s*(?::[^=;]*)?=\\s*new\\s+(?:Weak)?Map\\s*(?:<.*>)?\\s*\\(`,
+  );
+  const mapType = new RegExp(
+    `\\b#?${n}\\s*\\??\\s*:\\s*(?:Readonly)?(?:Weak)?Map\\s*<`,
+  );
+  return sourceLines.some(l => mapCtor.test(l) || mapType.test(l));
+}
+
 function isInMemoryMapGetReceiver(
   receiver: string | null | undefined,
   sourceLines?: string[],
@@ -1947,22 +2008,10 @@ function isInMemoryMapGetReceiver(
   // declaration that positively says Map/WeakMap suppresses the sink, so a
   // real `req.db.get(sql)` (no Map-typed `db`) keeps firing.
   const lastDot = raw.lastIndexOf('.');
-  const r = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
+  let r = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
+  if (r.startsWith('#')) r = r.slice(1);
   if (/^(properties|memoryCache)$/i.test(r)) return true;
-  if (!/^[A-Za-z_$][\w$]*$/.test(r)) return false;
-  const n = escapeRe(r);
-  // `x = new Map(...)` / `new WeakMap(...)`, with or without (nested) type
-  // arguments, as a local (`const x = …`), a class field (`private x = …`) or
-  // a constructor assignment (`this.x = new Map()`).
-  const mapCtor = new RegExp(
-    `\\b${n}\\s*(?::[^=;]*)?=\\s*new\\s+(?:Weak)?Map\\s*(?:<.*>)?\\s*\\(`,
-  );
-  // `x: Map<K, V>` / `x: ReadonlyMap<…>` / `x?: WeakMap<…>` — a typed field,
-  // parameter or local whose declared type is a Map.
-  const mapType = new RegExp(
-    `\\b${n}\\s*\\??\\s*:\\s*(?:Readonly)?(?:Weak)?Map\\s*<`,
-  );
-  return sourceLines.some(l => mapCtor.test(l) || mapType.test(l));
+  return isJsMapTypedReceiver(receiver, sourceLines);
 }
 
 /**
@@ -2511,7 +2560,38 @@ function findSinks(
 
   for (const call of calls) {
     for (const pattern of patternsForLanguage) {
-      if (matchesSinkPattern(call, pattern, typeHierarchy, language)) {
+      const patternMatches =
+        matchesSinkPattern(call, pattern, typeHierarchy, language) ||
+        (pattern.type === 'cache_poisoning' &&
+          pattern.class === 'Map' &&
+          pattern.method === 'set' &&
+          isJsMapTypedReceiver(call.receiver, sourceLines));
+      if (patternMatches) {
+        // Shared-cache writes only — drop function-local Maps that never escape (#900 S1).
+        if (
+          pattern.type === 'cache_poisoning' &&
+          pattern.class === 'Map' &&
+          call.receiver &&
+          sourceLines &&
+          isJsMapTypedReceiver(call.receiver, sourceLines)
+        ) {
+          const raw = call.receiver.trim();
+          const lastDot = raw.lastIndexOf('.');
+          const recv = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
+          // Top-level binding only — indented `const x = new Map()` inside a function is local.
+          const moduleScope = sourceLines.some((l) =>
+            new RegExp(`^(?:export\\s+)?(?:const|let|var)\\s+${recv}\\s*=`).test(l),
+          );
+          if (!moduleScope && localMapReceiverDoesNotEscape(sourceLines, recv)) {
+            continue;
+          }
+        }
+
+        // A cache entry keyed by the viewer is per viewer, not shared (#900 S2 key shape).
+        if (pattern.type === 'cache_poisoning' && cacheKeyNamesViewer(call)) {
+          continue;
+        }
+
         // Skip parameterized queries (safe pattern for SQL injection)
         if (isParameterizedQueryCall(call, pattern)) {
           continue;
@@ -4206,6 +4286,27 @@ function findSanitizers(
       line: call.location.line,
       sanitizes: removes,
     });
+  }
+
+  // a same-file JS/TS helper that returns a number on every path
+  // (`parseHours(raw)` → `Number(raw)` after a range check, or a literal
+  // default) cleans what a numeric coercion cleans.
+  if (sourceLines && (language === 'javascript' || language === 'typescript' || language === 'tsx')) {
+    const numericRemoves = patterns.find(p => p.method === 'Number' && !p.class)?.removes ?? [];
+    const jsCode = sourceLines.join('\n');
+    const numericHelper = new Map<string, boolean>();
+    for (const call of calls) {
+      if (call.receiver || wrapperSanitizers.has(call.method_name) || numericRemoves.length === 0) continue;
+      let numeric = numericHelper.get(call.method_name);
+      if (numeric === undefined) numericHelper.set(call.method_name, numeric = jsHelperReturnsNumber(jsCode, call.method_name));
+      if (!numeric) continue;
+      sanitizers.push({
+        type: 'derived_wrapper',
+        method: formatSanitizerMethod(call),
+        line: call.location.line,
+        sanitizes: [...numericRemoves],
+      });
+    }
   }
 
   const noopLocalHelpers = !sourceLines

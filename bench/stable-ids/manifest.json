@@ -1,0 +1,1984 @@
+{
+  "set": "stable-ids-typescript",
+  "scheme": "ids@0.1",
+  "language": "typescript",
+  "label_rule": "stable-labels@1",
+  "labeller": {
+    "parser": "typescript@6.0.3"
+  },
+  "pairs": [
+    {
+      "id": "hono-01",
+      "repository": "https://github.com/honojs/hono.git",
+      "licence": "MIT",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "bd174facca69a827a3a5410fa09361da5493e024"
+      },
+      "before": "eebdf7be39abf0a872671835ccce0c4f03ea497a",
+      "after": "e7b38ee42bfa41f20194ad20fb949b625346be62",
+      "files": [
+        {
+          "before": "src/context.ts",
+          "after": "src/context.ts",
+          "before_blob": "d611cc504c7eaa59cc273daccafd1e3d56066a7a",
+          "after_blob": "61dad2e3cdd6bc8db682e57e118146f5b9fbc767"
+        },
+        {
+          "before": "src/helper/cookie/index.test.ts",
+          "after": "src/helper/cookie/index.test.ts",
+          "before_blob": "7cef8211798bb9dc203a4f0fc5acf73c61c7d6fd",
+          "after_blob": "71501896732362585e472d73407d2241587046c7"
+        },
+        {
+          "before": "src/helper/proxy/index.ts",
+          "after": "src/helper/proxy/index.ts",
+          "before_blob": "c8e873ac74e2cccd68e45257e3106265e22f056e",
+          "after_blob": "1bd7e01d3872dd38499958fe046233370086eda0"
+        },
+        {
+          "before": "src/helper/route/index.ts",
+          "after": "src/helper/route/index.ts",
+          "before_blob": "1587f630ee5647fe98871b3db8096cb8e1b49f2d",
+          "after_blob": "afcb0f129710d196abe7fcbe0bc8c3bd8bea3112"
+        },
+        {
+          "before": "src/utils/types.ts",
+          "after": "src/utils/types.ts",
+          "before_blob": "08ac7324f1716698eb45bfdd024db8cc112f44ae",
+          "after_blob": "d455ea656b650a985afda68a7d9fda944012c4fc"
+        }
+      ],
+      "kinds": [
+        "format"
+      ],
+      "counts": {
+        "declarations": 116,
+        "stable": 116,
+        "body": 0,
+        "identity": 0,
+        "judgement": 0,
+        "added": 0
+      },
+      "digest": "sha256:d41a6465f9512a5c03ff503fe7dca2ef4a3aef8571c1d8e0d38747447cded6ad",
+      "labels": "labels/hono-01.jsonl",
+      "labels_digest": "sha256:01f861fe31727a696e3bd76391ce8b5107468e00dad49f80dd07dd75c56b0357"
+    },
+    {
+      "id": "hono-02",
+      "repository": "https://github.com/honojs/hono.git",
+      "licence": "MIT",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "bd174facca69a827a3a5410fa09361da5493e024"
+      },
+      "before": "48e360fcaa107c7706fcf8adccb93505876791dc",
+      "after": "a10592f3e1864cbe277619633db953450a6b1e4b",
+      "files": [
+        {
+          "before": "src/router/common.case.test.ts",
+          "after": "src/router/common.case.test.ts",
+          "before_blob": "f2895c4b1740ff4eca6550dea11cc9638ffdac90",
+          "after_blob": "df3baa00b8e359e3f0145cfb5030b18dcd392a1e"
+        },
+        {
+          "before": "src/router/linear-router/router.test.ts",
+          "after": "src/router/linear-router/router.test.ts",
+          "before_blob": "d7625e2aa859f9b1f12ba06e113c9ba41fb6aeb8",
+          "after_blob": "ed8404bd0147973e5de70c0549b12a29798242c3"
+        },
+        {
+          "before": "src/router/reg-exp-router/node.ts",
+          "after": "src/router/reg-exp-router/node.ts",
+          "before_blob": "20eb84d1e8b354b53ad7be57b821aa75a9793ccb",
+          "after_blob": "95fc7fcba1066cdab73e3b0b8e2c6f05107910c9"
+        },
+        {
+          "before": "src/router/reg-exp-router/router.ts",
+          "after": "src/router/reg-exp-router/router.ts",
+          "before_blob": "6020851a696ff51b3b65adfe80d3daccf5156f3d",
+          "after_blob": "ab5ec027ca5cca71681267bc447b8ba93228d964"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "format",
+        "remove",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 37,
+        "stable": 23,
+        "body": 8,
+        "identity": 2,
+        "judgement": 4,
+        "added": 1
+      },
+      "digest": "sha256:2af2fde79e0baa33936180bdda6396e6ea7b019194964775c9f6f910de6d4b11",
+      "labels": "labels/hono-02.jsonl",
+      "labels_digest": "sha256:59e6f9e7334951223be86af0122eedbfcb676b0c3a5dd1dc04b4c95ad2333bc4"
+    },
+    {
+      "id": "hono-03",
+      "repository": "https://github.com/honojs/hono.git",
+      "licence": "MIT",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "bd174facca69a827a3a5410fa09361da5493e024"
+      },
+      "before": "15bbd96ad1b62a0b189db4fd8dc7bf8ef280c513",
+      "after": "8a103aa59bcfbffd5396b1548a0dff3688777c36",
+      "files": [
+        {
+          "before": "src/router/common.case.test.ts",
+          "after": "src/router/common.case.test.ts",
+          "before_blob": "59dd8b4a7e48d7d73a54c4186e4534fe2962bfd7",
+          "after_blob": "828d3b54ec845d0d85dfef6e9b6fa97bebeed6bc"
+        },
+        {
+          "before": "src/router/linear-router/router.test.ts",
+          "after": "src/router/linear-router/router.test.ts",
+          "before_blob": "ed8404bd0147973e5de70c0549b12a29798242c3",
+          "after_blob": "5c80ca13e64cf346dd214f88e058c4ab08ae64dc"
+        },
+        {
+          "before": "src/router/reg-exp-router/node.ts",
+          "after": "src/router/reg-exp-router/node.ts",
+          "before_blob": "b4b3e333584d9fce6f73a6e855a27ddda2f706be",
+          "after_blob": "bdd4b8282f5b88bd5336077bdac8b32ce7475c57"
+        },
+        {
+          "before": "src/router/reg-exp-router/prepared-router.test.ts",
+          "after": "src/router/reg-exp-router/prepared-router.test.ts",
+          "before_blob": "8e561e9937ca4fe000a74b75b98016f7d8686f3c",
+          "after_blob": "3cbde3bc89346d4c37d695e77748764fe10ee3cc"
+        },
+        {
+          "before": "src/router/reg-exp-router/prepared-router.ts",
+          "after": "src/router/reg-exp-router/prepared-router.ts",
+          "before_blob": "5b0fed712a9732d4a43b8b28251e278feb446e61",
+          "after_blob": "292555121efc7d94a4a00b91016ee33d6cebfad8"
+        },
+        {
+          "before": "src/router/reg-exp-router/router.test.ts",
+          "after": "src/router/reg-exp-router/router.test.ts",
+          "before_blob": "1d768e438529abc52cc440e4b548ce2ce4163072",
+          "after_blob": "4404497943e87429276dcb1c33cd4fe034aa1a56"
+        },
+        {
+          "before": "src/router/reg-exp-router/router.ts",
+          "after": "src/router/reg-exp-router/router.ts",
+          "before_blob": "528d5b444bc2144fcfb6cf274536b3dad0d2678f",
+          "after_blob": "89f383e396248c0c38fdd7899cab8e68dd171893"
+        },
+        {
+          "before": "src/router/reg-exp-router/trie.ts",
+          "after": "src/router/reg-exp-router/trie.ts",
+          "before_blob": "197ff8733b6b1525ae7f02e6223270ae9643299d",
+          "after_blob": "70c2ee34f88da811ead53a1c7e8265fc33600d6a"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "remove",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 61,
+        "stable": 34,
+        "body": 20,
+        "identity": 7,
+        "judgement": 0,
+        "added": 5
+      },
+      "digest": "sha256:164f90b1075b1b8f3a01c10bf7495690c8288f3dae2a0c1c556be91f7f6a3515",
+      "labels": "labels/hono-03.jsonl",
+      "labels_digest": "sha256:4dd8534a417c61e5f1ae8bf64ae16a7028f69ce8380e03ac3f700db9942cb0c1"
+    },
+    {
+      "id": "hono-04",
+      "repository": "https://github.com/honojs/hono.git",
+      "licence": "MIT",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "bd174facca69a827a3a5410fa09361da5493e024"
+      },
+      "before": "d3f97caa29bba1f1ae31a4e023c25224aa2a4261",
+      "after": "3bb9a0e3a7dc0083061e91e885b2e9308585ee40",
+      "files": [
+        {
+          "before": "src/helper/websocket/index.ts",
+          "after": "src/helper/websocket/index.ts",
+          "before_blob": "9f3738bcbc8adba7e728bf594862c9f041e28aea",
+          "after_blob": "aff66ead24764fefec29f7fb50a47b11a322e0c7"
+        },
+        {
+          "before": "src/jsx/context-isolation.test.ts",
+          "after": "src/jsx/context-isolation.test.ts",
+          "before_blob": "6fbfab78b68848886dad041e9d9471fb6c98961e",
+          "after_blob": "776a211442420ff441ba15b84286b6e83b56bb76"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "format",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 37,
+        "stable": 35,
+        "body": 1,
+        "identity": 1,
+        "judgement": 0,
+        "added": 1
+      },
+      "digest": "sha256:efca85bdee9d237311765621b487cfebb4558a054994e71acc9940a5dd49ccb5",
+      "labels": "labels/hono-04.jsonl",
+      "labels_digest": "sha256:4a9a6e7b7d4f5721b77e3367d9d72967cc798b62c844da8f08d0b574c6bd5fb7"
+    },
+    {
+      "id": "hono-05",
+      "repository": "https://github.com/honojs/hono.git",
+      "licence": "MIT",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "bd174facca69a827a3a5410fa09361da5493e024"
+      },
+      "before": "ef0739d5f6e83242ba2b64c1365c9f96738933a1",
+      "after": "63bbcf508c74d9fe7a3e20f4dfe7ffacc566dcce",
+      "files": [
+        {
+          "before": "src/hono.test.ts",
+          "after": "src/hono.test.ts",
+          "before_blob": "8bd83e3c3328b21e3ab0933e51e4a91fed0d9245",
+          "after_blob": "01a51dbf9902f446fd43bb319eef183b661a85fa"
+        },
+        {
+          "before": "src/router/trie-router/node.test.ts",
+          "after": "src/router/trie-router/node.test.ts",
+          "before_blob": "af8f207e4758beee0526b006ec32feae37039ab9",
+          "after_blob": "5ba5d6852c1ba40e5fa69e7e6c5cbe8b6d488331"
+        },
+        {
+          "before": "src/router/trie-router/node.ts",
+          "after": "src/router/trie-router/node.ts",
+          "before_blob": "9737367d17f7da23fb1743c04b16ee8183073a97",
+          "after_blob": "5fb6d82a3369d0b971ef7d0eedc7b7fa0e3ee3d3"
+        },
+        {
+          "before": "src/router/trie-router/router.ts",
+          "after": "src/router/trie-router/router.ts",
+          "before_blob": "65b9978861688858f640f7618161b3c0bb8d009c",
+          "after_blob": "403bacb3f2ad66b30e9af42f31d745a9c0190ced"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "remove",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 29,
+        "stable": 12,
+        "body": 11,
+        "identity": 6,
+        "judgement": 0,
+        "added": 4
+      },
+      "digest": "sha256:7046c6545892d7e9af224d1ca44f5551f6d8ad186a37b5d754b721b3448c1bee",
+      "labels": "labels/hono-05.jsonl",
+      "labels_digest": "sha256:5e01ba873ff180dfd05efe857ce5ca009c7edf45fe6a66394f58ea0e2ee8d25a"
+    },
+    {
+      "id": "ky-01",
+      "repository": "https://github.com/sindresorhus/ky.git",
+      "licence": "MIT",
+      "licence_file": {
+        "path": "license",
+        "blob": "fa7ceba3eb4a9657a9db7f3ffca4e4e97a9019de"
+      },
+      "before": "01e0b856475123edbd9a599a27790f7e0065b25e",
+      "after": "191057d135c1cfe07f9fa16978c2482969ccac20",
+      "files": [
+        {
+          "before": "source/core/constants.ts",
+          "after": "source/core/constants.ts",
+          "before_blob": "8f0d6a26016e7ce7567f3b8ece2d3c444951e053",
+          "after_blob": "0afe85aea642944f57ea2dfa3d7e438897004fd6"
+        },
+        {
+          "before": "source/errors/ForceRetryError.ts",
+          "after": "source/errors/ForceRetryError.ts",
+          "before_blob": "6fe111a810e5a58fd839d353a3ca201ea0f36d86",
+          "after_blob": "093b109b5eea7ccfcd9b39377a5568f1311edda8"
+        },
+        {
+          "before": "source/errors/HTTPError.ts",
+          "after": "source/errors/HTTPError.ts",
+          "before_blob": "fd8e114bc06f2a6be2ddb0996cfc144909e46172",
+          "after_blob": "ece97c9b4a69df6454116b4d1c79780bac3e3b88"
+        },
+        {
+          "before": "source/errors/TimeoutError.ts",
+          "after": "source/errors/TimeoutError.ts",
+          "before_blob": "f689d9b424db6c64cea530e1d09c558bf7f04c75",
+          "after_blob": "7ca43d9bd811ae41e9361ab5ef2652568f6c5a5d"
+        },
+        {
+          "before": "source/types/hooks.ts",
+          "after": "source/types/hooks.ts",
+          "before_blob": "a164c801c504733b8c73e871a9daf256099feceb",
+          "after_blob": "c2ec1baf4fc0d58c4d0263de2a08d9e1b2e3beb8"
+        },
+        {
+          "before": "source/types/options.ts",
+          "after": "source/types/options.ts",
+          "before_blob": "6a820f73c85136802a3442c8e6cd59e7e9776284",
+          "after_blob": "93f344b4e62854b7f76b89a30d9f226edb33a6c9"
+        },
+        {
+          "before": "source/utils/merge.ts",
+          "after": "source/utils/merge.ts",
+          "before_blob": "99b1312e06771606bf8456a1ff11a35895271c73",
+          "after_blob": "bd158bc611472a305188eee922e58a32fd808abf"
+        }
+      ],
+      "kinds": [
+        "body",
+        "format",
+        "reorder"
+      ],
+      "counts": {
+        "declarations": 79,
+        "stable": 76,
+        "body": 2,
+        "identity": 0,
+        "judgement": 1,
+        "added": 0
+      },
+      "digest": "sha256:d9154e7aaceba4430ba728087a198ef90da908c9447de2c9109ccef3cb92c078",
+      "labels": "labels/ky-01.jsonl",
+      "labels_digest": "sha256:b592c38452532ab8b6b415e495363862b29f7718f483597e238d8bb26e7f4f1e"
+    },
+    {
+      "id": "ky-02",
+      "repository": "https://github.com/sindresorhus/ky.git",
+      "licence": "MIT",
+      "licence_file": {
+        "path": "license",
+        "blob": "fa7ceba3eb4a9657a9db7f3ffca4e4e97a9019de"
+      },
+      "before": "a541fc08b8c078a835b4ffc146226107aba375fe",
+      "after": "1f2ad7f20dcb778a4f0758432e8a8eb5c597a3e9",
+      "files": [
+        {
+          "before": "source/core/Ky.ts",
+          "after": "source/core/Ky.ts",
+          "before_blob": "4a084afe8890199496c5f64c51c3774cb12c78ec",
+          "after_blob": "6cf10337eb2751df48309b7d501f5154a6c68395"
+        },
+        {
+          "before": "source/core/constants.ts",
+          "after": "source/core/constants.ts",
+          "before_blob": "b55ebea8b79b8f380fe03ea813da22381a906ee9",
+          "after_blob": "8f0d6a26016e7ce7567f3b8ece2d3c444951e053"
+        },
+        {
+          "before": "source/types/ky.ts",
+          "after": "source/types/ky.ts",
+          "before_blob": "49d301c5a74b61260a12855c2e6c985ed0cd96e5",
+          "after_blob": "2646d6ec5c2450b8424b46c4831b77511b80e49c"
+        },
+        {
+          "before": "source/types/options.ts",
+          "after": "source/types/options.ts",
+          "before_blob": "7fc6476e8fd4b711cc8c9fcde54cb3678e076613",
+          "after_blob": "a4a47bd9602dfffd8155262c0431d4f5a7232f2a"
+        },
+        {
+          "before": null,
+          "after": "test/base-url.ts",
+          "before_blob": null,
+          "after_blob": "4a614d22aeb817dfb1a1824e2a9644001706e103"
+        },
+        {
+          "before": "test/browser.ts",
+          "after": "test/browser.ts",
+          "before_blob": "0fe0f96d4e10b0b5eb188774ede2405b68e88c50",
+          "after_blob": "cdb59a2af5fdb945489f7e1d926c5163398b38c2"
+        },
+        {
+          "before": "test/context.ts",
+          "after": "test/context.ts",
+          "before_blob": "6323ec119b6a95f5187c7735ca697981afbc3874",
+          "after_blob": "c6c576fc29e31f81be8f71f84b9a38999c779e35"
+        },
+        {
+          "before": "test/fetch.ts",
+          "after": "test/fetch.ts",
+          "before_blob": "804a963717dfe40a903ce461a95bd1ba937a8e12",
+          "after_blob": "827aa4cea39f15e699db60b4d5b496a4807881f1"
+        },
+        {
+          "before": "test/main.ts",
+          "after": "test/main.ts",
+          "before_blob": "56c6ea4aeb9ba41cf70af248bcb1e1a411a6626a",
+          "after_blob": "a4205d0eaf0f3c85608fc18c814335b2efe01884"
+        },
+        {
+          "before": "test/prefix-url.ts",
+          "after": null,
+          "before_blob": "d79258120aba1d0468e54d15677ce418b2331cfd",
+          "after_blob": null
+        },
+        {
+          "before": null,
+          "after": "test/prefix.ts",
+          "before_blob": null,
+          "after_blob": "fee0ce28010e679d1bd9ebcffb0175c531ecb406"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "format",
+        "move",
+        "rename"
+      ],
+      "counts": {
+        "declarations": 94,
+        "stable": 83,
+        "body": 9,
+        "identity": 2,
+        "judgement": 0,
+        "added": 3
+      },
+      "digest": "sha256:be89996c10387582a492353e14fc1c2fd65393c2bbe3f0de1b84bbdd506e443a",
+      "labels": "labels/ky-02.jsonl",
+      "labels_digest": "sha256:7de98f0e22cc41fba840bb3b234906cdb760955d0f6883fa1fadf4f0fd6a5d75"
+    },
+    {
+      "id": "ky-03",
+      "repository": "https://github.com/sindresorhus/ky.git",
+      "licence": "MIT",
+      "licence_file": {
+        "path": "license",
+        "blob": "fa7ceba3eb4a9657a9db7f3ffca4e4e97a9019de"
+      },
+      "before": "0a9cbb1a3f09f67f69cc4b45057fb38988881f49",
+      "after": "bd0e26f27c2d94fafb01e981424e33d976a41655",
+      "files": [
+        {
+          "before": "source/core/Ky.ts",
+          "after": "source/core/Ky.ts",
+          "before_blob": "a84ea950eb7a5300bf9c14f499f86f2f8a847ed4",
+          "after_blob": "8fe4055b6512af876787ae0443376b0d49764b75"
+        },
+        {
+          "before": "source/core/constants.ts",
+          "after": "source/core/constants.ts",
+          "before_blob": "b646706efbb7f0251d42e1356cd4c4b3347e6dc0",
+          "after_blob": "4a88bb092000d016721247e5bdddd89c7628c123"
+        },
+        {
+          "before": "source/errors/ForceRetryError.ts",
+          "after": "source/errors/ForceRetryError.ts",
+          "before_blob": "2a9f243238de1ba20b1ab5895d6f1f84b622f184",
+          "after_blob": "75599cb0b54547ce5999361d61a223444bec3adb"
+        },
+        {
+          "before": "source/utils/is-network-error.ts",
+          "after": "source/utils/is-network-error.ts",
+          "before_blob": "616203c93923367c5b30246aac605bb7b73aab68",
+          "after_blob": "1d5b5695e343305d458413959bf6b24da04f9377"
+        },
+        {
+          "before": "source/utils/is.ts",
+          "after": "source/utils/is.ts",
+          "before_blob": "c890a36c0220e5e0e504f5bddb6b75e5fe865167",
+          "after_blob": "99d77e232cdc83a21c8628633665c6a7fd9ca042"
+        },
+        {
+          "before": "test/hooks.ts",
+          "after": "test/hooks.ts",
+          "before_blob": "cdf98dea3378b5dbd1a5d7a0aa9e5e8c4867c830",
+          "after_blob": "65a270db15ae9f41d7cbb4f4d711361e405ee2cf"
+        },
+        {
+          "before": "test/retry.ts",
+          "after": "test/retry.ts",
+          "before_blob": "e45b1ccef97ab5a856bd19248d5ddbf10ff40374",
+          "after_blob": "f7b8abd42ff085185217be4548d603955dc01c36"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "format",
+        "move"
+      ],
+      "counts": {
+        "declarations": 134,
+        "stable": 125,
+        "body": 7,
+        "identity": 2,
+        "judgement": 0,
+        "added": 2
+      },
+      "digest": "sha256:9c8e93338ec91e16dad7b8ddf8c2db9b8bfc3a4a99e5c81af23dcc9684411f0f",
+      "labels": "labels/ky-03.jsonl",
+      "labels_digest": "sha256:9b29aa4ff65cd859942587164d94a674e43a05884c0c44465406c21e8b776b4e"
+    },
+    {
+      "id": "ky-04",
+      "repository": "https://github.com/sindresorhus/ky.git",
+      "licence": "MIT",
+      "licence_file": {
+        "path": "license",
+        "blob": "fa7ceba3eb4a9657a9db7f3ffca4e4e97a9019de"
+      },
+      "before": "cd1dba0e4502d95be93846e6c77bf0479dc0e385",
+      "after": "b28ba903c322b84b5d9cf47a6fc0af6a61d5954f",
+      "files": [
+        {
+          "before": "source/core/Ky.ts",
+          "after": "source/core/Ky.ts",
+          "before_blob": "0d3c8436a1702c4aefe193b06b0ee9a7870fb943",
+          "after_blob": "5878dba124154a889afeb7015044f8ba72237e26"
+        },
+        {
+          "before": "source/types/common.ts",
+          "after": "source/types/common.ts",
+          "before_blob": "45442504bdb19794ce858a56f9b7da1a32251b13",
+          "after_blob": "f80dba54519945ead912c3062199b74d8e41ea3a"
+        },
+        {
+          "before": "source/types/options.ts",
+          "after": "source/types/options.ts",
+          "before_blob": "417921f3da6f482f34d3950506af09498393cd76",
+          "after_blob": "a17a6c3c3f3fb079be81c9d3c5c6322ca3e85d67"
+        },
+        {
+          "before": "source/utils/normalize.ts",
+          "after": "source/utils/normalize.ts",
+          "before_blob": "4f4693e0caa3466080ca052d30b5a365ceabad38",
+          "after_blob": "c2fb2a4808b8b267b28afd1177e8a3e1994aa86c"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "remove",
+        "rename",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 116,
+        "stable": 100,
+        "body": 10,
+        "identity": 6,
+        "judgement": 0,
+        "added": 3
+      },
+      "digest": "sha256:8e9b886c0f1de71af3dc0aa3df7cd60119d31d2063d21cea61bda58de3b35fe0",
+      "labels": "labels/ky-04.jsonl",
+      "labels_digest": "sha256:43ec0fdc9e4be4fb354b517ea96e484377159e2459f02837dc86fca909dc599d"
+    },
+    {
+      "id": "ky-05",
+      "repository": "https://github.com/sindresorhus/ky.git",
+      "licence": "MIT",
+      "licence_file": {
+        "path": "license",
+        "blob": "fa7ceba3eb4a9657a9db7f3ffca4e4e97a9019de"
+      },
+      "before": "c20d7c78da256a89d56138e9091d0253b83cde99",
+      "after": "0dd95224e9d104282b6c9c0adcd75c1caee1bd7a",
+      "files": [
+        {
+          "before": "source/core/Ky.ts",
+          "after": "source/core/Ky.ts",
+          "before_blob": "895429d88243dd693aec3a203aaf946a74571e6d",
+          "after_blob": "433a121a9e224d5f22d71045cfa73db8ffb20b1d"
+        },
+        {
+          "before": "source/errors/KyError.ts",
+          "after": "source/errors/KyError.ts",
+          "before_blob": "b71f4558994d45a785d26e3dc4887e3fa7140b0a",
+          "after_blob": "8858dd38b0100fec8a3e3b16e7807580325818ca"
+        },
+        {
+          "before": "source/types/hooks.ts",
+          "after": "source/types/hooks.ts",
+          "before_blob": "8278e800d8ded15ffb58041120c25244a33cea7e",
+          "after_blob": "94a4696c94a12ea9266810372733fc08afe06a98"
+        },
+        {
+          "before": "source/types/options.ts",
+          "after": "source/types/options.ts",
+          "before_blob": "0893f62dfbfe09fc7e61260ef5225bb837f85127",
+          "after_blob": "0b2fe44aeb71dd7cd52e9bea73466ec08c751b5c"
+        },
+        {
+          "before": "source/utils/body.ts",
+          "after": "source/utils/body.ts",
+          "before_blob": "d78c713fb114b1f90d12885a38f9e03d71c56013",
+          "after_blob": "c3ba19cbe9c519a42d3c34d6764cf7ccf715c923"
+        },
+        {
+          "before": "source/utils/merge.ts",
+          "after": "source/utils/merge.ts",
+          "before_blob": "44baf64976410f134d7031a1da65417109a11397",
+          "after_blob": "a50d09c5d33e372d060f432fee3c80e051159875"
+        },
+        {
+          "before": "source/utils/type-guards.ts",
+          "after": "source/utils/type-guards.ts",
+          "before_blob": "98a86e2b34cbacf8e2a24502f7f83798252d30de",
+          "after_blob": "c06eb14b36ac1715b7e93f5a7fccecffb7c44170"
+        },
+        {
+          "before": "test/base-url.ts",
+          "after": "test/base-url.ts",
+          "before_blob": "ca50dae991c6fa25ec1fe7d8092de77205932df2",
+          "after_blob": "67fb1d9fcf5a782b2cc3747a834d1078546fe904"
+        },
+        {
+          "before": "test/hooks.ts",
+          "after": "test/hooks.ts",
+          "before_blob": "e4b86f4252843a4ae53c33e2eaa750383528c491",
+          "after_blob": "7291459c901a443cadc8ce60d9089b4a44114727"
+        },
+        {
+          "before": "test/main.ts",
+          "after": "test/main.ts",
+          "before_blob": "29c0c5d68a0dfeb93c547f8d0937dd88b2b6d513",
+          "after_blob": "62e035b8ef37c1d5a2f517332e3597d61c99c818"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "format",
+        "remove",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 113,
+        "stable": 80,
+        "body": 27,
+        "identity": 6,
+        "judgement": 0,
+        "added": 21
+      },
+      "digest": "sha256:57c2d1308ef19ec8ab6f068eeb5e5691738791a5a8c3528c578461efa347be20",
+      "labels": "labels/ky-05.jsonl",
+      "labels_digest": "sha256:d1a925459c73846c4c2e1972a5300c921fd29dcdcf48f535befe48c22c4f478e"
+    },
+    {
+      "id": "lumino-01",
+      "repository": "https://github.com/jupyterlab/lumino.git",
+      "licence": "BSD-3-Clause",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "4deeecccad0f479806f18ec53ace8e98c75b7b0a"
+      },
+      "before": "f26c85a9d5600ece3e2ad14b5e4505568bc025a9",
+      "after": "63a0e8d581795342a1d416c8a47d344b3f5f4743",
+      "files": [
+        {
+          "before": "packages/application/src/index.ts",
+          "after": "packages/application/src/index.ts",
+          "before_blob": "6c17dcaecd7d85b091b13fb807b6b9d914a00366",
+          "after_blob": "d205bcaf80fa73d3ffc48b5eac4726ba81b6389b"
+        },
+        {
+          "before": "packages/application/tests/src/index.spec.ts",
+          "after": "packages/application/tests/src/index.spec.ts",
+          "before_blob": "c73ef01c6d9aa62bf117c13dbe252a0706a28e6c",
+          "after_blob": "f2e535eeae258dbd0ca80ccbc938651c7b8a23cf"
+        },
+        {
+          "before": "packages/coreutils/src/index.common.ts",
+          "after": "packages/coreutils/src/index.common.ts",
+          "before_blob": "d2dcb599c9652fcacbeccfb3b568cabaf35166b8",
+          "after_blob": "872e0fbd4b008fac3a52ca3af7bc27169759e8ad"
+        },
+        {
+          "before": null,
+          "after": "packages/coreutils/src/plugins.ts",
+          "before_blob": null,
+          "after_blob": "518468f92079847ae9858ea34568f2dd9ca5768e"
+        },
+        {
+          "before": null,
+          "after": "packages/coreutils/src/typing.d.ts",
+          "before_blob": null,
+          "after_blob": "a8214757b357a55a3ba61d5764069d278479c61f"
+        },
+        {
+          "before": "packages/coreutils/tests/src/index.spec.ts",
+          "after": "packages/coreutils/tests/src/index.spec.ts",
+          "before_blob": "fe508652bc322b207c61b24cc072721bc8fd9313",
+          "after_blob": "c78c4543d9f65a039d2a16ff78591f73ce2097e8"
+        },
+        {
+          "before": null,
+          "after": "packages/coreutils/tests/src/plugins.spec.ts",
+          "before_blob": null,
+          "after_blob": "ae8b8562e04d1306d2edae6b60a129a4809c2f75"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "format",
+        "move",
+        "remove",
+        "reorder"
+      ],
+      "counts": {
+        "declarations": 71,
+        "stable": 22,
+        "body": 21,
+        "identity": 28,
+        "judgement": 0,
+        "added": 99
+      },
+      "digest": "sha256:141bfbac1a0db85b791fe7c89fa8488cd40372f7dd9d9046246260659e4b2071",
+      "labels": "labels/lumino-01.jsonl",
+      "labels_digest": "sha256:9034c4f1ff9f4f36d101721517d917ef5d086e99d4c9e43ee8d57da6898d72de"
+    },
+    {
+      "id": "lumino-02",
+      "repository": "https://github.com/jupyterlab/lumino.git",
+      "licence": "BSD-3-Clause",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "4deeecccad0f479806f18ec53ace8e98c75b7b0a"
+      },
+      "before": "0d348b8a0d38fa5fcff743d542928e867d95c277",
+      "after": "f9b76e2ca964de791af9f83b8fccd2adf5018134",
+      "files": [
+        {
+          "before": "packages/algorithm/src/array.ts",
+          "after": "packages/algorithm/src/array.ts",
+          "before_blob": "973d28a4a86d0203454bf79ecd30780a8d1376da",
+          "after_blob": "e82db0f6ae5efe8293578ba22eec52be4d92a72c"
+        },
+        {
+          "before": "packages/keyboard/src/index.ts",
+          "after": "packages/keyboard/src/index.ts",
+          "before_blob": "677c3ab7aa7a484a4789434f522295df399e322d",
+          "after_blob": "7676e77d1c85e079c98aa0673b82eda7cfe2d21c"
+        },
+        {
+          "before": "packages/widgets/src/accordionlayout.ts",
+          "after": "packages/widgets/src/accordionlayout.ts",
+          "before_blob": "fa2da95dc3bc6d6c82a7755000ea3455a045c836",
+          "after_blob": "19771d2ee16f24d4b22188217052190b1ebfcdd4"
+        },
+        {
+          "before": "packages/widgets/src/singletonlayout.ts",
+          "after": "packages/widgets/src/singletonlayout.ts",
+          "before_blob": "fe3322e70647a003c07a827811566d0ffd1fa184",
+          "after_blob": "127ebacfb7e317d21ebfca36617731d7c06a187a"
+        }
+      ],
+      "kinds": [
+        "format"
+      ],
+      "counts": {
+        "declarations": 94,
+        "stable": 94,
+        "body": 0,
+        "identity": 0,
+        "judgement": 0,
+        "added": 0
+      },
+      "digest": "sha256:f999405ef861afb2c24ecf2f430c594015d605a50f7d6a97e0bb1ba5c771983d",
+      "labels": "labels/lumino-02.jsonl",
+      "labels_digest": "sha256:aacb8fb10efa9813c7d069077445a2af477b8dbd78008c09957f92848536beee"
+    },
+    {
+      "id": "lumino-03",
+      "repository": "https://github.com/jupyterlab/lumino.git",
+      "licence": "BSD-3-Clause",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "4deeecccad0f479806f18ec53ace8e98c75b7b0a"
+      },
+      "before": "c596a530122cd50567ed51c80ba6300426381435",
+      "after": "fb43b45f79ca08e024d8016ac082a6694fa552d7",
+      "files": [
+        {
+          "before": "packages/widgets/src/commandpalette.ts",
+          "after": "packages/widgets/src/commandpalette.ts",
+          "before_blob": "5559e5076d120898d4d8f169307541f5927c0bf3",
+          "after_blob": "16c8edf2cf04e59796bce93f5bb2d8b443d40526"
+        },
+        {
+          "before": "packages/widgets/tests/src/commandpalette.spec.ts",
+          "after": "packages/widgets/tests/src/commandpalette.spec.ts",
+          "before_blob": "ce758c62582a5ae85867a853980c3884412e40d6",
+          "after_blob": "25f9d04edf314c6cb80e0a3edf816f6c46d810bd"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "remove",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 141,
+        "stable": 121,
+        "body": 9,
+        "identity": 11,
+        "judgement": 0,
+        "added": 23
+      },
+      "digest": "sha256:59789f23dc85bbb4eb7e4b3f95b3e04ca63ce0255da903dbc0b46fa6b1c24a73",
+      "labels": "labels/lumino-03.jsonl",
+      "labels_digest": "sha256:1f58a5ab1df33540d0df9de814e2fdabf4df5b25c327525b65923867b9723ea1"
+    },
+    {
+      "id": "lumino-04",
+      "repository": "https://github.com/jupyterlab/lumino.git",
+      "licence": "BSD-3-Clause",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "4deeecccad0f479806f18ec53ace8e98c75b7b0a"
+      },
+      "before": "42b30f7f1b4b5ee1d1cec75583adc659b57f02bf",
+      "after": "f4e065bf87b7c552455f95614559572418c37b45",
+      "files": [
+        {
+          "before": "packages/dragdrop/src/index.ts",
+          "after": "packages/dragdrop/src/index.ts",
+          "before_blob": "fb4349891b7b1f4e8b89a74269d1dbeafa8935ad",
+          "after_blob": "78ffed014c32b35be177cd9593ddaf33960da9ad"
+        },
+        {
+          "before": "packages/dragdrop/tests/src/index.spec.ts",
+          "after": "packages/dragdrop/tests/src/index.spec.ts",
+          "before_blob": "61ec4b1c3ffc87898a0343280aad89bebcd2a82b",
+          "after_blob": "50e17d9ddcf0855e66796f1291b9bc48242382d0"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "remove",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 91,
+        "stable": 84,
+        "body": 5,
+        "identity": 2,
+        "judgement": 0,
+        "added": 6
+      },
+      "digest": "sha256:220d7ff530e8efab70a3f7244182676da102c1b9979671b80e350cf51fcfb17d",
+      "labels": "labels/lumino-04.jsonl",
+      "labels_digest": "sha256:ebd28dadacbfc91e06f8450c0e371fb454dee3e51043d58df73ad3ed40685855"
+    },
+    {
+      "id": "lumino-05",
+      "repository": "https://github.com/jupyterlab/lumino.git",
+      "licence": "BSD-3-Clause",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "4deeecccad0f479806f18ec53ace8e98c75b7b0a"
+      },
+      "before": "d80ca4656fc8716d8a0247c240d68330efa7e933",
+      "after": "066ec93e625aeb696a2dc4f23bb1f49d4b2e7a4f",
+      "files": [
+        {
+          "before": "packages/commands/src/index.ts",
+          "after": "packages/commands/src/index.ts",
+          "before_blob": "c93077e77d140ddfe82f72c4ca815965a76cfd3f",
+          "after_blob": "0dd7357615c4362f4337ba6cdb943115d5fb4879"
+        },
+        {
+          "before": "packages/commands/tests/src/index.spec.ts",
+          "after": "packages/commands/tests/src/index.spec.ts",
+          "before_blob": "3a486246797b1c2319e0e6ed2dfdfbaeb7c5f36b",
+          "after_blob": "68c43540291cda55641b2bf12a67f71470c412f3"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 142,
+        "stable": 131,
+        "body": 9,
+        "identity": 2,
+        "judgement": 0,
+        "added": 7
+      },
+      "digest": "sha256:57ef54cc6d99047a42cb88b1c3b1cdc914c1e87c4b2b28f8006a12df05d6737b",
+      "labels": "labels/lumino-05.jsonl",
+      "labels_digest": "sha256:f1e3e0c90c662b6aff4e3f78ef3994dc6ebff8a5fcc6c28a7917f71fa60a5538"
+    },
+    {
+      "id": "rxjs-01",
+      "repository": "https://github.com/ReactiveX/rxjs.git",
+      "licence": "Apache-2.0",
+      "licence_file": {
+        "path": "LICENSE.txt",
+        "blob": "a3d02106bd311010cbc5dc58d13d133f6cb9132f"
+      },
+      "before": "32e200a79eafc24d5715a8dc3b8341af082ea13c",
+      "after": "c13bb9c8e4bb3a257e631e7312bab0895123ae16",
+      "files": [
+        {
+          "before": "packages/migrate/src/version.ts",
+          "after": "packages/migrate/src/version.ts",
+          "before_blob": "ab15039784d81d45ee656f724c0d530919302873",
+          "after_blob": "e390c51c0465975d05ce30dd7408209b416816f7"
+        },
+        {
+          "before": "packages/observable-polyfill/src/index.ts",
+          "after": "packages/observable-polyfill/src/index.ts",
+          "before_blob": "45658948325a495046c4488df046888d509bda43",
+          "after_blob": "34712c443f2ddbf6b0e30e2e911b3e341320ae4f"
+        },
+        {
+          "before": "packages/rxjs/test/kernel/browser-entry.ts",
+          "after": "packages/rxjs/test/kernel/browser-entry.ts",
+          "before_blob": "82664cc0bf5dcc9578a0290f22c2b511763d6c9e",
+          "after_blob": "65ed329dd8c7b39edaf6d3340ce55eeb46da94e2"
+        },
+        {
+          "before": null,
+          "after": "packages/rxjs/test/types/migration-guide.ts",
+          "before_blob": null,
+          "after_blob": "952a4ba4aaf63917d1f312b450e39c0042b0ff13"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body"
+      ],
+      "counts": {
+        "declarations": 142,
+        "stable": 139,
+        "body": 3,
+        "identity": 0,
+        "judgement": 0,
+        "added": 9
+      },
+      "digest": "sha256:2b279d37488db675fcfa695a4f180b372d989ed978f45ebae39f4282da04d143",
+      "labels": "labels/rxjs-01.jsonl",
+      "labels_digest": "sha256:55d1ec3467865413bbce4feae37446218e65e423b2c1b76dac3ec76e98d749ac"
+    },
+    {
+      "id": "rxjs-02",
+      "repository": "https://github.com/ReactiveX/rxjs.git",
+      "licence": "Apache-2.0",
+      "licence_file": {
+        "path": "LICENSE.txt",
+        "blob": "a3d02106bd311010cbc5dc58d13d133f6cb9132f"
+      },
+      "before": "2e3772d8bde9915706a21c9420c5d4f991c99cb4",
+      "after": "5803be25332e22009dbd5f13101b6599b78f4a7c",
+      "files": [
+        {
+          "before": "packages/rxjs/src/combine-latest-all.ts",
+          "after": "packages/rxjs/src/combine-latest-all.ts",
+          "before_blob": "59ce6999b124778dcaceecbc24ac030c580ae8e9",
+          "after_blob": "92c2df52bc57da1cca61a7ffc42237447b983d0e"
+        },
+        {
+          "before": "packages/rxjs/src/combine-latest.ts",
+          "after": "packages/rxjs/src/combine-latest.ts",
+          "before_blob": "31494372a37f491ca57647c31a5360852f94e645",
+          "after_blob": "e317e3cb963d8c8183dc85b4205b73f72170a984"
+        },
+        {
+          "before": "packages/rxjs/src/combine.ts",
+          "after": "packages/rxjs/src/combine.ts",
+          "before_blob": "ac6e5e0e1ce95558eacbc5d59fc1180411a6f928",
+          "after_blob": "8a86fac7d07bcff5dcc07681025a7251ae9145e6"
+        },
+        {
+          "before": "packages/rxjs/src/concat.ts",
+          "after": "packages/rxjs/src/concat.ts",
+          "before_blob": "76ab84a20e544137a484900abd5c00b061ffb6f3",
+          "after_blob": "213203c72fdc3bcf9f8e83b7f396abc4c41664ff"
+        },
+        {
+          "before": "packages/rxjs/src/fork-join.ts",
+          "after": "packages/rxjs/src/fork-join.ts",
+          "before_blob": "ea2ca433e29b4b5dcb85f01d3c9d11c860e77a0a",
+          "after_blob": "8a57ac99c5b21f0c35408d2809d3d28b194cb542"
+        },
+        {
+          "before": "packages/rxjs/src/merge.ts",
+          "after": "packages/rxjs/src/merge.ts",
+          "before_blob": "264f1a5dee07d690baee81524401228e93ca2473",
+          "after_blob": "44b55752e422f54d0f74e6fdf18a053d0b623ee2"
+        },
+        {
+          "before": "packages/rxjs/src/on-error-resume-next.ts",
+          "after": "packages/rxjs/src/on-error-resume-next.ts",
+          "before_blob": "8651a6a2c5a9c091d39722c5371fdf3942a5fc09",
+          "after_blob": "5707e10dbc1c65e39534287aefe98b7750bdf74b"
+        },
+        {
+          "before": "packages/rxjs/src/partition.ts",
+          "after": "packages/rxjs/src/partition.ts",
+          "before_blob": "3e6362369692bcb0d012643f29956f29972a6be7",
+          "after_blob": "2e8bfed4ceb8885858590db239e4a791bdbff353"
+        },
+        {
+          "before": "packages/rxjs/src/race.ts",
+          "after": "packages/rxjs/src/race.ts",
+          "before_blob": "c7af046cba5f49cf9c23249280d868760adfe5e2",
+          "after_blob": "ad164c6a04148e6dbefca397cb0fe0fb78dd8e49"
+        },
+        {
+          "before": "packages/rxjs/src/with-latest-from.ts",
+          "after": "packages/rxjs/src/with-latest-from.ts",
+          "before_blob": "daf27391618e6b61879b92701db09581862edf43",
+          "after_blob": "9a2b4e9818460677738eac6a567810b36ffa84db"
+        },
+        {
+          "before": "packages/rxjs/src/zip-all.ts",
+          "after": "packages/rxjs/src/zip-all.ts",
+          "before_blob": "98402452f1422759d929c5364cf1fc4ecdb4984e",
+          "after_blob": "f9d498f1eb3c81421adfbf6a3bfacea790a67813"
+        },
+        {
+          "before": "packages/rxjs/src/zip-with.ts",
+          "after": "packages/rxjs/src/zip-with.ts",
+          "before_blob": "5804710c4e47c08a0771809852fb6e278accea20",
+          "after_blob": "f9682b472184da47d6576c9a229b0d713e1872ab"
+        }
+      ],
+      "kinds": [
+        "body",
+        "format"
+      ],
+      "counts": {
+        "declarations": 124,
+        "stable": 111,
+        "body": 12,
+        "identity": 0,
+        "judgement": 1,
+        "added": 0
+      },
+      "digest": "sha256:1fb923039a91a0cd827675f878a8b9353253644c343185c906a1bb67ad6f822e",
+      "labels": "labels/rxjs-02.jsonl",
+      "labels_digest": "sha256:05ff90853753f6dd7c6826f3abea8113269f74430328d48164a9b27636c2164c"
+    },
+    {
+      "id": "rxjs-03",
+      "repository": "https://github.com/ReactiveX/rxjs.git",
+      "licence": "Apache-2.0",
+      "licence_file": {
+        "path": "LICENSE.txt",
+        "blob": "a3d02106bd311010cbc5dc58d13d133f6cb9132f"
+      },
+      "before": "d858df1d2f69f2d4de7da5b50c1c4abbfb409314",
+      "after": "171ee3a95af42e77a8971ebae38cdd436c432542",
+      "files": [
+        {
+          "before": "packages/rxjs/src/element-at.ts",
+          "after": "packages/rxjs/src/element-at.ts",
+          "before_blob": "1ea5892db90000a585f41bfe551b5bec60c5dd61",
+          "after_blob": "028acdc2d27345ff36023c277181a0cea8eea44b"
+        },
+        {
+          "before": "packages/rxjs/src/every.ts",
+          "after": "packages/rxjs/src/every.ts",
+          "before_blob": "c0ead602085c3929d4f74ec2c6cb842c37844322",
+          "after_blob": "7b1b7eecc43619ea49473a6a389b75f9900abdbd"
+        },
+        {
+          "before": "packages/rxjs/src/filter.ts",
+          "after": "packages/rxjs/src/filter.ts",
+          "before_blob": "f02075eaab1703a91703c4f06275839e4318e5e1",
+          "after_blob": "5d570ba579f4e07bd4c14aebda7565cd1904f607"
+        },
+        {
+          "before": "packages/rxjs/src/find-index.ts",
+          "after": "packages/rxjs/src/find-index.ts",
+          "before_blob": "e0537f7d826fe2ae1843a87c7893fc9f5d06ab5e",
+          "after_blob": "85dae1e0bcc67246661b88e6ef27f6577741eea9"
+        },
+        {
+          "before": "packages/rxjs/src/find.ts",
+          "after": "packages/rxjs/src/find.ts",
+          "before_blob": "4d866d26bdeeea3884d919bd4c7d3b9d2d23b0aa",
+          "after_blob": "594c7e5e87d98bd37f27a13cc8581ec2c127ab01"
+        },
+        {
+          "before": "packages/rxjs/src/first.ts",
+          "after": "packages/rxjs/src/first.ts",
+          "before_blob": "e8596606a590f0fde3ea7922d8ed7fae99a04dcf",
+          "after_blob": "38413bbd45db3b7f6580e53c9f55ccdcb44b662e"
+        },
+        {
+          "before": "packages/rxjs/src/is-empty.ts",
+          "after": "packages/rxjs/src/is-empty.ts",
+          "before_blob": "5bd32840d9ff8b827280452a801996d6083498ca",
+          "after_blob": "0caf033fa274d672aa132659a62419720dc23277"
+        },
+        {
+          "before": "packages/rxjs/src/last.ts",
+          "after": "packages/rxjs/src/last.ts",
+          "before_blob": "d92d95eb402bd7a481bec7c0c0ed8eab89b91ff9",
+          "after_blob": "1b86289e4a40f5a068dd494ac2b48812d00ca084"
+        },
+        {
+          "before": "packages/rxjs/src/single.ts",
+          "after": "packages/rxjs/src/single.ts",
+          "before_blob": "7ab7c041ca2cf80823d0503b537aade8610d17b3",
+          "after_blob": "de591b8545c51523f8636b807f53864a76aaa807"
+        },
+        {
+          "before": "packages/rxjs/src/throw-if-empty.ts",
+          "after": "packages/rxjs/src/throw-if-empty.ts",
+          "before_blob": "b17332e7c6a1e25cb2cdcc3142468e516a14d7a7",
+          "after_blob": "8ae53fa892dc819e36bce23af2fe173d4b8d74ff"
+        }
+      ],
+      "kinds": [
+        "body",
+        "format"
+      ],
+      "counts": {
+        "declarations": 96,
+        "stable": 84,
+        "body": 10,
+        "identity": 0,
+        "judgement": 2,
+        "added": 0
+      },
+      "digest": "sha256:b6ba7729f8ae1ed39ca864725206bd4486f9860d0b75223de66bed14ccf4949d",
+      "labels": "labels/rxjs-03.jsonl",
+      "labels_digest": "sha256:74a09152b1af263bda968022a9622bc4198a79dee50d4e5c187c14c058882f53"
+    },
+    {
+      "id": "rxjs-04",
+      "repository": "https://github.com/ReactiveX/rxjs.git",
+      "licence": "Apache-2.0",
+      "licence_file": {
+        "path": "LICENSE.txt",
+        "blob": "a3d02106bd311010cbc5dc58d13d133f6cb9132f"
+      },
+      "before": "2fd21c0135cb893f015e5677fb96ad4704e49453",
+      "after": "be2cab3a3d53355b30d5caf21afab86d27e1719a",
+      "files": [
+        {
+          "before": "packages/rxjs/src/animation-frames.ts",
+          "after": "packages/rxjs/src/animation-frames.ts",
+          "before_blob": "9e3744a35eb501dbf7059e8d4a08c9f5b0ae59e1",
+          "after_blob": "cb1fae90571cd57ac140c2676ece6cbfa785de09"
+        },
+        {
+          "before": "packages/rxjs/src/generate.ts",
+          "after": "packages/rxjs/src/generate.ts",
+          "before_blob": "494d0443869d2c12291faef12e175e18541bae7c",
+          "after_blob": "24eeebd345cc1832662f520d62101710df908163"
+        },
+        {
+          "before": "packages/rxjs/src/interval.ts",
+          "after": "packages/rxjs/src/interval.ts",
+          "before_blob": "a685bb8128d27727b07f2801b85cfb14b1cad805",
+          "after_blob": "6aca28730d5bac45013cdbdb2f2ce0e2b61c73dc"
+        },
+        {
+          "before": "packages/rxjs/src/observe-on.ts",
+          "after": "packages/rxjs/src/observe-on.ts",
+          "before_blob": "07cc5d033efec3d662f5bb786d2b0b5fdb7da8ba",
+          "after_blob": "664c79b73cc7fa29406a8e3cc4ffa5e7f7e36bba"
+        },
+        {
+          "before": "packages/rxjs/src/pluck.ts",
+          "after": "packages/rxjs/src/pluck.ts",
+          "before_blob": "13e9d7152f130847f9e49298629d8fe8c6410236",
+          "after_blob": "5212d6ef24d84ff749566ce539370d1c7c39f9fe"
+        },
+        {
+          "before": "packages/rxjs/src/sample-time.ts",
+          "after": "packages/rxjs/src/sample-time.ts",
+          "before_blob": "dd0b634ec2c2d8a7e2956836536f9cca904d763a",
+          "after_blob": "d0fe13c84eb58dd45f18659dc0ba57b240583fb2"
+        },
+        {
+          "before": "packages/rxjs/src/sample.ts",
+          "after": "packages/rxjs/src/sample.ts",
+          "before_blob": "277e11a8e186ec168a09c7ad697c18b7877297bd",
+          "after_blob": "867ecf51eef1541a3e6948e130b681bcd3973466"
+        },
+        {
+          "before": "packages/rxjs/src/sequence-equal.ts",
+          "after": "packages/rxjs/src/sequence-equal.ts",
+          "before_blob": "9b260de1ffeca1c23395bb85e40cbe43ea24929f",
+          "after_blob": "d22a436aef11f7dccb2b5efa99ef653f938f88c7"
+        },
+        {
+          "before": "packages/rxjs/src/subscribe-on.ts",
+          "after": "packages/rxjs/src/subscribe-on.ts",
+          "before_blob": "361a275a25214d2fde8b6d2409933c369a9e65c4",
+          "after_blob": "b9afa1210ffb40a12415f711590efcb8c9b79332"
+        },
+        {
+          "before": "packages/rxjs/src/time-interval.ts",
+          "after": "packages/rxjs/src/time-interval.ts",
+          "before_blob": "5f086829d2a1592b1a8ff2b3d538ad6361e135b2",
+          "after_blob": "e186d9180284086261361d97770a31da1cb95233"
+        },
+        {
+          "before": "packages/rxjs/src/timestamp.ts",
+          "after": "packages/rxjs/src/timestamp.ts",
+          "before_blob": "7dc52dd6f0881f1c142274ab433709fbc6bf99b0",
+          "after_blob": "6be30c9278dd8b33a98698a3baa3b99d9c9671e5"
+        }
+      ],
+      "kinds": [
+        "body",
+        "format"
+      ],
+      "counts": {
+        "declarations": 89,
+        "stable": 78,
+        "body": 11,
+        "identity": 0,
+        "judgement": 0,
+        "added": 0
+      },
+      "digest": "sha256:076f6eca5be2a507d789a1070f68a26d7d3542a873b549b03294047f6c57b121",
+      "labels": "labels/rxjs-04.jsonl",
+      "labels_digest": "sha256:4e9db912caa29c70ed8c1fceba7586a0079515a5856d020b1a6b9ea5f78ada05"
+    },
+    {
+      "id": "rxjs-05",
+      "repository": "https://github.com/ReactiveX/rxjs.git",
+      "licence": "Apache-2.0",
+      "licence_file": {
+        "path": "LICENSE.txt",
+        "blob": "a3d02106bd311010cbc5dc58d13d133f6cb9132f"
+      },
+      "before": "5803be25332e22009dbd5f13101b6599b78f4a7c",
+      "after": "b7c5757cebf993bbbccacfe1dcca1f0bb56234ec",
+      "files": [
+        {
+          "before": "packages/rxjs/src/catch-error.ts",
+          "after": "packages/rxjs/src/catch-error.ts",
+          "before_blob": "e73df41152cdca8afb6be0b25336b16477088f83",
+          "after_blob": "ce243d974cb71a431548ccc180452fcdc1528998"
+        },
+        {
+          "before": "packages/rxjs/src/exhaust-map.ts",
+          "after": "packages/rxjs/src/exhaust-map.ts",
+          "before_blob": "f3069f528ac288b9096f2a5296dcc0da20d2e185",
+          "after_blob": "f13e36bf9e1ce6a1e60105718dbdefa7baaa73ef"
+        },
+        {
+          "before": "packages/rxjs/src/expand.ts",
+          "after": "packages/rxjs/src/expand.ts",
+          "before_blob": "0295502bc7871f0191eb61e57c78760b53b8af40",
+          "after_blob": "5a7dca4d3922e08285d8003299a24677edb92d5b"
+        },
+        {
+          "before": "packages/rxjs/src/group-by.ts",
+          "after": "packages/rxjs/src/group-by.ts",
+          "before_blob": "d13fe0c3ddbf17e1fe8f6dce866707674acc94f9",
+          "after_blob": "035d6a98729a07839710c7095abfaf11e58fc7d9"
+        },
+        {
+          "before": "packages/rxjs/src/merge-map.ts",
+          "after": "packages/rxjs/src/merge-map.ts",
+          "before_blob": "4b5cbef7205d2bb1d1c3c7c84af7bbc343a11074",
+          "after_blob": "3af450db7ad3d2f8b4e1cd6306e135fe71f5e1e0"
+        },
+        {
+          "before": "packages/rxjs/src/merge-scan.ts",
+          "after": "packages/rxjs/src/merge-scan.ts",
+          "before_blob": "450ea7e8b379d3094dbd53661a47f192f7960e47",
+          "after_blob": "3fcf0920b929b841926047c6e3113532f0962872"
+        },
+        {
+          "before": "packages/rxjs/src/repeat-when.ts",
+          "after": "packages/rxjs/src/repeat-when.ts",
+          "before_blob": "d2c118c8b9c50de84217f7e6d304d9316778c592",
+          "after_blob": "73efe90065e7df0cec797679d3b5579e45bfda21"
+        },
+        {
+          "before": "packages/rxjs/src/repeat.ts",
+          "after": "packages/rxjs/src/repeat.ts",
+          "before_blob": "10b833892dc9b2a5e4e5c648f24e8cab46e3d0e4",
+          "after_blob": "013ed899dd2f9f5f182d5f53272731379609c359"
+        },
+        {
+          "before": "packages/rxjs/src/retry-when.ts",
+          "after": "packages/rxjs/src/retry-when.ts",
+          "before_blob": "f2fd8cff8f9a0618bb7afd83419fe6f60031c7d4",
+          "after_blob": "9967fe66b4c34009c9114d4fa8af60292ec3d25d"
+        },
+        {
+          "before": "packages/rxjs/src/retry.ts",
+          "after": "packages/rxjs/src/retry.ts",
+          "before_blob": "2f6edd184a653a02efffe5038bd2630f78c02321",
+          "after_blob": "efdf9793fbd83492276f49d5fb03029eadc98796"
+        },
+        {
+          "before": "packages/rxjs/src/switch-scan.ts",
+          "after": "packages/rxjs/src/switch-scan.ts",
+          "before_blob": "e35956f64b220e9afa543d23df1f1e4f40a42374",
+          "after_blob": "ed07254f76b14e101a6f234aaeaa5f974fe29d05"
+        }
+      ],
+      "kinds": [
+        "body",
+        "format"
+      ],
+      "counts": {
+        "declarations": 76,
+        "stable": 65,
+        "body": 11,
+        "identity": 0,
+        "judgement": 0,
+        "added": 0
+      },
+      "digest": "sha256:a5adb1210b6cc977fe55b3144ba8d16173b28f543645df7cc25b1feb38bfa6fd",
+      "labels": "labels/rxjs-05.jsonl",
+      "labels_digest": "sha256:7f0d9c9bc9cf77eba1b3a214165d4f7752ad5d51228995b7c6e23eb7c7a11545"
+    },
+    {
+      "id": "vega-lite-01",
+      "repository": "https://github.com/vega/vega-lite.git",
+      "licence": "BSD-3-Clause",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "850162439caa666a0761260bc6b7ecbc25a6dbf3"
+      },
+      "before": "2f8fdb25923a77dd08d5e2b943ee4c062551d1e9",
+      "after": "bf84e14e3b029562aa86d961751d30fb69da5afa",
+      "files": [
+        {
+          "before": "src/axis.ts",
+          "after": "src/axis.ts",
+          "before_blob": "514f96a0655fb6eae35720975cf6c7c28e7fdb6f",
+          "after_blob": "000cf2860cc2db703e1f60c11b5b06b446948741"
+        },
+        {
+          "before": "src/channeldef.ts",
+          "after": "src/channeldef.ts",
+          "before_blob": "a2f13bc55382975f12723baa4df6eb20d70b1a5f",
+          "after_blob": "a22c7c2f7cad24c04c136bff833fc0bb6ef724a4"
+        },
+        {
+          "before": "src/config.ts",
+          "after": "src/config.ts",
+          "before_blob": "a3447d40e7c57389de68747da896fe5a87113674",
+          "after_blob": "cfd5746250af5aee4bbccd4bb6f1efb1557dddeb"
+        },
+        {
+          "before": "src/legend.ts",
+          "after": "src/legend.ts",
+          "before_blob": "fb5357aff81a322d95f641a19bdf43e08817d8a7",
+          "after_blob": "cd765fd6746d2a07c5951fa26bc55911a5423ba6"
+        },
+        {
+          "before": "src/mark.ts",
+          "after": "src/mark.ts",
+          "before_blob": "731d588d56281f70dc3f7f7c83cffed0e5beb219",
+          "after_blob": "ca3fb60832b59d6097874eb2d235470a9c9a34a9"
+        },
+        {
+          "before": "src/projection.ts",
+          "after": "src/projection.ts",
+          "before_blob": "e22bf6de66909879e814a7169d627e8383c57c95",
+          "after_blob": "4abc2384e3bf7d7916c9a8fbfe06036a47866002"
+        },
+        {
+          "before": "src/spec/base.ts",
+          "after": "src/spec/base.ts",
+          "before_blob": "3b886c35ba63001e53e0b3923afc185573b27424",
+          "after_blob": "aef354447582dae2098dc3b57ba00625a06c7097"
+        },
+        {
+          "before": "src/spec/concat.ts",
+          "after": "src/spec/concat.ts",
+          "before_blob": "16107a732f22df4b2fae8a9d5e9ebd401609d336",
+          "after_blob": "9ab44898f1dae19c3195ca6bb4c99f51ba574bbe"
+        },
+        {
+          "before": "src/spec/facet.ts",
+          "after": "src/spec/facet.ts",
+          "before_blob": "e555b80c13efa020b36f8aab55c2e64d81b26462",
+          "after_blob": "fa1e4784c95223539ab703aa22c0fa43cf789e18"
+        }
+      ],
+      "kinds": [
+        "format"
+      ],
+      "counts": {
+        "declarations": 560,
+        "stable": 554,
+        "body": 0,
+        "identity": 0,
+        "judgement": 6,
+        "added": 0
+      },
+      "digest": "sha256:ddb84a84c32876ac0c9fd5a338449c2a767cf6fb6a8b81fa10e5ee72a75012f6",
+      "labels": "labels/vega-lite-01.jsonl",
+      "labels_digest": "sha256:a87ab509ed66c55712621bd4276205f9696c85874f030187ed93bfebfcba6ae6"
+    },
+    {
+      "id": "vega-lite-02",
+      "repository": "https://github.com/vega/vega-lite.git",
+      "licence": "BSD-3-Clause",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "850162439caa666a0761260bc6b7ecbc25a6dbf3"
+      },
+      "before": "72cab44f31653d6c7edff97a4fb2f8613f47c2bc",
+      "after": "a29b4efe49cabd8ceb4256e387d3f23e238443ff",
+      "files": [
+        {
+          "before": "src/compile/data/facet.ts",
+          "after": "src/compile/data/facet.ts",
+          "before_blob": "48e299d4147f4e2313a6a1bcfe20cccd3f79d24f",
+          "after_blob": "b7c8f11e2bb793382b5d9d43cb8ad26853092b73"
+        },
+        {
+          "before": "src/compile/data/joinaggregatefacet.ts",
+          "after": null,
+          "before_blob": "bc2e7dfd1ea88b84a4929ed3bc2020fd71106a33",
+          "after_blob": null
+        },
+        {
+          "before": "src/compile/data/parse.ts",
+          "after": "src/compile/data/parse.ts",
+          "before_blob": "1de0179082ed7ebab6fe12a527450b5d5602c5bd",
+          "after_blob": "dc75d4125759b7703fe0fda96a489a4ba75e9516"
+        },
+        {
+          "before": "src/compile/facet.ts",
+          "after": "src/compile/facet.ts",
+          "before_blob": "311f70189742852eeb50db1a3a5d4593d769e49a",
+          "after_blob": "21eb67bdfad579c2c6ba9549fa4062d07a4c9d5b"
+        },
+        {
+          "before": "test/compile/data/facet.test.ts",
+          "after": "test/compile/data/facet.test.ts",
+          "before_blob": "ab178909e63007d28d743b2908fc2b33e15490bb",
+          "after_blob": "120f1afd0e1a56adc40871bbda239ec9f9147f10"
+        },
+        {
+          "before": "test/compile/data/joinaggregate.test.ts",
+          "after": "test/compile/data/joinaggregate.test.ts",
+          "before_blob": "a292d99e7d82377e39793df04ecb99e66e72e596",
+          "after_blob": "7560da52a29279d90b8a5cfc546995699bbcfa04"
+        },
+        {
+          "before": "test/compile/facet.test.ts",
+          "after": "test/compile/facet.test.ts",
+          "before_blob": "05fa129da202e9240e57d1916c50d691d362dc94",
+          "after_blob": "7d243e87e5b2878a5a79f3720b86ae74a893ab59"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "format",
+        "remove",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 67,
+        "stable": 52,
+        "body": 12,
+        "identity": 3,
+        "judgement": 0,
+        "added": 9
+      },
+      "digest": "sha256:0597b6b9f700720a44f611d7e9be5e10d56bb869f5d5bb93ea4d715eb6fee55e",
+      "labels": "labels/vega-lite-02.jsonl",
+      "labels_digest": "sha256:d6bd4c769e1f1be0d029f8c4eca6712d1b164bf49eda76aa5971c69effdda5bc"
+    },
+    {
+      "id": "vega-lite-03",
+      "repository": "https://github.com/vega/vega-lite.git",
+      "licence": "BSD-3-Clause",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "850162439caa666a0761260bc6b7ecbc25a6dbf3"
+      },
+      "before": "2995e7749f940235037a4640ef39c5fbd23cbbbd",
+      "after": "9cf5666b893c804d607efa36888c3b1b9406d57a",
+      "files": [
+        {
+          "before": "src/compile/mark/bar.ts",
+          "after": "src/compile/mark/bar.ts",
+          "before_blob": "8c9e90a10fec562e465c8aa1aec5c9a6406be266",
+          "after_blob": "72336393ac9f4679d745549755ebf1e17b9942c2"
+        },
+        {
+          "before": null,
+          "after": "src/compile/mark/encode/corner-radius.ts",
+          "before_blob": null,
+          "after_blob": "7f7130648f35d133a2d2cd0119c76666fc6078e7"
+        },
+        {
+          "before": "src/compile/mark/encode/index.ts",
+          "after": "src/compile/mark/encode/index.ts",
+          "before_blob": "e6b669ac278777982258e2317ce7d3305f596a84",
+          "after_blob": "940e57e5596b2ce6e9c28427a052d0f443bdbb53"
+        },
+        {
+          "before": "src/compile/mark/init.ts",
+          "after": "src/compile/mark/init.ts",
+          "before_blob": "12af9d0c9dd71e676af8846ee98e22eb5c91732d",
+          "after_blob": "5154df56c63899c2ccdff1d630d69784bee6db93"
+        },
+        {
+          "before": "src/compile/mark/mark.ts",
+          "after": "src/compile/mark/mark.ts",
+          "before_blob": "97f8dafcadeed44e0e8fbf7ca58e4e0e5730b888",
+          "after_blob": "8ecc477e6e6adca7295af5e09525133fb5da8a83"
+        },
+        {
+          "before": "src/mark.ts",
+          "after": "src/mark.ts",
+          "before_blob": "ca3fb60832b59d6097874eb2d235470a9c9a34a9",
+          "after_blob": "9ae1984b444dbb80df598edc180bf8cdfa25f541"
+        },
+        {
+          "before": "test/compile/mark/bar.test.ts",
+          "after": "test/compile/mark/bar.test.ts",
+          "before_blob": "f1aee593a6768f711815c79fae00ad870c674c86",
+          "after_blob": "c2898b1f7044a2561972e3ea83d18de34877657d"
+        },
+        {
+          "before": "test/compile/mark/init.test.ts",
+          "after": "test/compile/mark/init.test.ts",
+          "before_blob": "9d479eefb1f4f8a7901775ae5e39fe8132e39e53",
+          "after_blob": "17884c30245f9573da363252584302f866ece0f7"
+        },
+        {
+          "before": "test/compile/mark/mark.test.ts",
+          "after": "test/compile/mark/mark.test.ts",
+          "before_blob": "d45f887542fd4aefb6fc75bda15546531b57908d",
+          "after_blob": "fa30727a5d1ad06962f5f1885405048a66fe9315"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "remove",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 157,
+        "stable": 141,
+        "body": 10,
+        "identity": 2,
+        "judgement": 4,
+        "added": 19
+      },
+      "digest": "sha256:e301f964db40deff7e32e9890cb4cfe087a511a92b81e346cdf87467ea78aa81",
+      "labels": "labels/vega-lite-03.jsonl",
+      "labels_digest": "sha256:696bc6f4a15d8773fd7dfade1ab0d209fe5c6ca3da4d0851d539e6d244140b82"
+    },
+    {
+      "id": "vega-lite-04",
+      "repository": "https://github.com/vega/vega-lite.git",
+      "licence": "BSD-3-Clause",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "850162439caa666a0761260bc6b7ecbc25a6dbf3"
+      },
+      "before": "bedc3f36c87b45fa46b7a376b19bb3c63ada8edb",
+      "after": "9f8850e163d03fe3e571f8c15c334a680bfc9544",
+      "files": [
+        {
+          "before": "src/compile/scale/component.ts",
+          "after": "src/compile/scale/component.ts",
+          "before_blob": "a899b9bc70d84d205a7e96ab2cd3d77ef3dc516a",
+          "after_blob": "b9454b30bd154039c9e9699c8aa994e5628cdf60"
+        },
+        {
+          "before": "src/compile/scale/domain.ts",
+          "after": "src/compile/scale/domain.ts",
+          "before_blob": "538efa2248b80494d4a892947a8536c857748ad7",
+          "after_blob": "24e2a8097265c2009d11aea3c469ade9068fb932"
+        },
+        {
+          "before": "src/vega.schema.ts",
+          "after": "src/vega.schema.ts",
+          "before_blob": "79af7ab4cbe240bde0a80b15bd56cdf22064a77e",
+          "after_blob": "12c6204a29448b9b3b0d734558b3988bb59c6b71"
+        },
+        {
+          "before": "test/compile/scale/domain.test.ts",
+          "after": "test/compile/scale/domain.test.ts",
+          "before_blob": "684d1d93d9933470d784a09abe4ed7c4780e31d0",
+          "after_blob": "fee24191a47ded3d8cd30a868c67d75dc8e9ba71"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "remove",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 93,
+        "stable": 80,
+        "body": 7,
+        "identity": 6,
+        "judgement": 0,
+        "added": 7
+      },
+      "digest": "sha256:be273132a7d508038e41dafd15e18874b1d0b304e72d41b5d4269308854bede0",
+      "labels": "labels/vega-lite-04.jsonl",
+      "labels_digest": "sha256:335b03626a95a14c6f327a10525be38ca0490692b19a0595a7e30a5f4ce093e8"
+    },
+    {
+      "id": "vega-lite-05",
+      "repository": "https://github.com/vega/vega-lite.git",
+      "licence": "BSD-3-Clause",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "850162439caa666a0761260bc6b7ecbc25a6dbf3"
+      },
+      "before": "ab3f2988c447865631cc3828815b40e9203995e7",
+      "after": "8408ea4b5a2affc6f73dea7cd411a99b83bbb0d5",
+      "files": [
+        {
+          "before": "src/channeldef.ts",
+          "after": "src/channeldef.ts",
+          "before_blob": "2af0dba6008aa59efe7c8817952c891817f440b7",
+          "after_blob": "3f6eb91c61801b52d604f87c14c4c98efcb1c974"
+        },
+        {
+          "before": "src/compile/mark/encode/aria.ts",
+          "after": "src/compile/mark/encode/aria.ts",
+          "before_blob": "f47ab1dcadfd93070518086ef1435976ec5a5c65",
+          "after_blob": "da02d8ec6f2a1b1cf7105be6bfa3df9604f9a392"
+        },
+        {
+          "before": "src/compile/mark/encode/base.ts",
+          "after": "src/compile/mark/encode/base.ts",
+          "before_blob": "424104ea9cf31a941bf905194d1753dd4c5cbfaa",
+          "after_blob": "40e151e7d783669ac649782c293b7eaa06d5bfbb"
+        },
+        {
+          "before": "src/compile/mark/encode/tooltip.ts",
+          "after": "src/compile/mark/encode/tooltip.ts",
+          "before_blob": "61037102204a47df2bc3de1a433e1492de91b8b2",
+          "after_blob": "5dec25bf5fbda6b720e83a778b887ebadb959b18"
+        },
+        {
+          "before": "src/encoding.ts",
+          "after": "src/encoding.ts",
+          "before_blob": "3fc6753a66b34df12dead95e99082baad7efd21e",
+          "after_blob": "8270250c160963e9cd6d4b63c86165a356780839"
+        },
+        {
+          "before": "src/log/message.ts",
+          "after": "src/log/message.ts",
+          "before_blob": "7c8cca53ae85b875a0cbebd081a062b78a37e2dc",
+          "after_blob": "ac016dcf0ea2f7e33f757b1b0c438a8f0ee7cd37"
+        },
+        {
+          "before": "src/predicate.ts",
+          "after": "src/predicate.ts",
+          "before_blob": "d405c4aaab947f68900319e6209660e606b1dd97",
+          "after_blob": "738843feee84f9da1a5b0a8067059148fdb41078"
+        },
+        {
+          "before": "src/spec/facet.ts",
+          "after": "src/spec/facet.ts",
+          "before_blob": "fa1e4784c95223539ab703aa22c0fa43cf789e18",
+          "after_blob": "4d1408de7f70c2e84d4a8d1278732890dc91a7d9"
+        },
+        {
+          "before": "src/timeunit.ts",
+          "after": "src/timeunit.ts",
+          "before_blob": "298bf5ceaaaf27054c6595e1dad40e41a7f8fad6",
+          "after_blob": "8ea7eab9d4ebb0329c7515de42de3a888badca15"
+        },
+        {
+          "before": "test/compile/mark/encode/tooltip.test.ts",
+          "after": "test/compile/mark/encode/tooltip.test.ts",
+          "before_blob": "6e93e46f2d9e0eb1189ea1e4a121f38dfc70a030",
+          "after_blob": "a123d85830596ba4dde09e63820655d61d7255f8"
+        },
+        {
+          "before": "test/compile/mark/encoding/aria.test.ts",
+          "after": "test/compile/mark/encoding/aria.test.ts",
+          "before_blob": "b7e3bad3522d780289758496a2361cc25db0c1b5",
+          "after_blob": "4d518717340a707d72395f115c37c5e90922c9b9"
+        },
+        {
+          "before": "test/compile/mark/mark.test.ts",
+          "after": "test/compile/mark/mark.test.ts",
+          "before_blob": "fa30727a5d1ad06962f5f1885405048a66fe9315",
+          "after_blob": "40c35bf10efcafc40bf81c89d8b4742cb7940cb4"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "remove",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 415,
+        "stable": 394,
+        "body": 15,
+        "identity": 4,
+        "judgement": 2,
+        "added": 18
+      },
+      "digest": "sha256:aa35b57ec45d52945e718419dd2746ee64544d9328b41efd19d802659526e6c5",
+      "labels": "labels/vega-lite-05.jsonl",
+      "labels_digest": "sha256:bf4ca757efdfa594b061ae2e0fa36f5f51ee10023f94c22070ce13676bb61044"
+    },
+    {
+      "id": "zx-01",
+      "repository": "https://github.com/google/zx.git",
+      "licence": "Apache-2.0",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+      },
+      "before": "e3f043af86fffde4a09e1243b5ad79eac177c93d",
+      "after": "a994e01ec63c9adff8af37e51b7197a8df8e733d",
+      "files": [
+        {
+          "before": "src/core.ts",
+          "after": "src/core.ts",
+          "before_blob": "7b45f1ff1b0907195d961d5a610cab989b5a9778",
+          "after_blob": "b171dd4eb0ea24e6a2465a4bbc0f94529498484c"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "format",
+        "reorder",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 159,
+        "stable": 149,
+        "body": 8,
+        "identity": 2,
+        "judgement": 0,
+        "added": 2
+      },
+      "digest": "sha256:16e382688d7be77ba9532f03e30ace7ad7f2076a1ec6d730abe374a79fe4ea39",
+      "labels": "labels/zx-01.jsonl",
+      "labels_digest": "sha256:8f664d7b775527dc0446f14c86e1d7b55ae571f8e0a564644288c42edb36a6eb"
+    },
+    {
+      "id": "zx-02",
+      "repository": "https://github.com/google/zx.git",
+      "licence": "Apache-2.0",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+      },
+      "before": "9f195ee4a9ed01670e6679bf65587ce4db83a6d1",
+      "after": "23da87436f824b9b1b001a2a3589cdd98a909eab",
+      "files": [
+        {
+          "before": "src/core.ts",
+          "after": "src/core.ts",
+          "before_blob": "80fd339e97d6bcf60070bcb947823918de2d501c",
+          "after_blob": "d3a5ebab92376ceeda41c1ad88f9a7e86284616e"
+        },
+        {
+          "before": "src/util.ts",
+          "after": "src/util.ts",
+          "before_blob": "7179b683f0a722113701accbd404866acd0e8dd0",
+          "after_blob": "e0c50fcb5990a88624576e1f774d2cffca9361f0"
+        },
+        {
+          "before": "test-d/core.test-d.ts",
+          "after": "test-d/core.test-d.ts",
+          "before_blob": "35bfe2f5d51f7e1fd78aec6e105ec8041dee74d4",
+          "after_blob": "ff9ba67410198c8c2afb90e97730cf128a04f14c"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "remove",
+        "reorder",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 187,
+        "stable": 177,
+        "body": 7,
+        "identity": 3,
+        "judgement": 0,
+        "added": 5
+      },
+      "digest": "sha256:09d2e970cd68d2a7822ec423c035471c9bd34b003c94a098bdab5e1e768aadfe",
+      "labels": "labels/zx-02.jsonl",
+      "labels_digest": "sha256:cfabf805ebb7661e83f730b01dcef37d107f311efde243ceb00338921048abe7"
+    },
+    {
+      "id": "zx-03",
+      "repository": "https://github.com/google/zx.git",
+      "licence": "Apache-2.0",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+      },
+      "before": "afcb0eb165320b2fa3427fbbe43af11a3e0e12a0",
+      "after": "d3774b2833597fb136de1ca5559c158c802dbdc2",
+      "files": [
+        {
+          "before": "src/core.ts",
+          "after": "src/core.ts",
+          "before_blob": "1557d3d103e4013be82f11030182696217743ad6",
+          "after_blob": "e6853203fec7451047884a3bd3e3a7bdab681c44"
+        },
+        {
+          "before": "src/goods.ts",
+          "after": "src/goods.ts",
+          "before_blob": "377ba0e0c65497068bf2a94258aee9bebfebf0d2",
+          "after_blob": "6921b0192aac25df69488de9959fc8de9df3847e"
+        },
+        {
+          "before": "src/index.ts",
+          "after": "src/index.ts",
+          "before_blob": "2aa7be8cfa9d0418ea3fc72aedb11eac9ace7e2b",
+          "after_blob": "b4f8c6fcea2827ff027f5027f5f0feef032aafc9"
+        },
+        {
+          "before": "src/util.ts",
+          "after": "src/util.ts",
+          "before_blob": "c67c854c6986e039961dfae42d6affd5840743e7",
+          "after_blob": "8374f6fedb29f1430da65173801b1d2d2641d41a"
+        },
+        {
+          "before": "test/goods.test.ts",
+          "after": "test/goods.test.ts",
+          "before_blob": "92591b272ae194e7a3169b4504aed1fba4f01c15",
+          "after_blob": "0787b11e018e7a16a8d65428cbe17cbe5cebe21c"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "move"
+      ],
+      "counts": {
+        "declarations": 212,
+        "stable": 205,
+        "body": 5,
+        "identity": 2,
+        "judgement": 0,
+        "added": 2
+      },
+      "digest": "sha256:26d1ef387b2bd4b75c41b362e1b8c715fb0a0e2661811ddbe0e7b7dbe8375a17",
+      "labels": "labels/zx-03.jsonl",
+      "labels_digest": "sha256:eae6eb5f8065529ea7f9694f01001a597b6ff369710dba71c2890bacdd74abe6"
+    },
+    {
+      "id": "zx-04",
+      "repository": "https://github.com/google/zx.git",
+      "licence": "Apache-2.0",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+      },
+      "before": "c5bf796f9d63ee77e3b5ab24e86d4835450bd9fd",
+      "after": "ce059684a8ede0d1d61913a2e4ef3f349b8efba2",
+      "files": [
+        {
+          "before": "src/core.ts",
+          "after": "src/core.ts",
+          "before_blob": "cf4bef9633f3418cea0e27b7eeafd9e11541c8c6",
+          "after_blob": "4e00fc9a4ead9dee341022a66d45e0d51ff2431f"
+        },
+        {
+          "before": "src/util.ts",
+          "after": "src/util.ts",
+          "before_blob": "e0c50fcb5990a88624576e1f774d2cffca9361f0",
+          "after_blob": "3341c998c7bc0e11350ce7fbb9bd0f31f34171d0"
+        },
+        {
+          "before": "src/vendor-core.ts",
+          "after": "src/vendor-core.ts",
+          "before_blob": "cfd1248c6b385eccc67736e86406607f48f4b01f",
+          "after_blob": "dde78daf12f42ef13ebef9c2aadd9438c109ca31"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "rename",
+        "signature"
+      ],
+      "counts": {
+        "declarations": 192,
+        "stable": 184,
+        "body": 5,
+        "identity": 3,
+        "judgement": 0,
+        "added": 3
+      },
+      "digest": "sha256:9a657f7c51cbfd673f347a9f5b3e6f3cc7fed796d9a00e30d522f01cc886a4fa",
+      "labels": "labels/zx-04.jsonl",
+      "labels_digest": "sha256:78955ff7ad2bab74cb95149d134f7085672dcf85c109cd66e532315a8fe5d895"
+    },
+    {
+      "id": "zx-05",
+      "repository": "https://github.com/google/zx.git",
+      "licence": "Apache-2.0",
+      "licence_file": {
+        "path": "LICENSE",
+        "blob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+      },
+      "before": "40b817ff3d2b325e86fb9fa8b1f82975af84527f",
+      "after": "3ca9cd837f9b75c1f5103dde78e7a69a1e6b8226",
+      "files": [
+        {
+          "before": "src/core.ts",
+          "after": "src/core.ts",
+          "before_blob": "cf7bc921f7514c2a9b1c3ce86ed248fdf19acce0",
+          "after_blob": "6d1dc8b04443e1892dedabd5fc4dab6da792520e"
+        }
+      ],
+      "kinds": [
+        "add",
+        "body",
+        "rename"
+      ],
+      "counts": {
+        "declarations": 167,
+        "stable": 162,
+        "body": 4,
+        "identity": 1,
+        "judgement": 0,
+        "added": 1
+      },
+      "digest": "sha256:379ea8a4ff4aee495ea4f7a07de9bc2250019c32463df3ace65c8edba86e9368",
+      "labels": "labels/zx-05.jsonl",
+      "labels_digest": "sha256:230a4e0ef281614e0a6fc4f654446ca06574b61bc4d9a4b2be7f3ff2998557f1"
+    }
+  ],
+  "digest": "sha256:dee4a54702919b6b9d304ae8eafcc8a63e0eb74d7b328790622c11e77ad4fab0"
+}

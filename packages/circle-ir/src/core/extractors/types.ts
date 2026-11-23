@@ -517,6 +517,37 @@ function enclosingTypePath(node: Node): string[] {
 /**
  * Extract JavaScript/TypeScript types.
  */
+function mergeTypeInfos(base: TypeInfo[], extra: TypeInfo[]): TypeInfo[] {
+  const byKey = new Map<string, TypeInfo>();
+  for (const t of base) byKey.set(`${t.kind}:${t.name}`, t);
+  for (const t of extra) {
+    const key = `${t.kind}:${t.name}`;
+    if (!byKey.has(key)) byKey.set(key, t);
+  }
+  let module = byKey.get('class:<module>');
+  for (const t of extra) {
+    if (t.name === '<module>' && t.kind === 'class') {
+      if (module) {
+        const seen = new Set(module.methods.map((m) => `${m.name}:${m.start_line}`));
+        for (const m of t.methods) {
+          const k = `${m.name}:${m.start_line}`;
+          if (!seen.has(k)) {
+            module.methods.push(m);
+            seen.add(k);
+          }
+        }
+      } else {
+        byKey.set('class:<module>', { ...t, methods: [...t.methods] });
+        module = byKey.get('class:<module>');
+      }
+      continue;
+    }
+    const key = `${t.kind}:${t.name}`;
+    if (!byKey.has(key)) byKey.set(key, t);
+  }
+  return [...byKey.values()];
+}
+
 function extractJavaScriptTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
   const types: TypeInfo[] = [];
 
@@ -531,6 +562,12 @@ function extractJavaScriptTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
   const interfaces = getNodesFromCache(tree.rootNode, 'interface_declaration', cache);
   for (const iface of interfaces) {
     types.push(extractTSInterfaceInfo(iface));
+  }
+
+  const globalDecls = extractDeclareGlobalBlockTypes(tree, cache);
+  types.push(...globalDecls.types);
+  if (globalDecls.moduleMethods.length > 0) {
+    appendTopLevelModuleMethods(types, globalDecls.moduleMethods, tree.rootNode);
   }
 
   // Extract standalone functions as a module-like type
@@ -582,6 +619,116 @@ function extractJavaScriptTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
   }
 
   return types;
+}
+
+function ambientDeclarationIsGlobal(node: Node): boolean {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child?.type === 'global') return true;
+  }
+  return false;
+}
+
+function statementBlockOfAmbient(node: Node): Node | undefined {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child?.type === 'statement_block') return child;
+  }
+  return undefined;
+}
+
+/** Declarations inside `declare global { … }` (cognium-dev#1194). */
+function extractDeclareGlobalBlockTypes(
+  tree: Tree,
+  cache?: NodeCache,
+): { types: TypeInfo[]; moduleMethods: MethodInfo[] } {
+  const types: TypeInfo[] = [];
+  const moduleMethods: MethodInfo[] = [];
+  const ambients = getNodesFromCache(tree.rootNode, 'ambient_declaration', cache);
+  for (const amb of ambients) {
+    if (!ambientDeclarationIsGlobal(amb)) continue;
+    const body = statementBlockOfAmbient(amb);
+    if (!body) continue;
+    for (let i = 0; i < body.namedChildCount; i++) {
+      const member = body.namedChild(i);
+      if (!member) continue;
+      if (member.type === 'interface_declaration') {
+        types.push(extractTSInterfaceInfo(member));
+      } else if (member.type === 'function_signature') {
+        moduleMethods.push(extractTSFunctionSignatureInfo(member));
+      }
+    }
+  }
+  return { types, moduleMethods };
+}
+
+function extractTSFunctionSignatureInfo(node: Node): MethodInfo {
+  const nameNode = node.childForFieldName('name');
+  const name = nameNode ? getNodeText(nameNode) : 'anonymous';
+  const params =
+    node.childForFieldName('parameters') ??
+    node.children.find((c): c is Node => c?.type === 'formal_parameters');
+  const typeAnn =
+    node.childForFieldName('return_type') ??
+    node.children.find((c): c is Node => c?.type === 'type_annotation');
+  return {
+    name,
+    return_type: typeAnn ? getNodeText(typeAnn).replace(/^:\s*/, '') : null,
+    parameters: params ? extractJSParameters(params) : [],
+    annotations: [],
+    modifiers: [],
+    start_line: node.startPosition.row + 1,
+    end_line: node.endPosition.row + 1,
+  };
+}
+
+function appendTopLevelModuleMethods(types: TypeInfo[], methods: MethodInfo[], root: Node): void {
+  if (methods.length === 0) return;
+  const moduleType = types.find((t) => t.name === '<module>');
+  if (moduleType) {
+    moduleType.methods.push(...methods);
+    return;
+  }
+  types.push({
+    name: '<module>',
+    kind: 'class',
+    package: null,
+    extends: null,
+    implements: [],
+    annotations: [],
+    methods,
+    fields: [],
+    start_line: 1,
+    end_line: root.endPosition.row + 1,
+  });
+}
+
+/**
+ * When a full-file TypeScript parse leaves a program-level ERROR, re-extract types
+ * from each top-level export in isolation and merge (cognium-dev#1193).
+ */
+export async function extractTypeScriptTypesWithExportRecovery(
+  tree: Tree,
+  cache: NodeCache | undefined,
+  sourceCode: string,
+  language: 'typescript' | 'javascript',
+): Promise<TypeInfo[]> {
+  const { parseTypeScriptExportChunkTrees, hasExportTailProgramError } = await import('../ts-grammar-workarounds.js');
+  const { disposeTree } = await import('../parser.js');
+  const base = extractJavaScriptTypes(tree, cache);
+  if (!hasExportTailProgramError(tree.rootNode)) return base;
+  const chunkTrees = await parseTypeScriptExportChunkTrees(sourceCode, language);
+  let merged = base;
+  try {
+    for (const ct of chunkTrees) {
+      // Chunk trees are disjoint ASTs — the full-file node cache must not be reused here
+      // or getNodesFromCache returns nodes from the main tree only (cognium-dev#1193).
+      merged = mergeTypeInfos(merged, extractJavaScriptTypes(ct));
+    }
+  } finally {
+    for (const ct of chunkTrees) disposeTree(ct);
+  }
+  return merged;
 }
 
 /**
@@ -1023,13 +1170,17 @@ function extractTSInterfaceInfo(node: Node): TypeInfo {
       const member = body.child(i);
       if (!member) continue;
 
-      if (member.type === 'method_signature') {
-        const methodName = getIdentifier(member, 'name') ?? getNodeText(member.child(0) ?? member);
+      if (member.type === 'method_signature' || member.type === 'call_signature') {
+        const methodName =
+          member.type === 'call_signature'
+            ? '(call)'
+            : (getIdentifier(member, 'name') ?? getNodeText(member.child(0) ?? member));
         const params = member.childForFieldName('parameters');
-        const returnType = member.childForFieldName('return_type');
+        const typeAnn =
+          member.childForFieldName('return_type') ?? member.childForFieldName('type');
         methods.push({
           name: methodName,
-          return_type: returnType ? getNodeText(returnType).replace(/^:\s*/, '') : null,
+          return_type: typeAnn ? getNodeText(typeAnn).replace(/^:\s*/, '') : null,
           parameters: params ? extractJSParameters(params) : [],
           annotations: [],
           // An interface member has no body and therefore no modifiers in the

@@ -1,6 +1,7 @@
 /**
  * `facts@2` rows from a call graph: a post-pass over the graph the engine
- * already builds (`java-graph@0.1`), the counterpart of `javaGraphFactSet` for the `facts@2`
+ * already builds (`java-graph@0.1`, or `ts-call-edges@0.1` for TypeScript and
+ * JavaScript), the counterpart of `javaGraphFactSet` for the `facts@2`
  * schema. Opt-in: `facts@1` stays the default (`JavaGraphOptions.factsScheme`).
  *
  * Against the `facts@1` post-pass:
@@ -27,7 +28,7 @@
 
 import { containedIn } from '../graph-facts/reach.js';
 import type { JavaGraph } from '../navigation/java-graph.js';
-import type { CallEdge, CallEdgeSite, ReferenceEdge, TsEntry, UnresolvedCall, UnresolvedRegistration } from '../navigation/ts-call-edges.js';
+import type { CallEdge, CallEdgeSite, ReferenceEdge, TsCallGraph, TsEntry, UnresolvedCall, UnresolvedRegistration } from '../navigation/ts-call-edges.js';
 import { digest128 } from '../stable-ids/hash.js';
 import { NodeIdWriter, declLocator, locateNodes } from '../stable-ids/nodes.js';
 import { STABLE_ID_SCHEME, type StableDecl, type StableIdFile } from '../stable-ids/types.js';
@@ -46,7 +47,7 @@ export interface Fact2Set {
   duplicatesDropped: Readonly<Record<Facts2RelationName, number>>;
 }
 
-/** What the post-pass reads from a graph (`JavaGraph` has it). */
+/** What the post-pass reads from a graph; `JavaGraph` and `TsCallGraph` both have it. */
 export interface Facts2Graph {
   ids: 'ids@0.1';
   files: readonly StableIdFile[];
@@ -68,7 +69,9 @@ interface Facts2Extras {
 /**
  * Polymorphic call edges that are the declaring row of their site. The Java
  * graph sets `via` on the other rows only, so `buildJavaGraph` marks the
- * declaring one here. A mark, not a field, so the graph's JSON is unchanged.
+ * declaring one here; the TypeScript graph sets `via` on every row of the
+ * site, the declaring one included (`via === to`). A mark, not a field, so
+ * the graph's JSON is unchanged.
  */
 const declaringEdges = new WeakSet<object>();
 
@@ -78,7 +81,7 @@ export function markDeclaringEdge(edge: CallEdge): void {
 }
 
 function isDeclaring(e: CallEdge): boolean {
-  return e.tier === 'polymorphic' && declaringEdges.has(e);
+  return e.tier === 'polymorphic' && (e.via === e.to || declaringEdges.has(e));
 }
 
 function dict(relation: FactsRelation, column: string): Map<string, number> {
@@ -263,7 +266,11 @@ function graphFact2Set(graph: Facts2Graph, inputs: readonly Facts2Input[], extra
   }
 
   // registration — `from` as the engine gives it (Java), else the innermost declaration enclosing the site.
-  const registration = allocTable(R.registration, graph.unresolvedRegistrations.length);
+  // A name a registering file gives (`manifest-unresolved` at a site in a manifest or descriptor, not a
+  // source file of the graph) has no enclosing body to key it by: it stays in the graph's
+  // `unresolvedRegistrations` and is not a `registration` row.
+  const regs = graph.unresolvedRegistrations.filter(r => r.reason !== 'manifest-unresolved' || graphFiles.has(r.site.file));
+  const registration = allocTable(R.registration, regs.length);
   {
     const reasons = dict(R.registration, 'reason');
     const locators = new Map<string, (line: number, column?: number) => StableDecl | null>();
@@ -274,8 +281,8 @@ function graphFact2Set(graph: Facts2Graph, inputs: readonly Facts2Input[], extra
       if (!at) locators.set(site.file, (at = declLocator(f)));
       return (at(site.line, site.col) ?? f.decls[0]).id;
     };
-    for (let i = 0; i < graph.unresolvedRegistrations.length; i++) {
-      const reg = graph.unresolvedRegistrations[i];
+    for (let i = 0; i < regs.length; i++) {
+      const reg = regs[i];
       const from = reg.from ?? owner(reg.site);
       ids.put(rekeyed(reg.site.file, from), registration[0] as Uint8Array, i * FACTS_ID_WIDTH);
       (registration[1] as Int8Array)[i] = code(reasons, reg.reason, 'reason');
@@ -367,7 +374,7 @@ function graphFact2Set(graph: Facts2Graph, inputs: readonly Facts2Input[], extra
     call: { columns: call, length: graph.edges.length },
     unresolved: { columns: unresolved, length: graph.unresolved.length },
     ref: { columns: ref, length: graph.references.length },
-    registration: { columns: registration, length: graph.unresolvedRegistrations.length },
+    registration: { columns: registration, length: regs.length },
     parse_error: { columns: parseError, length: partialCount },
     flow: { columns: flow, length: flowCount },
     imports: { columns: imports, length: importCount },
@@ -395,3 +402,13 @@ export function javaGraphFact2Set(graph: JavaGraph, inputs: readonly Facts2Input
   return graphFact2Set(graph, inputs, { loads: graph.loads, language: 'java' });
 }
 
+/**
+ * The `facts@2` relations of a `ts-call-edges@0.1` graph (TypeScript and
+ * JavaScript). Every file the graph holds must be in `inputs`, and every
+ * input must be a file of the graph. The TypeScript-only edges (field uses,
+ * module imports and loads) have no relation in `facts@2`; `imports` holds
+ * whatever the inputs list.
+ */
+export function tsGraphFact2Set(graph: TsCallGraph, inputs: readonly Facts2Input[]): Fact2Set {
+  return graphFact2Set(graph, inputs, {});
+}

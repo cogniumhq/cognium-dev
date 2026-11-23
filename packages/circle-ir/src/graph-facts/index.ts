@@ -8,7 +8,10 @@ export {
   ALL_ENTRY_KINDS,
   ReachGraph,
   reach,
+  blastRadius,
+  impactedTests,
   walkFrom,
+  type WalkRoot,
   reachedIds,
   couldReach,
   COMPUTED_LOAD,
@@ -27,6 +30,7 @@ export {
 export {
   DEAD_CODE_SCHEME,
   deadCode,
+  deadCodeConsistencyViolations,
   type DeadCodeVerdict,
   type MayBeLiveReason,
   type DeadCodeFact,

@@ -23,6 +23,7 @@ export {
   parsePnpmLockDependencies,
   parseYarnLockDependencies,
   pnpmLockImporters,
+  parsePnpmLockImporterDependencies,
   parsePypiDependencies,
   parsePyprojectDependencies,
   parseMavenDependencies,
@@ -30,6 +31,8 @@ export {
   parseGradleDependencies,
   parseGradleLockfile,
   parseMavenResolvedDependencies,
+  parseMavenModuleDependencies,
+  parseGradleProjectDependencies,
   parseCargoDependencies,
   parseCargoLockDependencies,
   parsePoetryLockDependencies,
@@ -46,6 +49,9 @@ export type {
   DependencyScope,
   SbomMetadata,
   LicenseMap,
+  PnpmImporterDependencies,
+  MavenModuleDependencies,
+  GradleProjectDependencies,
 } from './analysis/sbom.js';
 
 // Known-vulnerability matching against caller-supplied OSV records (deterministic)
@@ -271,6 +277,8 @@ export {
   buildJavaGraph,
   JAVA_GRAPH_SCHEME,
   DEFAULT_JAVA_ENTRY_TABLES,
+  registrationFileKind,
+  scanRegistrations,
   buildPythonGraph,
   PYTHON_GRAPH_SCHEME,
   buildGoGraph,
@@ -313,6 +321,10 @@ export type {
   JavaGraphOptions,
   JavaGraph,
   JavaEntryTables,
+  RegistrationFile,
+  RegistrationFileKind,
+  Registration,
+  RegistrationScan,
   PythonSourceFile,
   PythonGraphOptions,
   PythonGraph,
@@ -324,7 +336,7 @@ export type {
 } from './navigation/index.js';
 
 // Graph facts over stable ids (experimental): the reach core and dead code.
-export { REACH_SCHEME, reach, DEAD_CODE_SCHEME, deadCode, REMOVAL_REACH_SCHEME, removalReach, entryIndexDigest, partialFileDetails, DEPENDENCY_CALLS_SCHEME, dependencyCalls, MAVEN_PACKAGE_FALLBACK, UnknownArtifact, jarPackages, mavenArtifact, mavenPackages, zipEntryNames } from './graph-facts/index.js';
+export { REACH_SCHEME, reach, blastRadius, impactedTests, ReachGraph, DEAD_CODE_SCHEME, deadCode, REMOVAL_REACH_SCHEME, removalReach, entryIndexDigest, partialFileDetails, DEPENDENCY_CALLS_SCHEME, dependencyCalls, MAVEN_PACKAGE_FALLBACK, UnknownArtifact, jarPackages, mavenArtifact, mavenPackages, zipEntryNames } from './graph-facts/index.js';
 export type {
   DependencyCallsOptions,
   DependencyCall,
@@ -424,9 +436,10 @@ export {
 } from './facts/index.js';
 
 // `facts@2`: the successor schema (stable file keys, site lines relative to
-// their declaration, decl_pos, ref, registration, parse_error). Opt-in through
-// `buildJavaGraph(files, { emitFacts: 'arrow', factsScheme: 'facts@2' })`, or
-// `javaGraphFact2Set` and `facts2ToArrow`; facts@1 stays the default.
+// their declaration, decl_pos, ref, registration, parse_error). The default of
+// `buildJavaGraph(files, { emitFacts: 'arrow' })` since graph-store T5a.1b;
+// `factsScheme: 'facts@1'` still writes facts@1. Also `javaGraphFact2Set` /
+// `tsGraphFact2Set` and `facts2ToArrow`.
 export {
   FACTS2_SCHEME,
   FACTS2_RELATION_NAMES,
@@ -435,8 +448,13 @@ export {
   FACTS_REGISTRATION_REASONS,
   fileKey as factsFileKey,
   javaGraphFact2Set,
+  tsGraphFact2Set,
   facts2ToArrow,
 } from './facts/index.js';
+// Graph-store T6 walked by the producer over `facts@2`: blast radius, reach
+// from declared entries and impacted tests, as a store's rules must answer them.
+export { T6Graph, t6RowsFromArrow } from './facts/index.js';
+export type { T6Rows, T6Tier, T6EdgeCounts } from './facts/index.js';
 export type {
   Facts2Scheme,
   Facts2Relation,

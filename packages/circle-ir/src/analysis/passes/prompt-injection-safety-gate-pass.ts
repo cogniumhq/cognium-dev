@@ -128,7 +128,7 @@ export function isInstructionConcat(valueExpr: string): boolean {
  * Pure interpolation (`f"{user}"`) is not instruction-mixing.
  */
 function isMixedTemplate(v: string): boolean {
-  const fstr = v.match(/\bf(["'])((?:\\.|(?!\1).)*)\1/);
+  const fstr = v.match(/\bf(["'])((?:\\.|(?!\1)[^\\\n\r\u2028\u2029])*)\1/);
   if (fstr) {
     const body = fstr[2];
     if (/\{[^}]+\}/.test(body) && /\w/.test(body.replace(/\{[^}]*\}/g, ''))) return true;

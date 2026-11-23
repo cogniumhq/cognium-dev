@@ -43,7 +43,8 @@ export function analyzeConstantPropagation(
     sourceCode,
     options.additionalTaintPatterns ?? [],
     options.sanitizerMethods ?? [],
-    options.taintedParameters ?? []
+    options.taintedParameters ?? [],
+    options.language,
   );
 }
 

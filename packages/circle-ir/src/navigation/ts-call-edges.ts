@@ -97,6 +97,12 @@ export interface TsEntry {
   file: string;
   line: number;
   evidence: string;
+  /**
+   * Java: the constructors the runtime that registered the class runs when it
+   * instantiates it (a registering file's class, a `META-INF/services` class;
+   * not `Class.forName`, which only loads). Reach roots them with the type.
+   */
+  constructors?: string[];
 }
 
 /** A registration the recognizers saw but could not tie to a declaration. */
@@ -119,6 +125,19 @@ export interface UnresolvedRegistration {
 export interface ReferenceEdge {
   from: string;
   to: string;
+  site: CallEdgeSite;
+}
+
+/** Resolved `extends` target for a class declaration. */
+export type ClassExtendsTarget =
+  | { kind: 'in-tree'; to: string }
+  | { kind: 'external'; name: string; module: string | null };
+
+/** Class heritage (`extends` / `implements`) at the declaration site. */
+export interface ClassHeritage {
+  class: string;
+  extends?: ClassExtendsTarget;
+  implements: string[];
   site: CallEdgeSite;
 }
 
@@ -198,6 +217,8 @@ export interface TsCallGraph {
   /** Call and `new` sites walked; equals the distinct sites over `edges` and `unresolved`. */
   sites: number;
   references: ReferenceEdge[];
+  /** `extends` / `implements` on class declarations (additive; empty when none). */
+  heritage: ClassHeritage[];
   /** `this.x` reads and writes of the enclosing class's fields and accessors. */
   fieldUses: FieldUseEdge[];
   imports: ImportEdge[];
@@ -396,6 +417,8 @@ function filePath(segments: readonly string[]): string {
   return joinRoutePath(out);
 }
 
+type LocalBinding = { kind: 'param'; node: Node } | { kind: 'var'; node: Node } | { kind: 'fn'; node: Node };
+
 class Graph {
   private readonly files = new Map<string, FileCtx>();
   readonly edges: CallEdge[] = [];
@@ -404,7 +427,17 @@ class Graph {
   /** Type decl id → its class or interface node and file. */
   private readonly typeNodes = new Map<string, { node: Node; ctx: FileCtx }>();
   /** Type decl id → direct supertypes (resolved decls). */
-  private readonly supers = new Map<string, { extends: StableDecl | 'external' | null; implements: StableDecl[] }>();
+  private readonly supers = new Map<
+    string,
+    {
+      extends: StableDecl | 'external' | null;
+      implements: StableDecl[];
+      site: CallEdgeSite;
+      extendsName?: string;
+      extendsModule?: string | null;
+    }
+  >();
+  readonly heritage: ClassHeritage[] = [];
   /** Type decl id → direct subtypes. */
   private readonly subs = new Map<string, StableDecl[]>();
   /** Declarations without a body: overload, interface and abstract signatures. */
@@ -424,6 +457,8 @@ class Graph {
   private readonly tables: EntryTables;
   private readonly pendingRoutes: PendingRoute[] = [];
   private readonly mounts: { parent: string; child: string; prefix: string }[] = [];
+  /** Per-block name index (#1338): one scan per statement_block / for loop body. */
+  private readonly blockBindings = new WeakMap<Node, Map<string, LocalBinding>>();
 
   constructor(private readonly options: TsCallGraphOptions) {
     this.maxInferred = options.maxInferred ?? 16;
@@ -479,6 +514,38 @@ class Graph {
         else this.subs.set(p.id, [self]);
       }
     }
+    this.emitClassHeritage();
+  }
+
+  /** Publish class heritage and reference edges for resolved `extends` / `implements`. */
+  private emitClassHeritage(): void {
+    for (const [id, s] of this.supers) {
+      const decl = this.declById(id);
+      if (!decl || decl.kind !== 'type') continue;
+      let extendsTarget: ClassExtendsTarget | undefined;
+      if (s.extends && s.extends !== 'external') {
+        extendsTarget = { kind: 'in-tree', to: s.extends.id };
+        if (s.extends.id !== id) this.references.push({ from: id, to: s.extends.id, site: s.site });
+      } else if (s.extends === 'external' && s.extendsName) {
+        extendsTarget = { kind: 'external', name: s.extendsName, module: s.extendsModule ?? null };
+      }
+      const implementsIds = s.implements.map(i => i.id);
+      for (const to of implementsIds) {
+        if (to !== id) this.references.push({ from: id, to, site: s.site });
+      }
+      if (extendsTarget || implementsIds.length > 0) {
+        this.heritage.push({
+          class: id,
+          extends: extendsTarget,
+          implements: implementsIds,
+          site: s.site,
+        });
+      }
+    }
+    this.heritage.sort(
+      (a, b) =>
+        a.site.file < b.site.file ? -1 : a.site.file > b.site.file ? 1 : a.site.line - b.site.line || a.site.col - b.site.col,
+    );
   }
 
   private sortedFiles(): FileCtx[] {
@@ -631,6 +698,18 @@ class Graph {
       }
       return;
     }
+    if (t === 'expression_statement') {
+      const expr = named(stmt)[0];
+      if (expr?.type === 'assignment_expression') {
+        const exportName = this.cjsExportName(expr.childForFieldName('left'));
+        if (exportName) {
+          const right = expr.childForFieldName('right');
+          const local = right?.type === 'identifier' ? right.text : exportName;
+          ctx.exports.set(exportName, local);
+        }
+      }
+      return;
+    }
     if (t === 'lexical_declaration' || t === 'variable_declaration') {
       for (const d of named(stmt)) {
         if (d.type !== 'variable_declarator') continue;
@@ -680,15 +759,33 @@ class Graph {
         }
         const ifaceExt = named(node).find(c => c.type === 'extends_type_clause');
         if (ifaceExt) implNodes.push(...named(ifaceExt));
+        const heritageSite: CallEdgeSite = {
+          file: ctx.path,
+          line: (heritage ?? node).startPosition.row + 1,
+          col: (heritage ?? node).startPosition.column,
+        };
+        let extendsName: string | undefined;
+        let extendsModule: string | null | undefined;
         if (extendsNodes[0]) {
           const r = this.resolveTypeRef(ctx, extendsNodes[0]);
           ext = r === null ? null : r;
+          if (r === 'external' && (extendsNodes[0].type === 'identifier' || extendsNodes[0].type === 'type_identifier')) {
+            extendsName = extendsNodes[0].text;
+            const binding = ctx.imports.get(extendsName);
+            extendsModule = binding ? binding.specifier : null;
+          }
         }
         for (const n of implNodes) {
           const r = this.resolveTypeRef(ctx, n);
           if (r && r !== 'external') impls.push(r);
         }
-        this.supers.set(decl.id, { extends: ext, implements: impls });
+        this.supers.set(decl.id, {
+          extends: ext,
+          implements: impls,
+          site: heritageSite,
+          extendsName,
+          extendsModule,
+        });
         if (t !== 'interface_declaration') this.decoratorEntries(ctx, node, decl);
       }
     }
@@ -808,12 +905,39 @@ class Graph {
 
   // -- lexical scope ---------------------------------------------------------
 
+  /** Build once per block; answers every `localBinding` query for names in that block. */
+  private blockBindingMap(block: Node): Map<string, LocalBinding> {
+    let map = this.blockBindings.get(block);
+    if (map) return map;
+    map = new Map();
+    for (const s of named(block)) {
+      if ((s.type === 'function_declaration' || s.type === 'generator_function_declaration')) {
+        const fnName = s.childForFieldName('name')?.text;
+        if (fnName) map.set(fnName, { kind: 'fn', node: s });
+      }
+      if (s.type === 'lexical_declaration' || s.type === 'variable_declaration') {
+        for (const d of named(s)) {
+          if (d.type !== 'variable_declarator') continue;
+          const pat = d.childForFieldName('name');
+          for (const nm of patternNames(pat)) map.set(nm, { kind: 'var', node: d });
+        }
+      }
+    }
+    if (block.type === 'for_in_statement') {
+      for (const nm of patternNames(block.childForFieldName('left'))) {
+        map.set(nm, { kind: 'param', node: block });
+      }
+    }
+    this.blockBindings.set(block, map);
+    return map;
+  }
+
   /**
    * The nearest binding of `name` inside the enclosing functions and blocks
    * (module level excluded): a parameter, a variable declarator, or a nested
    * function declaration.
    */
-  private localBinding(start: Node, name: string): { kind: 'param'; node: Node } | { kind: 'var'; node: Node } | { kind: 'fn'; node: Node } | null {
+  private localBinding(start: Node, name: string): LocalBinding | null {
     for (let n: Node | null = start.parent; n && n.type !== 'program'; n = n.parent) {
       if (FUNCTION_NODES.has(n.type)) {
         const params = n.childForFieldName('parameters');
@@ -830,17 +954,8 @@ class Graph {
         return { kind: 'param', node: n };
       }
       if (n.type === 'statement_block' || n.type === 'for_statement' || n.type === 'for_in_statement') {
-        for (const s of named(n)) {
-          if ((s.type === 'function_declaration' || s.type === 'generator_function_declaration') && s.childForFieldName('name')?.text === name) {
-            return { kind: 'fn', node: s };
-          }
-          if (s.type === 'lexical_declaration' || s.type === 'variable_declaration') {
-            for (const d of named(s)) {
-              if (d.type === 'variable_declarator' && patternNames(d.childForFieldName('name')).includes(name)) return { kind: 'var', node: d };
-            }
-          }
-        }
-        if (n.type === 'for_in_statement' && patternNames(n.childForFieldName('left')).includes(name)) return { kind: 'param', node: n };
+        const hit = this.blockBindingMap(n).get(name);
+        if (hit) return hit;
       }
     }
     return null;
@@ -1041,6 +1156,31 @@ class Graph {
 
   // -- references (functions and classes used as values) ---------------------
 
+  /** `exports.X` / `module.exports.X` on the left of an assignment → export name `X`. */
+  private cjsExportName(left: Node | null): string | null {
+    if (!left || left.type !== 'member_expression') return null;
+    const object = left.childForFieldName('object');
+    const property = left.childForFieldName('property');
+    if (!object || !property) return null;
+    if (object.type === 'identifier' && object.text === 'exports') return property.text;
+    if (object.type === 'member_expression') {
+      const mod = object.childForFieldName('object');
+      const prop = object.childForFieldName('property')?.text;
+      if (mod?.type === 'identifier' && mod.text === 'module' && prop === 'exports') return property.text;
+    }
+    return null;
+  }
+
+  private isCjsExportsReceiver(ctx: FileCtx, object: Node): boolean {
+    if (object.type === 'identifier' && object.text === 'exports' && !this.localBinding(object, 'exports')) return true;
+    if (object.type === 'member_expression') {
+      const mod = object.childForFieldName('object');
+      const prop = object.childForFieldName('property')?.text;
+      if (mod?.type === 'identifier' && mod.text === 'module' && !this.localBinding(mod, 'module') && prop === 'exports') return true;
+    }
+    return false;
+  }
+
   private reference(ctx: FileCtx, node: Node | null): void {
     if (!node) return;
     if (node.type === 'parenthesized_expression' || node.type === 'as_expression' || node.type === 'non_null_expression' || node.type === 'satisfies_expression') {
@@ -1089,6 +1229,10 @@ class Graph {
     if (object.type === 'this') {
       const cls = this.enclosingClass(ctx, node);
       return cls ? this.memberBodies(cls, name) : [];
+    }
+    if (this.isCjsExportsReceiver(ctx, object)) {
+      const r = this.resolveExport(ctx, name, 0);
+      return r.kind === 'decls' ? this.callables(r.decls) : [];
     }
     if (object.type === 'identifier' && !this.localBinding(object, object.text)) {
       const t = this.resolveLocal(ctx, object.text);
@@ -1431,6 +1575,18 @@ class Graph {
 
   // -- React Native, Expo and Jest ---------------------------------------------
 
+  /** Whether the package ships a Jest config file (preset-only setups may omit a `jest` dependency). */
+  private packageHasJestConfig(root: string): boolean {
+    const prefix = normalizePath(root);
+    const pattern = /^jest\.config\.[cm]?[jt]s$/;
+    for (const ctx of this.sortedFiles()) {
+      if (prefix !== '' && !ctx.path.startsWith(prefix + '/')) continue;
+      const rel = prefix === '' ? ctx.path : ctx.path.slice(prefix.length + 1);
+      if (pattern.test(rel)) return true;
+    }
+    return false;
+  }
+
   /** Files a tool loads by name or place, for the tools the package depends on. */
   private toolFileEntries(root: string, has: (names: readonly string[]) => boolean): void {
     const rows = (this.tables.toolFiles ?? []).filter(r => has(r.dependencies));
@@ -1695,7 +1851,17 @@ class Graph {
       const next = this.tables.nextFileRoutes;
       if (next && Object.prototype.hasOwnProperty.call(deps, next.dependency)) this.nextFileRoutes(pkg.root);
       this.scriptEntries(pkg.root, m.scripts);
-      const has = (names: readonly string[]): boolean => names.some(n => Object.prototype.hasOwnProperty.call(deps, n));
+      const has = (names: readonly string[]): boolean => {
+        if (names.some(n => Object.prototype.hasOwnProperty.call(deps, n))) return true;
+        if (names.includes('jest')) {
+          if (Object.prototype.hasOwnProperty.call(deps, 'jest-expo')) return true;
+          const jestEcosystem = Object.keys(deps).some(
+            k => k === 'jest' || k === 'jest-expo' || k.startsWith('@jest/'),
+          );
+          if (jestEcosystem && this.packageHasJestConfig(pkg.root)) return true;
+        }
+        return false;
+      };
       this.toolFileEntries(pkg.root, has);
       if (this.tables.expo && has(this.tables.expo.dependencies)) {
         this.expoFileRoutes(pkg.root);
@@ -1821,7 +1987,7 @@ class Graph {
       return;
     }
     if (fn.type === 'member_expression') {
-      this.callMember(ctx, fn, edge, unresolved);
+      this.callMember(ctx, fn, site, edge, unresolved);
       return;
     }
     unresolved('<expr>', 'dynamic', `callee is a ${fn.type}`);
@@ -1922,9 +2088,36 @@ class Graph {
     return t.kind === 'namespace' || t.kind === 'external' ? t : null;
   }
 
+  /** Member bodies `recv.name` denotes (for `.bind` reference edges). */
+  private memberValueTargets(ctx: FileCtx, object: Node, name: string): StableDecl[] {
+    if (object.type === 'this') {
+      const cls = this.enclosingClass(ctx, object);
+      return cls ? this.memberBodies(cls, name) : [];
+    }
+    if (object.type === 'identifier' && !this.localBinding(object, object.text)) {
+      const t = this.resolveLocal(ctx, object.text);
+      if (t.kind === 'namespace') {
+        const m = this.resolveExport(t.ctx, name, 0);
+        return m.kind === 'decls' ? this.callables(m.decls) : [];
+      }
+      const type = t.kind === 'decls' ? t.decls.find(d => d.kind === 'type') : undefined;
+      if (type) return this.memberBodies(type, name);
+    }
+    const type = this.typeOf(ctx, object);
+    return type && type !== 'external' ? this.memberBodies(type, name) : [];
+  }
+
+  private memberReferenceAt(ctx: FileCtx, object: Node, methodName: string, site: CallEdgeSite): void {
+    const targets = this.memberValueTargets(ctx, object, methodName);
+    if (targets.length === 0) return;
+    const from = (ctx.locate(site.line, site.col) ?? ctx.module).id;
+    for (const d of targets) if (d.id !== from) this.references.push({ from, to: d.id, site });
+  }
+
   private callMember(
     ctx: FileCtx,
     fn: Node,
+    site: CallEdgeSite,
     edge: (to: StableDecl, tier: Tier, name: string, evidence: string, via?: StableDecl) => void,
     unresolved: (name: string, reason: UnresolvedReason, evidence: string) => void,
   ): void {
@@ -1935,13 +2128,40 @@ class Graph {
       return;
     }
     const name = property.text;
+    if (name === 'call' || name === 'apply' || name === 'bind') {
+      if (object.type === 'member_expression') {
+        const recv = object.childForFieldName('object');
+        const innerName = object.childForFieldName('property')?.text;
+        if (recv && innerName) {
+          if (name === 'bind') this.memberReferenceAt(ctx, recv, innerName, site);
+          else this.resolveMemberCall(ctx, recv, innerName, edge, unresolved);
+          return;
+        }
+      }
+      unresolved(
+        name,
+        'unknown',
+        'receiver type unknown and no method of this name in the tree',
+      );
+      return;
+    }
     if (property.type === 'private_property_identifier' && object.type !== 'this') {
       unresolved(name, 'unknown', 'private member on another receiver');
       return;
     }
+    this.resolveMemberCall(ctx, object, name, edge, unresolved);
+  }
+
+  private resolveMemberCall(
+    ctx: FileCtx,
+    object: Node,
+    name: string,
+    edge: (to: StableDecl, tier: Tier, name: string, evidence: string, via?: StableDecl) => void,
+    unresolved: (name: string, reason: UnresolvedReason, evidence: string) => void,
+  ): void {
     // `super.m()`
     if (object.type === 'super') {
-      const cls = this.enclosingClass(ctx, fn);
+      const cls = this.enclosingClass(ctx, object);
       const sup = cls ? this.supers.get(cls.id)?.extends : null;
       if (!sup || sup === 'external') {
         unresolved(name, sup === 'external' ? 'external' : 'unknown', 'superclass method');
@@ -2106,6 +2326,7 @@ export async function buildTsCallGraph(files: readonly TsSourceFile[], options: 
     partial,
     sites: graph.siteCount,
     references: dedupe([...graph.references].sort((a, b) => bySite(a, b) || cmp(a.to, b.to)), r => `${r.from}>${r.to}@${r.site.file}:${r.site.line}:${r.site.col}`),
+    heritage: [...graph.heritage],
     fieldUses: dedupe([...graph.fieldUses].sort((a, b) => bySite(a, b) || cmp(a.to, b.to)), r => `${r.from}>${r.to}@${r.site.file}:${r.site.line}:${r.site.col}`),
     imports: graph.importEdges(),
     loads: dedupe([...graph.loadEdges].sort((a, b) => bySite(a, b) || cmp(a.to, b.to)), l => `${l.from}>${l.to}`),

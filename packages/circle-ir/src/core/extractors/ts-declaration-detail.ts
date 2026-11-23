@@ -70,6 +70,24 @@ export function decoratorInfo(node: Node): DecoratorInfo | null {
   };
 }
 
+/**
+ * Nest/Express-style route prefix or path from a decorator's first argument.
+ * Returns `''` when the decorator has no path argument (`@Get()`).
+ * Returns `undefined` when an argument is present but not a resolvable string
+ * (non-literal, array, template, or `{ path: CONST }`) so callers fall back to
+ * handler-named rules instead of treating it as an empty path.
+ */
+export function decoratorPath(d: DecoratorInfo | undefined): string | undefined {
+  if (!d) return undefined;
+  const a = d.arguments?.[0];
+  if (!a) return '';
+  if (a.value !== undefined) return a.value;
+  const fromObject = a.text.match(/\bpath\s*:\s*(['"`])([^'"`]*)\1/)?.[2];
+  if (fromObject !== undefined) return fromObject;
+  if (a.text.trim() !== '') return undefined;
+  return '';
+}
+
 function decoratorsOf(nodes: readonly Node[]): DecoratorInfo[] {
   return nodes.filter(n => n.type === 'decorator').map(decoratorInfo).filter((d): d is DecoratorInfo => d !== null);
 }

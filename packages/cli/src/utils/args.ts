@@ -55,6 +55,46 @@ export function parseArgs(argv: string[]): ParsedArgs {
   return { command, args, options };
 }
 
+/** Options every command accepts. */
+const GLOBAL_OPTIONS: readonly string[] = ['help', 'h', 'version', 'V', 'log-level'];
+
+/**
+ * The options each command reads, in every spelling it reads them
+ * (including the short `-p` for `--profile` and `--prod` for `--prod-only`).
+ */
+export const COMMAND_OPTIONS: Readonly<Record<string, readonly string[]>> = {
+  scan: [
+    'language', 'l', 'format', 'f', 'output', 'o', 'quiet', 'q', 'verbose', 'v',
+    'threads', 'file-timeout-ms', 'severity', 'category', 'exclude-cwe', 'disable-pass',
+    'exclude-tests', 'profile', 'p', 'project-profile', 'no-project-profile',
+    'project-profile-explain', 'cross-file-budget-ms', 'max-project-source-chars',
+  ],
+  metrics: ['language', 'l', 'format', 'f', 'output', 'o', 'quiet', 'q', 'category', 'exclude-tests', 'profile', 'p'],
+  sbom: ['format', 'f', 'output', 'o', 'name', 'prod-only', 'prod', 'deterministic', 'license-map'],
+  deadcode: ['language', 'l', 'format', 'f', 'output', 'o', 'root-kinds', 'verdicts', 'bound-registrations', 'exported-packages'],
+  reach: ['language', 'l', 'format', 'f', 'output', 'o', 'root-kinds', 'bound-registrations', 'base', 'exported-packages'],
+  entries: ['language', 'l', 'format', 'f', 'output', 'o', 'facts-arrow', 'facts-scheme', 'exported-packages'],
+  depcalls: ['language', 'l', 'format', 'f', 'output', 'o', 'artifact', 'jar', 'maven-repo'],
+  recheck: ['changed', 'changed-from', 'baseline', 'scope', 'expect-gone', 'renames', 'output', 'o'],
+  'list-passes': [],
+  init: [],
+  version: [],
+};
+
+/**
+ * Options `command` does not take, spelled as typed (`--frobnicate`, `-x`).
+ * They used to be ignored, so a typo such as `--severty high` ran a full
+ * scan with the default. An unknown command is reported on its own, not here.
+ */
+export function unknownOptions(command: string | undefined, options: Record<string, unknown>): string[] {
+  const allowed = command === undefined ? [] : COMMAND_OPTIONS[command];
+  if (allowed === undefined) return [];
+  const known = new Set([...GLOBAL_OPTIONS, ...allowed]);
+  return Object.keys(options)
+    .filter((k) => !known.has(k))
+    .map((k) => (k.length === 1 ? `-${k}` : `--${k}`));
+}
+
 export function showHelp(): void {
   console.log(`
 cognium-dev - Static Application Security Testing CLI
@@ -72,13 +112,13 @@ COMMANDS:
                          (removal-reach@0.1); --base is a git ref or a directory
   entries [path]       The entry-point index (routes, listeners, mains, exports, …)
   depcalls --artifact <g:a[:v]> [path]
-  recheck --changed <files> [--baseline <before.json>] [path]
-                             Re-check a code fix: findings on the changed files keyed by
-                             CWE × declaration; with --baseline, gone / still-present /
-                             new-high / new-other and the no-new-high rule (exit 1 on fail)
                        Java: calls into one Maven artifact, covered or not by tests
                          (dependency-calls@0.1); packages from --jar, the Maven
                          repository (with a version), else a built-in table
+  recheck (--changed <files> | --changed-from <ref>) [path]
+                       Re-check a code fix (cognium-recheck@0.4): findings keyed by
+                         CWE × declaration × rule, with evidence; against a baseline,
+                         gone / still-present / new-high / new-other / unknown
   list-passes [cat]    List all analysis passes (optionally filter by category)
   init                 Initialize a configuration file in your project
   version              Display version information
@@ -89,27 +129,56 @@ GRAPH FACT OPTIONS (deadcode, reach, entries, depcalls):
   -f, --format <format>      text|json; deadcode and reach also take sarif [default: text]
   --root-kinds <kinds>       Entry kinds that count as roots (comma-separated): route,
                                listener, scheduled, main, export, bean, reflection,
-                               lifecycle, test [default: all but test]
+                               lifecycle, test, osgi-ds, extension-point
+                               [default: all but test]
   --verdicts <list>          deadcode: facts to list (live,may-be-live,dead)
                                [default: dead,may-be-live]; the summary counts all
   --bound-registrations      deadcode, reach: narrow a Class.forName site to the types its
                                result is cast or checked against [default: off; a name
                                outside the bound is still initialised, so this can drop
                                a live path]
+  --exported-packages        deadcode, reach, entries, Java only: the public types of the
+                               MANIFEST.MF Export-Package packages are export entries
+                               (a library's surface) [default: off]
   -o, --output <file>        Write to a file instead of stdout
   --jar <file>               depcalls: the resolved jar to read packages from
   --maven-repo <dir>         depcalls: local Maven repository [default: $MAVEN_REPO_LOCAL,
                                else ~/.m2/repository]
-  --facts-arrow <dir>        entries, Java only: also write the facts@1 relations (proposed)
-                               as Arrow IPC files plus manifest.json into <dir>; the
-                               report itself is unchanged
+  --facts-arrow <dir>        entries, Java only: also write the fact relations (facts@2 by
+                               default) as Arrow IPC files plus manifest.json into <dir>;
+                               the report itself is unchanged
+  --facts-scheme <scheme>    entries, with --facts-arrow: the fact schema to write
+                               (facts@1|facts@2) [default: facts@2]
+
+RECHECK OPTIONS:
+  --changed <files>          The changed files (comma-separated, or @list.txt)
+  --changed-from <ref>       Derive the changed files from git (diff against <ref>,
+                               deletions, both sides of a rename and untracked files)
+                               and take the baseline from <ref>; implies --scope closure
+  --baseline <before.json>   The report from the tree before the change
+  --scope <files|closure>    files: analyse only the changed files; closure: analyse the
+                               tree and report every finding whose sink, source or path
+                               touches a changed file [default: files; closure with
+                               --changed-from]
+  --expect-gone <keys>       Keys the change is meant to fix (comma-separated, or
+                               @list.txt); the fix check fails unless each is gone
+  --renames <old=new,...>    File renames between the baseline and the change
+                               (or @list.txt, git diff --name-status -M lines too):
+                               a finding that moved with its file is still-present
+                               (moved); the new paths join --changed. --changed-from
+                               takes renames and copies from git
+  -o, --output <file>        Write the report to a file instead of stdout
+  Exit codes: 0 pass; 1 a new high finding or a targeted key not gone; 2 usage error;
+  3 a verdict is unknown (a changed file did not parse fully, or was not analysed)
 
 SCAN OPTIONS:
   -l, --language <lang>      Scan only files for language (bash|csharp|go|html|java|javascript|typescript|python|rust)
   -f, --format <format>      Output format (text|json|sarif) [default: text]
   --threads <n>              Parallel analysis threads [default: 4]
   --file-timeout-ms <n>      Skip a file whose analysis takes longer than n ms and report it
-                               as an error [default: 0 = no limit]
+                               as an error [default: 0 = no limit]. A step that cannot be
+                               interrupted is stopped after 2n ms (at least n + 1000): the
+                               scan ends with the file named on stderr (exit status 143)
   --severity <level>         Filter by severity:
                                - Single level: minimum severity (e.g., "high" shows high+critical)
                                - Multiple levels: exact match (e.g., "critical,high" shows only those)
@@ -176,6 +245,12 @@ SBOM OPTIONS:
                                (exact + transitive versions).
                                CVE matching is out of scope (deterministic SAST — no network).
 
+EXIT CODES:
+  0  Success (scan: no security finding after filters)
+  1  scan: security findings present · recheck: the no-new-high rule failed
+  2  Usage, configuration or runtime error: an unknown option or bad value,
+       a malformed config file, a path that does not exist
+
 EXAMPLES:
   cognium-dev scan src/
   cognium-dev scan app.java -f json -o results.json
@@ -202,7 +277,9 @@ EXAMPLES:
   cognium-dev reach --base origin/main . -f json     # removal reach of the working tree
   cognium-dev entries . -f json
   cognium-dev entries . --language java -f json -o entries.json --facts-arrow ./facts
+  cognium-dev entries . --language java --facts-arrow ./facts --facts-scheme facts@1
   cognium-dev depcalls --artifact org.apache.logging.log4j:log4j-core:2.17.1 . -f json
+  cognium-dev recheck . --changed-from origin/main --expect-gone 'CWE-89|src/App.java|<decl>|sql_injection'
   cognium-dev list-passes
   cognium-dev list-passes reliability
   cognium-dev init

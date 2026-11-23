@@ -1,0 +1,14 @@
+{
+  "tag": "engine-v4.23.0-rc.1",
+  "sha": "aa646cafb01b0985ab8b6f31c1e84e84f1ada9cb",
+  "version": "aa646cafb01b vs circle-ir-v4.22.0",
+  "date": "2026-11-19",
+  "method": "bench-diff diff via scripts/bench-gate.mjs vs circle-ir-v4.22.0",
+  "results": [
+    {
+      "suite": "bench-diff/owasp",
+      "metric": "tp_loss",
+      "value": 0
+    }
+  ]
+}
