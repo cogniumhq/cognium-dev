@@ -1517,7 +1517,7 @@ async function analyzeFile(
     if (sinkTagsByKey.size > 0) {
       for (const f of taint.flows) {
         const tags = sinkTagsByKey.get(`${f.sink_line}:${f.sink_type}`);
-        if (tags && !f.tags) f.tags = [...tags];
+        if (tags) f.tags = [...new Set([...(f.tags ?? []), ...tags])];
       }
     }
   }
