@@ -213,6 +213,11 @@ export interface LanguageSourcesResult {
    * Used by SinkFilterPass to suppress spurious XSS sinks.
    */
   jsTaintedVars: Map<string, number>;
+  /**
+   * Subscribe callback params (+ callee params seeded from `.subscribe` forwarding)
+   * for InterproceduralPass only — not the full jsTaintedVars map (#1381).
+   */
+  jsSubscribeInterproceduralVars: Set<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +367,10 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     }
 
     const jsTaintedVars = buildJavaScriptTaintedVars(code, language);
+    const jsSubscribeInterproceduralVars = javascriptSubscribeInterproceduralTaintVars(
+      code,
+      language,
+    );
 
     // -- Bash/Shell: taint sources + pattern-based findings --
     if (language === 'bash') {
@@ -856,7 +865,15 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     // re-reading the file.
     attachSourceLineCode(additionalSources, additionalSinks, code);
 
-    return { additionalSources, additionalSinks, additionalSanitizers, pyTaintedVars, pySanitizedVars, jsTaintedVars };
+    return {
+      additionalSources,
+      additionalSinks,
+      additionalSanitizers,
+      pyTaintedVars,
+      pySanitizedVars,
+      jsTaintedVars,
+      jsSubscribeInterproceduralVars,
+    };
   }
 }
 
@@ -3226,6 +3243,26 @@ function collectJavaScriptSubscribeCallbackParams(
     if (!observer) continue;
     const paramList = observer[1] ?? observer[2] ?? observer[3] ?? '';
     for (const name of splitDestructuring(paramList)) pushParam(name, i);
+  }
+  return out;
+}
+
+/** Names InterproceduralPass should merge beyond constProp.tainted (#1381). */
+export function javascriptSubscribeInterproceduralTaintVars(
+  sourceCode: string,
+  language: string,
+): Set<string> {
+  if (!['javascript', 'typescript'].includes(language)) return new Set();
+  const out = new Set<string>();
+  const seeded = new Map<string, number>();
+  for (const { name, line } of collectJavaScriptSubscribeCallbackParams(sourceCode)) {
+    out.add(name);
+    seeded.set(name, line);
+  }
+  const beforeCallee = new Set(seeded.keys());
+  seedJsCalleeParamsFromSubscribeForwarding(sourceCode, seeded);
+  for (const name of seeded.keys()) {
+    if (!beforeCallee.has(name)) out.add(name);
   }
   return out;
 }

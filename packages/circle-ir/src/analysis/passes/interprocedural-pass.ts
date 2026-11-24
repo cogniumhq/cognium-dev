@@ -86,9 +86,9 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
       const lang = graph.ir.meta.language;
       if (
         (lang === 'javascript' || lang === 'typescript') &&
-        langSources.jsTaintedVars.size > 0
+        langSources.jsSubscribeInterproceduralVars.size > 0
       ) {
-        for (const name of langSources.jsTaintedVars.keys()) merged.add(name);
+        for (const name of langSources.jsSubscribeInterproceduralVars) merged.add(name);
       }
       return merged;
     })();
