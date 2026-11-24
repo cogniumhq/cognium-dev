@@ -42,6 +42,12 @@ updates:
           - "web-tree-sitter"
         update-types: [minor, patch]
     # Majors land as their own PR so the breaking change gets its own review.
+    ignore:
+      # typescript-eslint 8.73.0 peer-depends on typescript <6.1.0, so a
+      # TypeScript major (e.g. 7.0.2 in #1191) cannot install. Revisit once
+      # typescript-eslint supports TypeScript 7.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   # Pinned action SHAs/tags go stale silently and are a supply-chain surface
   # in their own right — this repo runs actions on a self-hosted box.
