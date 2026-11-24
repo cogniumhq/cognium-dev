@@ -3153,6 +3153,83 @@ function findJavaScriptCallbackParamSources(sourceCode: string): TaintSource[] {
   return sources;
 }
 
+/** Shared subscribe-callback param discovery (#1224 direct callback, #1381 observer + method forwarding). */
+function subscribeCallbackParamUseLine(
+  lines: string[],
+  subscribeLineIdx: number,
+  paramName: string,
+): number {
+  const end = Math.min(subscribeLineIdx + 12, lines.length);
+  const windowLines = lines.slice(subscribeLineIdx, end);
+  const windowText = windowLines.join('\n');
+  const subMatch = windowText.search(/\.subscribe\s*\(/);
+  const searchFrom = subMatch >= 0 ? subMatch : 0;
+  const afterSubscribe = windowText.slice(searchFrom);
+  const re = new RegExp(`\\b${paramName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+  const m = re.exec(afterSubscribe);
+  if (!m) return subscribeLineIdx + 1;
+  const absoluteIdx = searchFrom + m.index;
+  let consumed = 0;
+  for (let j = 0; j < windowLines.length; j++) {
+    const lineLen = windowLines[j]!.length + (j < windowLines.length - 1 ? 1 : 0);
+    if (consumed + lineLen > absoluteIdx) return subscribeLineIdx + j + 1;
+    consumed += lineLen;
+  }
+  return subscribeLineIdx + 1;
+}
+
+function collectJavaScriptSubscribeCallbackParams(
+  sourceCode: string,
+): Array<{ name: string; line: number }> {
+  const out: Array<{ name: string; line: number }> = [];
+  const seen = new Set<string>();
+  const pushParam = (name: string, subscribeLineIdx: number) => {
+    const id = name.trim().replace(/[,):].*/, '');
+    if (!id || id === 'err' || id === 'error') return;
+    const line = subscribeCallbackParamUseLine(lines, subscribeLineIdx, id);
+    if (seen.has(`${line}:${id}`)) return;
+    seen.add(`${line}:${id}`);
+    out.push({ name: id, line });
+  };
+  const splitDestructuring = (paramList: string): string[] => {
+    const t = paramList.trim();
+    if (t.startsWith('[') || t.startsWith('{')) {
+      return (t.match(/[\p{L}\p{N}_$]+/gu) ?? []).filter(
+        id => !['err', 'error'].includes(id),
+      );
+    }
+    const simple = t.replace(/[,):].*/, '').trim();
+    return simple ? [simple] : [];
+  };
+  const SUBSCRIBE_CB_RE =
+    /\.subscribe\s*\(\s*(?:async\s+)?(?:function\s*\*?\s*(?:\w+\s*)?\(\s*([^)]*)|(?:\(\s*([^)]*)\s*\)|([^,\s]+))\s*(?:[,):]|=>|$))/;
+  const SUBSCRIBE_NEXT_RE =
+    /\bnext\s*:\s*(?:async\s+)?(?:function\s*\*?\s*(?:\w+\s*)?\(\s*([^)]*)|\(\s*([^)]*)\)\s*=>|([^,\s]+)\s*=>)/;
+  const lines = sourceCode.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    const isObserverSubscribe = /\.subscribe\s*\(\s*\{/.test(line);
+    const direct = isObserverSubscribe ? null : line.match(SUBSCRIBE_CB_RE);
+    if (direct) {
+      const paramList = direct[1] ?? direct[2] ?? direct[3] ?? '';
+      for (const name of splitDestructuring(paramList)) pushParam(name, i);
+      continue;
+    }
+    if (!isObserverSubscribe) continue;
+    const window = lines.slice(i, Math.min(i + 12, lines.length)).join(' ');
+    const subscribeIdx = window.lastIndexOf('.subscribe(');
+    const afterSubscribe =
+      subscribeIdx >= 0 ? window.slice(subscribeIdx) : window;
+    const observer = afterSubscribe.match(SUBSCRIBE_NEXT_RE);
+    if (!observer) continue;
+    const paramList = observer[1] ?? observer[2] ?? observer[3] ?? '';
+    for (const name of splitDestructuring(paramList)) pushParam(name, i);
+  }
+  return out;
+}
+
 /**
  * cognium-dev #1224 — RxJS/Observable `.subscribe` callback first-parameter sources.
  *
@@ -3162,25 +3239,14 @@ function findJavaScriptCallbackParamSources(sourceCode: string): TaintSource[] {
  */
 function findJavaScriptSubscribeCallbackParamSources(sourceCode: string): TaintSource[] {
   const sources: TaintSource[] = [];
-  const SUBSCRIBE_CB_RE =
-    /\.subscribe\s*\(\s*(?:async\s+)?(?:function\s*\*?\s*(?:\w+\s*)?\(\s*(\w+)|\(\s*(\w+)\s*(?:[,):]|$)|(\w+)\s*=>)/;
-  const lines = sourceCode.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmed = line.trimStart();
-    if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
-    const m = line.match(SUBSCRIBE_CB_RE);
-    if (!m) continue;
-    const paramName = m[1] ?? m[2] ?? m[3];
-    if (!paramName) continue;
-    if (paramName === 'err' || paramName === 'error') continue;
+  for (const { name, line } of collectJavaScriptSubscribeCallbackParams(sourceCode)) {
     sources.push({
       type: 'http_body',
-      location: `Observable .subscribe(...) callback param '${paramName}' at line ${i + 1}`,
+      location: `Observable .subscribe(...) callback param '${name}' at line ${line}`,
       severity: 'high',
-      line: i + 1,
+      line,
       confidence: 0.9,
-      variable: paramName,
+      variable: name,
     });
   }
   return sources;
@@ -4562,6 +4628,12 @@ export function buildJavaScriptTaintedVars(sourceCode: string, language: string)
     if (!paramName || paramName === 'err' || paramName === 'error') continue;
     tainted.set(paramName, i + 1);
   }
+
+  // cognium-dev #1224 / #1381 — subscribe callback params (incl. `{ next: … }` observer).
+  for (const { name, line } of collectJavaScriptSubscribeCallbackParams(sourceCode)) {
+    if (!tainted.has(name)) tainted.set(name, line);
+  }
+  seedJsCalleeParamsFromSubscribeForwarding(sourceCode, tainted);
 
   // cognium-dev#582 / #490: scan every assignment on the line; #1149: skip
   // matches inside string literals so `WHERE name = '…'` in SQL is not a bind.
@@ -11139,6 +11211,35 @@ export function findJsVueVHtmlXssFindings(
     });
   }
   return out;
+}
+
+/** #1381 — when a subscribe callback forwards a tainted param into `this.meth(arg)`, seed the callee's parameter name for Stage-7 XSS retention in other methods. */
+function seedJsCalleeParamsFromSubscribeForwarding(
+  sourceCode: string,
+  tainted: Map<string, number>,
+): void {
+  const lines = sourceCode.split('\n');
+  const THIS_FORWARD_RE = /\bthis\.(\w+)\s*\(\s*([^,)]+)\s*\)/g;
+  for (let i = 0; i < lines.length; i++) {
+    if (!/\.subscribe\s*\(/.test(lines[i])) continue;
+    const window = lines.slice(i, Math.min(i + 10, lines.length)).join('\n');
+    let m: RegExpExecArray | null;
+    THIS_FORWARD_RE.lastIndex = 0;
+    while ((m = THIS_FORWARD_RE.exec(window)) !== null) {
+      const methodName = m[1];
+      const argExpr = m[2].trim();
+      const argName = argExpr.replace(/[,):].*/, '').trim();
+      if (!argName || !tainted.has(argName)) continue;
+      const paramRe = new RegExp(
+        `\\b${methodName}\\s*\\(\\s*(?:[^:)]*?\\s+)?(\\w+)\\s*:`,
+      );
+      const paramM = sourceCode.match(paramRe);
+      const paramName = paramM?.[1];
+      if (paramName && !tainted.has(paramName)) {
+        tainted.set(paramName, i + 1);
+      }
+    }
+  }
 }
 
 /**
