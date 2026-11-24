@@ -175,6 +175,7 @@ export interface SinkSemanticsEntry {
    * Informational label for the sink's real behavior. One of:
    *   - `db_protocol`         — DB driver wire-protocol serialization
    *   - `jdk_internal`        — JDK-internal reflective bridge
+   *   - `jdk_reflection`      — user-facing reflective class load (Class.forName)
    *   - `functional_dispatch` — RxJava / Function.apply dispatch
    *   - `admin_config`        — admin-configured binary path
    *   - `logging`             — logging/observability sink
@@ -184,6 +185,7 @@ export interface SinkSemanticsEntry {
   real_class:
     | 'db_protocol'
     | 'jdk_internal'
+    | 'jdk_reflection'
     | 'functional_dispatch'
     | 'admin_config'
     | 'logging'

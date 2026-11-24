@@ -4092,6 +4092,12 @@ export const DEFAULT_SINK_SEMANTICS: SinkSemanticsEntry[] = [
     overrides: ['code_injection'],
     note: 'java.lang.invoke.MethodHandle — JDK-internal',
   },
+  {
+    signature: 'Class#forName',
+    real_class: 'jdk_reflection',
+    overrides: ['deserialization'],
+    note: 'User-controlled Class.forName is CWE-94 code_injection; drop CWE-502 duplicate (#1349)',
+  },
 ];
 
 /**

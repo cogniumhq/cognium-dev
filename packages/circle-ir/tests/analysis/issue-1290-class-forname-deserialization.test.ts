@@ -48,8 +48,10 @@ public class YamlReaderShim {
 }
 `;
     const result = await analyze(code, 'YamlReaderShim.java', 'java');
-    const deser = result.taint?.flows?.filter(f => f.sink_type === 'deserialization');
-    expect(deser?.length).toBeGreaterThan(0);
-    expect(deser?.[0]?.source_type).toBe('http_param');
+    const flows = result.taint?.flows ?? [];
+    const codeInj = flows.filter((f) => f.sink_type === 'code_injection');
+    expect(codeInj.length).toBeGreaterThan(0);
+    expect(codeInj[0]?.source_type).toBe('http_param');
+    expect(flows.some((f) => f.sink_type === 'deserialization')).toBe(false);
   });
 });

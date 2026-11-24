@@ -150,6 +150,12 @@
       "real_class": "framework_callback",
       "overrides": ["command_injection"],
       "note": "Android / Netty Handler — Runnable dispatch, not OS exec"
+    },
+    {
+      "signature": "Class#forName",
+      "real_class": "jdk_reflection",
+      "overrides": ["deserialization"],
+      "note": "User-controlled Class.forName is CWE-94 code_injection; CWE-502 duplicate dropped for static #155t/#470t (cognium-dev#1349)"
     }
   ]
 }

@@ -45,9 +45,8 @@ public class UnsafeReflection {
 }
 `;
     const result = await analyze(code, 'UnsafeReflection.java', 'java');
-    const hasFlow = (result.taint.flows ?? []).some(
-      (f) => f.sink_type === 'code_injection' || f.sink_type === 'deserialization',
-    );
-    expect(hasFlow).toBe(true);
+    const flows = result.taint.flows ?? [];
+    expect(flows.some((f) => f.sink_type === 'code_injection')).toBe(true);
+    expect(flows.some((f) => f.sink_type === 'deserialization')).toBe(false);
   });
 });
