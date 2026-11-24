@@ -143,7 +143,8 @@ jobs:
         if: ${{ !cancelled() && !github.event.pull_request.head.repo.fork }}
         continue-on-error: true
         working-directory: head
-        run: cognium-ai scan . --no-llm -f sarif -o "$GITHUB_WORKSPACE/cognium-ai.sarif" -q
+        # --threads 1: as in the compare step, so large files stay under the per-file parse time limit.
+        run: cognium-ai scan . --no-llm --threads 1 -f sarif -o "$GITHUB_WORKSPACE/cognium-ai.sarif" -q
 
       - name: Upload SARIF to code scanning
         if: ${{ !cancelled() && !github.event.pull_request.head.repo.fork && hashFiles('cognium-ai.sarif') != '' }}
