@@ -89,6 +89,9 @@ jobs:
       # 1521 tracked files (`git ls-files | wc -l` on main 1e5d1f39, 2026-11-17).
       - name: Compare base vs head (fail on new findings >= ${{ env.FAIL_ON }})
         id: compare
+        # --threads 1: with parallel parsing, large files sometimes exceeded the
+        # per-file parse time limit on one side only (a different set each run),
+        # so their findings looked new. Single-threaded parsing avoids that.
         run: |
           set -uo pipefail
           cognium-ai compare base head \
@@ -96,6 +99,7 @@ jobs:
             --exit-code \
             --fail-on "$FAIL_ON" \
             --max-files 5000 \
+            --threads 1 \
             -f json -o "$RUNNER_TEMP/compare.json"
           code=$?
           echo "code=$code" >> "$GITHUB_OUTPUT"
