@@ -97,6 +97,7 @@ function makeCtx(opts: {
     pyTaintedVars:     opts.pyTaintedVars     ?? new Map(),
     pySanitizedVars:   opts.pySanitizedVars   ?? new Set(),
     jsTaintedVars:     opts.jsTaintedVars     ?? new Map(),
+    jsSubscribeInterproceduralVars: new Set(),
   };
 
   const constProp = opts.constProp ?? makeConstProp();

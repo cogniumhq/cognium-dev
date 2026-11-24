@@ -20,6 +20,7 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { TaintPropagationPassResult } from './taint-propagation-pass.js';
+import type { LanguageSourcesResult } from './language-sources-pass.js';
 import {
   analyzeInterprocedural,
   findTaintBridges,
@@ -78,6 +79,19 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
     const constProp   = ctx.getResult<ConstantPropagatorResult>('constant-propagation');
     const sinkFilter  = ctx.getResult<SinkFilterResult>('sink-filter');
     const taintProp   = ctx.getResult<TaintPropagationPassResult>('taint-propagation');
+    const langSources = ctx.getResult<LanguageSourcesResult>('language-sources');
+
+    const taintedVariables = (() => {
+      const merged = new Set(constProp.tainted);
+      const lang = graph.ir.meta.language;
+      if (
+        (lang === 'javascript' || lang === 'typescript') &&
+        langSources.jsSubscribeInterproceduralVars.size > 0
+      ) {
+        for (const name of langSources.jsSubscribeInterproceduralVars) merged.add(name);
+      }
+      return merged;
+    })();
 
     const { sources, sinks, sanitizers } = sinkFilter;
 
@@ -115,7 +129,7 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
     // --- Scenario A: sources AND sinks present --------------------------------
     if (sinks.length > 0) {
       const interProc = analyzeInterprocedural(graph, sources, sinks, sanitizers, {
-        taintedVariables: constProp.tainted,
+        taintedVariables,
         sourceCode: typeof ctx.code === 'string' ? ctx.code : undefined,
       });
 
@@ -181,7 +195,24 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
               // (directly or through others). A read in an unrelated function
               // above the call (`loadRules()` while `scan()` calls
               // `this.saveReport(report, outputDir)`) passes nothing to it.
-              if (isJs && !sourceReachesCaller(source.line, edge.callerMethod)) continue;
+              if (isJs && !sourceReachesCaller(source.line, edge.callerMethod)) {
+                const code = typeof ctx.code === 'string' ? ctx.code : '';
+                if (
+                  !(
+                    source.type === 'http_body' &&
+                    source.variable &&
+                    code &&
+                    isSubscribeCallbackForwardingToCallee(
+                      code,
+                      edge.callLine,
+                      source.variable,
+                      method.name,
+                    )
+                  )
+                ) {
+                  continue;
+                }
+              }
               // cognium-dev #128 — drop `interprocedural_param` sources whose
               // enclosing method is a TIER_3_LIBRARY_API surface (utility/helper
               // classes, template/engine packages, JDK facade implementers, or
@@ -286,7 +317,7 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
         return { additionalSinks, additionalFlows, interprocedural };
       }
       const interProc = analyzeInterprocedural(graph, fallbackSources, [], sanitizers, {
-        taintedVariables: constProp.tainted,
+        taintedVariables,
         sourceCode: typeof ctx.code === 'string' ? ctx.code : undefined,
       });
 
@@ -1317,6 +1348,30 @@ export function csharpParamReachesSink(
  * (module scope). Function names are matched by simple name, so two methods of
  * the same name in different classes both count (the looser answer).
  */
+/**
+ * cognium-dev #1381 — RxJS subscribe callbacks are extracted as synthetic
+ * `subscribe_handler` callers; http_body sources on the enclosing `.subscribe(`
+ * line still sit in `load()`. Accept when the call line forwards the source
+ * param into this callee.
+ */
+function isSubscribeCallbackForwardingToCallee(
+  code: string,
+  callLine: number,
+  sourceVar: string,
+  calleeMethodName: string,
+): boolean {
+  const lines = code.split('\n');
+  const start = Math.max(0, callLine - 4);
+  const window = lines.slice(start, Math.min(callLine + 2, lines.length)).join('\n');
+  if (!/\.subscribe\s*\(/.test(window)) return false;
+  const callLineText = lines[callLine - 1] ?? '';
+  const escaped = sourceVar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const calleeShort = calleeMethodName.split('.').pop() ?? calleeMethodName;
+  return new RegExp(`\\bthis\\.${calleeShort}\\s*\\(\\s*${escaped}\\b`).test(
+    callLineText,
+  );
+}
+
 function makeSourceReachesCaller(
   ir: CircleIR,
   edges: InterproceduralResult['callEdges'],
