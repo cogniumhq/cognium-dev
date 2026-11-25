@@ -202,11 +202,6 @@ function hasEnumerableCallers(
 
 const TRANSITIVE_MAX_DEPTH = 4;
 
-/** Clear a cycle-guard key without a `.delete()` member call (cognium-ai missing-auth-guard FP). */
-function releaseVisitKey(visiting: Set<string>, visitKey: string): void {
-  Set.prototype.delete.call(visiting, visitKey);
-}
-
 function isConstantArgRecursive(
   ctx: ConstantCallerCtx,
   ir: CircleIR,
@@ -243,23 +238,23 @@ function isConstantArgRecursive(
     // this relay receiving tainted data, so the relay's argument is not known to be constant.
     if (resolvesElsewhere(r, fqn)) continue;
     if (!r || r.resolution !== 'exact') {
-      releaseVisitKey(visiting, visitKey);
+      visiting.delete(visitKey);
       return false;
     }
     if (r.targetMethod !== fqn || (relayFile !== undefined && site.file !== relayFile && r.targetFile !== relayFile)) continue;
     const callerIr = ctx.fileAnalyses.find(f => f.file === site.file)?.analysis;
     const callerLines = ctx.sourceLinesByFile.get(site.file);
     if (!callerIr || !callerLines) {
-      releaseVisitKey(visiting, visitKey);
+      visiting.delete(visitKey);
       return false;
     }
     if (!isConstantArgRecursive(ctx, callerIr, callerLines, site.call, paramIdx, depth + 1, visiting)) {
-      releaseVisitKey(visiting, visitKey);
+      visiting.delete(visitKey);
       return false;
     }
     resolvedToMethod++;
   }
-  releaseVisitKey(visiting, visitKey);
+  visiting.delete(visitKey);
   return resolvedToMethod > 0;
 }
 
