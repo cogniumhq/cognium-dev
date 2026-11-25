@@ -281,7 +281,8 @@ export async function parse(
  * top-level `analyze()` can attach to the IR so consumers can distinguish
  * "no findings" from "no findings because half the file didn't parse".
  *
- * Locations are capped at 50 entries to bound memory on pathological inputs.
+ * Locations are capped at the first 50 in source order to bound memory on
+ * pathological inputs.
  * Each location carries the ERROR / MISSING node's span (cognium-dev#1307).
  */
 export function extractParseStatus(tree: Tree): {
@@ -301,8 +302,10 @@ export function extractParseStatus(tree: Tree): {
   const locations: ParseErrorLocation[] = [];
   let errorCount = 0;
 
-  // Iterative DFS using a stack — avoids recursion limits on deeply nested
-  // trees that already failed parsing.
+  // Iterative pre-order DFS using a stack — avoids recursion limits on deeply
+  // nested trees that already failed parsing. Children are pushed last-first
+  // so they are popped in source order, and the 50-entry cap keeps the first
+  // 50 errors of the file rather than an arbitrary 50.
   const stack: Node[] = [root];
   while (stack.length > 0) {
     const node = stack.pop()!;
@@ -319,7 +322,7 @@ export function extractParseStatus(tree: Tree): {
     }
     // Only descend into subtrees that themselves carry errors — saves a
     // huge amount of walking on otherwise-clean files with one bad region.
-    for (let i = 0; i < node.childCount; i++) {
+    for (let i = node.childCount - 1; i >= 0; i--) {
       const child = node.child(i);
       if (child && (child.hasError || child.isMissing)) {
         stack.push(child);
@@ -327,7 +330,7 @@ export function extractParseStatus(tree: Tree): {
     }
   }
 
-  // The stack walk visits later siblings first; report spans in source order.
+  // Pre-order already yields source order; the sort is a cheap guard.
   locations.sort((a, b) => a.line - b.line || a.column - b.column);
 
   return {

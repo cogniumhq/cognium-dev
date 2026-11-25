@@ -40,6 +40,19 @@ describe('partial parse keeps declarations (#1307)', () => {
       const order = locs.map((l) => l.line * 1000 + l.column);
       expect(order).toEqual([...order].sort((a, b) => a - b));
     });
+
+    it('past 50 errors, reports the first 50 in source order', async () => {
+      const methods = Array.from({ length: 60 }, (_, i) => `  void m${i}() { int x = ; }`);
+      const code = ['public class Many {', ...methods, '}'].join('\n');
+      const ir = await analyze(code, 'Many.java', 'java');
+      const status = ir.parse_status!;
+      expect(status.error_count).toBeGreaterThan(50);
+      expect(status.error_locations).toHaveLength(50);
+      // One error per method line, lines 2 .. 61: the first 50 are lines 2 .. 51.
+      expect(status.error_locations.map((l) => l.line)).toEqual(
+        Array.from({ length: 50 }, (_, i) => i + 2),
+      );
+    });
   });
 
   describe('JavaScript / TypeScript', () => {

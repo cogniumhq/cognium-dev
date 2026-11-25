@@ -1308,7 +1308,7 @@ export interface ParseStatus {
   error_count: number;
   /**
    * 1-based line / 0-based column of each ERROR or MISSING node, in
-   * source order, capped at 50 entries to bound memory. Lets consumers
+   * source order, capped at the first 50 to bound memory. Lets consumers
    * highlight specific lines without re-walking the tree.
    */
   error_locations: ParseErrorLocation[];
