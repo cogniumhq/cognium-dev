@@ -8488,11 +8488,19 @@ function splitsOnBothSeparators(arg: string): boolean {
   return hasBackslash && hasSlash;
 }
 
-/** Calls whose result is a decoded or rewritten value, not the value a guard checked. */
-const JS_REWRITING_CALLEES = new Set([
-  'decodeURIComponent', 'decodeURI', 'unescape', 'atob', 'from', 'replace', 'replaceAll',
-  'slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toLowerCase', 'toUpperCase',
-  'concat', 'padStart', 'padEnd', 'repeat', 'String', 'split', 'map',
+/**
+ * Calls an argument of which is used as is (#1416 re-review 2): the path builders and the
+ * path sinks. An allow-list: any other callee, a local wrapper included, may decode or
+ * rewrite its argument, so a guard on the raw value does not cover its result.
+ */
+const JS_PATH_BUILDERS = new Set(['join', 'resolve', 'normalize']);
+const JS_PATH_BUILDER_RECEIVERS = new Set(['path', 'nodePath', 'Path', 'posix', 'win32']);
+const JS_PATH_SINK_CALLEES = new Set([
+  'readFile', 'readFileSync', 'writeFile', 'writeFileSync', 'appendFile', 'appendFileSync',
+  'createReadStream', 'createWriteStream', 'open', 'openSync', 'stat', 'statSync',
+  'lstat', 'lstatSync', 'access', 'accessSync', 'existsSync', 'readdir', 'readdirSync',
+  'mkdir', 'mkdirSync', 'rm', 'rmSync', 'rmdir', 'rmdirSync', 'unlink', 'unlinkSync',
+  'copyFile', 'copyFileSync', 'rename', 'renameSync', 'sendFile', 'download',
 ]);
 
 /** The identifier that ends `text` (after trailing whitespace), or undefined. A plain scan, no regex. */
@@ -8504,12 +8512,24 @@ function trailingIdentifier(text: string): string | undefined {
   return id && /^[A-Za-z_$]/.test(id) ? id : undefined;
 }
 
+/** Whether `head` (the text before a call's `(`) names a path builder or a path sink. */
+function isPathCall(head: string): boolean {
+  const callee = trailingIdentifier(head);
+  if (!callee) return false;
+  if (JS_PATH_SINK_CALLEES.has(callee)) return true;
+  if (!JS_PATH_BUILDERS.has(callee)) return false;
+  const rest = head.trimEnd().slice(0, -callee.length).trimEnd();
+  if (!rest.endsWith('.')) return true;   // a bare `join(…)` imported from `path`
+  const receiver = trailingIdentifier(rest.slice(0, -1));
+  return receiver !== undefined && JS_PATH_BUILDER_RECEIVERS.has(receiver);
+}
+
 /**
- * Whether every mention of `v` on `line` uses the value as is (#1416 review 1): a direct
- * argument of a call that is not decoding or rewriting (`path.join(ROOT, name)`,
- * `fs.readFileSync(name)`), or the right side of a plain alias (`const x = name;`). A
- * method call on it (`name.replace(…)`), an argument of `decodeURIComponent(…)` and the
- * like, or any other expression around it is not as is.
+ * Whether every mention of `v` on `line` uses the value as is (#1416 review 1, re-review 2):
+ * a direct argument of a path builder or a path sink (`path.join(ROOT, name)`,
+ * `fs.readFileSync(name)`). A method call on it (`name.replace(…)`), an argument of any
+ * other call (`decodeURIComponent(name)`, a local `dec(name)`), an assignment or any other
+ * expression around it is not as is.
  */
 function usedAsIs(line: string, v: string): boolean {
   const esc = v.replace(/\$/g, '\\$');
@@ -8522,13 +8542,8 @@ function usedAsIs(line: string, v: string): boolean {
     const after = line.slice(m.index + v.length).trimStart();
     const prev = before.slice(-1);
     const next = after.charAt(0);
-    if (prev === '=' && /(?:^|[^=!<>])=$/.test(before)) {
-      // a plain alias: `const|let|var x = v` and nothing after but `;`
-      if (!/^\s*(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=$/.test(before) || !/^;?\s*(?:\/\/.*)?$/.test(after)) return false;
-      continue;
-    }
     if ((prev !== '(' && prev !== ',') || (next !== ')' && next !== ',')) return false;
-    // the call it is an argument of: the identifier before the nearest unclosed `(`
+    // the call it is an argument of: the text before the nearest unclosed `(`
     let depth = 0;
     let open = -1;
     for (let k = before.length - 1; k >= 0; k--) {
@@ -8539,11 +8554,17 @@ function usedAsIs(line: string, v: string): boolean {
         depth--;
       }
     }
-    if (open < 0) return false;
-    const callee = trailingIdentifier(before.slice(0, open));
-    if (!callee || JS_REWRITING_CALLEES.has(callee)) return false;
+    if (open < 0 || !isPathCall(before.slice(0, open))) return false;
   }
   return any;
+}
+
+/** `const|let|var x = <one of names>;` on its own: the alias name, or undefined. */
+function plainAliasOf(line: string, names: Iterable<string>): string | undefined {
+  const m = /^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)(?:\s*;)?(?:\s*\/\/.*)?$/.exec(line.trim());
+  if (!m) return undefined;
+  for (const n of names) if (n === m[2]) return m[1];
+  return undefined;
 }
 
 /**
@@ -8565,11 +8586,13 @@ function usedAsIs(line: string, v: string): boolean {
  *
  * Credits the guard line and every later line in the same block, until the
  * variable is reassigned (`jsGuardCreditLines`), where the variable is used as
- * is: a direct argument (`path.join(ROOT, name)`, the sink) or a plain alias
- * (`const x = name`). A line that decodes or rewrites it
- * (`decodeURIComponent(name)`, `name.replace(…)`, `Buffer.from(name)`, …) is not
+ * is: a direct argument of a path builder or a path sink (`path.join(ROOT, name)`,
+ * `fs.readFileSync(name)`). A line that decodes or rewrites it
+ * (`decodeURIComponent(name)`, `name.replace(…)`, a local `dec(name)`, …) is not
  * credited: the guard checked the raw value, and `%2e%2e/` decodes to `../`
- * after it. Only `path_traversal` is sanitized.
+ * after it. A plain alias (`const safe = name`) is followed, not credited: its
+ * later lines are held to the same rule, so `decodeURIComponent(safe)` still
+ * reports. Only `path_traversal` is sanitized.
  */
 function findJsAbsoluteDotDotGuardSanitizers(code: string): TaintSanitizer[] {
   const sanitizers: TaintSanitizer[] = [];
@@ -8605,10 +8628,22 @@ function findJsAbsoluteDotDotGuardSanitizers(code: string): TaintSanitizer[] {
     if (!dd || (dd[1] !== undefined && !splitsOnBothSeparators(dd[1]))) continue;
     if (!guardRejects(lines, i, terminatorRe, 4)) continue;
 
-    const varRefRe = new RegExp(`(?<![\\w$.])${esc}(?![\\w$])`);
-    for (const l of jsGuardCreditLines(lines, i, v)) {
-      if (!varRefRe.test(lines[l])) continue;
-      if (l !== i && !usedAsIs(lines[l], v)) continue;
+    const range = jsGuardCreditLines(lines, i, v);
+    const inRange = new Set(range);
+    // the guarded value and its plain aliases, each with the lines it is live on
+    const carriers = new Map<string, Set<number>>([[v, inRange]]);
+    const refRe = (n: string) => new RegExp(`(?<![\\w$.])${n.replace(/\$/g, '\\$')}(?![\\w$])`);
+    for (const l of range) {
+      const named = [...carriers].filter(([n, live]) => live.has(l) && refRe(n).test(lines[l]));
+      if (named.length === 0) continue;
+      if (l !== i) {
+        const alias = plainAliasOf(lines[l], named.map(([n]) => n));
+        if (alias !== undefined) {
+          carriers.set(alias, new Set(jsGuardCreditLines(lines, l, alias).filter((x) => x > l && inRange.has(x))));
+          continue;
+        }
+        if (!named.every(([n]) => usedAsIs(lines[l], n))) continue;
+      }
       sanitizers.push({
         type: 'js_absolute_dotdot_guard',
         method: 'isAbsolute',

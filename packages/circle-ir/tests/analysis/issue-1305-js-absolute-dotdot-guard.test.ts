@@ -157,6 +157,64 @@ describe('cognium-dev#1305 E4 — absolute-path and `..`-segment guard', () => {
     expect(await pathTraversalFlows(code)).toHaveLength(0);
   });
 
+  // #1416 re-review 1: an alias is followed, so decoding it later is the same as decoding the name.
+  it('recall: a plain alias decoded after the guard still reports', async () => {
+    const code = [
+      ...head,
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      'const safe = name;',
+      'fs.readFileSync(path.join(ROOT, decodeURIComponent(safe)));',
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('an alias of an alias used as is is still credited', async () => {
+    const code = [
+      ...head,
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.includes('..')) throw new Error('x');",
+      'const safe = name;',
+      'const safer = safe;',
+      'fs.readFileSync(path.join(ROOT, safer));',
+    ].join('\n');
+    expect(await pathTraversalFlows(code)).toHaveLength(0);
+  });
+
+  // #1416 re-review 2: only path calls and path sinks are credited; any other callee may rewrite.
+  it('recall: a local decoding wrapper after the guard still reports', async () => {
+    const code = [
+      ...head,
+      'const dec = (s: string) => decodeURIComponent(s);',
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      'fs.readFileSync(path.join(ROOT, dec(name)));',
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('recall: a local wrapper on the alias still reports', async () => {
+    const code = [
+      ...head,
+      'const dec = (s: string) => decodeURIComponent(s);',
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.includes('..')) throw new Error('x');",
+      'const safe = name;',
+      'fs.readFileSync(path.join(ROOT, dec(safe)));',
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('path.resolve and a direct fs read of the guarded name are credited', async () => {
+    const code = [
+      ...head,
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.includes('..')) throw new Error('x');",
+      'fs.createReadStream(path.resolve(ROOT, name));',
+    ].join('\n');
+    expect(await pathTraversalFlows(code)).toHaveLength(0);
+  });
+
   // #1416 review 2: path.join on Windows splits on `\` too, so a POSIX-only segment test is not a guard.
   it("recall: a POSIX-only split('/') segment test still reports (`..\\x` passes it)", async () => {
     const code = [
