@@ -147,6 +147,51 @@ describe('SARIF 2.1.0 conformance', () => {
     expect(validate(doc)).toEqual([]);
   });
 
+  // #1306 — a file with no result at all (never read past the ceiling, or
+  // left out by analyzeProject) was absent from SARIF, which reads as clean.
+  test('a file never read past the project size ceiling is its own warning at that file', () => {
+    const doc = JSON.parse(formatSARIF([{ file: 'src/A.java', vulnerabilities: [] }], {
+      taintPaths: [],
+      crossFileCalls: [],
+      projectSizeBudgetExceeded: true,
+      filesAnalysed: 1,
+      filesTotal: 3,
+      unanalysedFiles: [
+        { file: 'src/B.java', reason: 'project-size-ceiling' },
+        { file: 'src/C.java', reason: 'project-size-ceiling' },
+      ],
+    }));
+    const invocation = doc.runs[0].invocations[0];
+    expect(invocation.executionSuccessful).toBe(false);
+    const perFile = invocation.toolExecutionNotifications.filter((n: { locations?: unknown }) => n.locations);
+    expect(perFile).toEqual(['src/B.java', 'src/C.java'].map(uri => ({
+      level: 'warning',
+      message: { text: 'File not analysed: the project size ceiling was reached before it was read. Raise it with --max-project-source-chars <n> (0 = unlimited).' },
+      locations: [{ physicalLocation: { artifactLocation: { uri } } }],
+      properties: { reason: 'project-size-ceiling' },
+    })));
+    expect(validate(doc)).toEqual([]);
+  });
+
+  test('a file the analyser returned no result for is an error at that file, and the run is unsuccessful', () => {
+    const doc = JSON.parse(formatSARIF([{ file: 'src/A.java', vulnerabilities: [] }], {
+      taintPaths: [],
+      crossFileCalls: [],
+      unanalysedFiles: [{ file: 'src/Gone.java', reason: 'no-result' }],
+    }));
+    const invocation = doc.runs[0].invocations[0];
+    expect(invocation.executionSuccessful).toBe(false);
+    expect(invocation.toolExecutionNotifications).toEqual([
+      {
+        level: 'error',
+        message: { text: 'File not analysed: the analyser returned no result for it.' },
+        locations: [{ physicalLocation: { artifactLocation: { uri: 'src/Gone.java' } } }],
+        properties: { reason: 'analysis-error' },
+      },
+    ]);
+    expect(validate(doc)).toEqual([]);
+  });
+
   test('a complete scan says so and carries no notification', () => {
     const doc = JSON.parse(formatSARIF([{ file: 'src/Clean.java', vulnerabilities: [] }]));
     expect(doc.runs[0].invocations).toEqual([{ executionSuccessful: true }]);
