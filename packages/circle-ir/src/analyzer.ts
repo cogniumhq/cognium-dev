@@ -882,13 +882,14 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
       // queries both at tree-root scope; without cache membership each
       // query fell back to a full-tree `findNodes` walk per file.
       // `explicit_constructor_invocation` (`super(…)` / `this(…)`) is read by
-      // `extractCalls` under `navigationTypes`.
+      // `extractCalls` under `navigationTypes`; `method_reference` by
+      // `extractCalls` always.
       return new Set([
         'method_invocation', 'object_creation_expression', 'class_declaration',
         'method_declaration', 'constructor_declaration', 'field_declaration',
         'import_declaration', 'interface_declaration', 'enum_declaration',
         'package_declaration', 'local_variable_declaration',
-        'explicit_constructor_invocation',
+        'explicit_constructor_invocation', 'method_reference',
       ]);
   }
 }

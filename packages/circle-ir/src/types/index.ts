@@ -176,6 +176,15 @@ export interface CallInfo {
    */
   in_type?: string | null;
   is_constructor?: boolean;
+  /**
+   * Java only: the call site is a method reference, not an invocation, and
+   * this is its form. `method` is `X::m` (`System.out::println`,
+   * `String::length`, `this::f`), with `X` as the receiver; `super` is
+   * `super::m`; `constructor` is `T::new`, named like `new T(…)`. A method
+   * reference passes no arguments where it is written, so `arguments` is
+   * empty. `T[]::new` creates an array and is not a call site.
+   */
+  reference_form?: 'method' | 'super' | 'constructor';
   // PENDING: Call resolution
   resolved?: boolean;
   resolution?: CallResolution;
