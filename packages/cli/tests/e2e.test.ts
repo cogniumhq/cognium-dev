@@ -165,6 +165,28 @@ describe('files not fully analysed', () => {
   }, 30_000);
 });
 
+// ─── #1311: React Native / Expo .plist files are scanned for secrets ─────────
+
+describe('scan reads .plist property lists for secrets (#1311)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cognium-plist-'));
+  mkdirSync(join(dir, 'ios/ExpoDemo'), { recursive: true });
+  writeFileSync(join(dir, 'App.tsx'), 'export default function App() { return null; }\n');
+  // Fabricated value, exercising the named-credential matcher.
+  writeFileSync(join(dir, 'ios/ExpoDemo/Info.plist'),
+    '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n  <key>CFBundleIdentifier</key>\n  <string>com.example.expodemo</string>\n  <key>PaymentsApiKey</key>\n  <string>Xk9#mQ2vLp7Rt4Wz</string>\n</dict>\n</plist>\n');
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('JSON reports the Info.plist credential; --disable-pass scan-secrets turns it off', async () => {
+    const on = await run('scan', dir, '-f', 'json', '-q');
+    const plist = (j: { results: Array<{ file: string; vulnerabilities: Array<{ type: string; line: number; cwe?: string }> }> }) =>
+      j.results.find(r => r.file.endsWith('ios/ExpoDemo/Info.plist'))?.vulnerabilities ?? [];
+    expect(plist(JSON.parse(on.stdout)).map(v => [v.type, v.line, v.cwe])).toEqual([['hardcoded-credential', 7, 'CWE-798']]);
+    expect(on.exitCode).toBe(1);
+    const off = await run('scan', dir, '-f', 'json', '-q', '--disable-pass', 'scan-secrets');
+    expect(plist(JSON.parse(off.stdout))).toEqual([]);
+  }, 60_000);
+});
+
 // ─── The entry-path gate's drops are counted, with the flag that keeps them ─
 
 describe('require-entry-path drops are reported', () => {

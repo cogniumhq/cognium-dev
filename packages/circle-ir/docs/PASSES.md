@@ -169,7 +169,10 @@ Pass #90 `scan-secrets` detects hardcoded credentials across all 7
 supported languages via two detection layers, with deduplication
 against the legacy Bash `hardcoded-credential` detection in
 `LanguageSourcesPass`. Test-file paths are skipped (`__tests__/`,
-`*.test.*`, `*Test.java`, etc.).
+`*.test.*`, `*Test.java`, etc.). `analyzeProject` also runs it over the
+XML property lists (`*.plist`) in `AnalyzerOptions.resources`, pairing each
+`<key>` with the `<string>` after it, and reports those findings in
+`ProjectAnalysis.resource_findings` (cognium-dev#1311).
 
 | # | rule_id | CWE | level | status | Description |
 |---|---------|-----|-------|--------|-------------|
