@@ -1,0 +1,140 @@
+/**
+ * cognium-dev #915 — a map read that is overwritten before use does not start
+ * a project-phase xss path.
+ *
+ * The 23 safe OWASP xss cases the nightly sweep still flags (BenchmarkTest00288,
+ * 02135, 02052, …) all come from the project phase, not from per-file flows.
+ * Each one reads the request value back out of a local map
+ * (`bar = (String) map.get("keyB")`, a `plugin_param` source) and then replaces
+ * it before it is used: `bar = (String) map.get("keyA")` reads the literal
+ * entry, or the helper returns an unrelated constant-derived value. The
+ * interprocedural phase matched the source's variable by name, so it reported
+ * the caller-body sink, and it marked the helper's return as a source even
+ * when no source value reaches the `return`.
+ */
+import { describe, it, expect, beforeAll } from 'vitest';
+import { initAnalyzer, analyzeProject } from '../../src/analyzer.js';
+
+const servlet = (doPostBody: string, helperBody = '        return param;') => `package org.example.testcode;
+
+import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class Xss extends HttpServlet {
+    public void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String param = request.getParameter("Xss");
+        if (param == null) param = "";
+${doPostBody}
+    }
+
+    private static String doSomething(HttpServletRequest request, String param) throws IOException {
+${helperBody}
+    }
+}
+`;
+
+const OTHER = `package org.example.testcode;
+
+public class Other {
+    public static String wrap(String s) {
+        return s.trim();
+    }
+}
+`;
+
+async function xssPaths(doPostBody: string, helperBody?: string) {
+  const pa = await analyzeProject([
+    { filePath: 'Xss.java', code: servlet(doPostBody, helperBody), language: 'java' },
+    { filePath: 'Other.java', code: OTHER, language: 'java' },
+  ], {});
+  return (pa.taint_paths ?? []).filter(p => p.sink.type === 'xss').length;
+}
+
+const CALLER_MAP = `        String bar = "safe!";
+        java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
+        map.put("keyA", "a_Value");
+        map.put("keyB", param);
+        bar = (String) map.get("keyB");`;
+
+const SINK_HELPER = `        String bar = doSomething(request, param);
+        response.getWriter().write(bar);`;
+
+describe('#915 overwritten map read in the project phase', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  it('caller reads the request key, then the literal key: clean (BenchmarkTest00288 shape)', async () => {
+    expect(await xssPaths(`${CALLER_MAP}
+        bar = (String) map.get("keyA");
+        response.getWriter().write(bar);`)).toBe(0);
+  });
+
+  it('caller sinks the request key read: still fires', async () => {
+    expect(await xssPaths(`${CALLER_MAP}
+        response.getWriter().write(bar);`)).toBeGreaterThan(0);
+  });
+
+  it('caller passes the map read through a helper in another file: still fires', async () => {
+    expect(await xssPaths(`${CALLER_MAP}
+        bar = Other.wrap(bar);
+        response.getWriter().write(bar);`)).toBeGreaterThan(0);
+  });
+
+  it('caller sinks a map read that only some paths assign: still fires', async () => {
+    expect(await xssPaths(`        java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
+        map.put("keyB", param);
+        String bar = "";
+        if (param.length() > 1) {
+            bar = (String) map.get("keyB");
+        }
+        response.getWriter().write(bar);`)).toBeGreaterThan(0);
+  });
+
+  it('helper returns a map read that only some paths assign: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `        java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
+        map.put("keyB", param);
+        String bar = "";
+        if (param.length() > 1) {
+            bar = (String) map.get("keyB");
+        }
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper reads the map, then returns an unrelated value: clean (BenchmarkTest02135 shape)', async () => {
+    expect(await xssPaths(SINK_HELPER, `        java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
+        map.put("key", param);
+        String c = (String) map.get("key");
+        String d = c.substring(0, c.length() - 1);
+        String g = "barbarians_at_the_gate";
+        String bar = Other.wrap(g);
+        return bar;`)).toBe(0);
+  });
+
+  it('helper reads the request key, then the literal key: clean (BenchmarkTest02052 shape)', async () => {
+    expect(await xssPaths(SINK_HELPER, `        String bar = "safe!";
+        java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
+        map.put("keyA", "a_Value");
+        map.put("keyB", param);
+        bar = (String) map.get("keyB");
+        bar = (String) map.get("keyA");
+        return bar;`)).toBe(0);
+  });
+
+  it('helper returns the request key read: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `        java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
+        map.put("keyB", param);
+        String bar = (String) map.get("keyB");
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper returns a value derived from the map read: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `        java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
+        map.put("keyB", param);
+        String c = (String) map.get("keyB");
+        String bar = c.substring(0, c.length() - 1);
+        return bar;`)).toBeGreaterThan(0);
+  });
+});

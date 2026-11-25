@@ -1283,7 +1283,8 @@ export class CrossFileResolver {
             //     local def on this caller line as tainted (the assignment LHS).
             const calleeNode0 = methodIndex.get(resolved.targetMethod);
             if (callee.returnsSource && !callee.sanitizes && callee.sourceType &&
-                !(calleeNode0 && this.sourcesOnlySteerBranches(callee.file, calleeNode0.ir, calleeNode0.method))) {
+                !(calleeNode0 && this.sourcesOnlySteerBranches(callee.file, calleeNode0.ir, calleeNode0.method)) &&
+                !(calleeNode0 && this.javaSourcesMissReturn(callee.file, calleeNode0.ir, calleeNode0.method))) {
               const calleeNode = calleeNode0;
               const calleeSourceLine = calleeNode
                 ? this.findRealSourceLineInMethod(calleeNode.ir, calleeNode.method)
@@ -1391,6 +1392,11 @@ export class CrossFileResolver {
                 for (const arg of this.dangerousSinkArguments(sink, sinkCall)) {
                   const matched = this.matchTaintedArg(arg, tainted, isJs);
                   if (!matched) continue;
+                  // #915: the source's value is overwritten before the sink
+                  // (`bar = map.get("keyB"); bar = map.get("keyA"); write(bar)`).
+                  if (callerIR.meta.language === 'java' && matched.origin.defIds &&
+                      this.noReachingDefIn(callerIR, sink.line, matched.var,
+                        this.allChainReachableDefs(callerIR, matched.origin.defIds))) continue;
                   const key = `${matched.origin.file}:${matched.origin.line}→${callerFile}:${sink.line}`;
                   if (seen.has(key)) continue;
                   seen.add(key);
@@ -2134,6 +2140,95 @@ export class CrossFileResolver {
       }
     }
     return true;
+  }
+
+  /**
+   * True when the DFG proves no source value inside a Java `method` reaches
+   * any of its `return` statements, so its return is not a source for
+   * cross-file chaining (#915).
+   *
+   * OWASP helpers read the request value back out of a local map
+   * (`c = (String) map.get("key")`, a `plugin_param` source) and then return
+   * something else: the literal entry (`bar = (String) map.get("keyA")`) or an
+   * unrelated value (`bar = thing.doSomething("barbarians_at_the_gate")`).
+   *
+   * Conservative: every source must name its local, and every `return` must
+   * be a string literal or a plain local whose reaching def the DFG knows.
+   * The walk follows every def-use chain, with no stop at cross-file calls.
+   */
+  private javaSourcesMissReturn(file: string, ir: CircleIR, method: MethodInfo): boolean {
+    if (ir.meta.language !== 'java') return false;
+    const lines = this.sourceLines?.get(file);
+    const chains = ir.dfg.chains;
+    if (!lines || !chains || chains.length === 0) return false;
+    const real = ir.taint.sources.filter(s =>
+      s.type !== 'interprocedural_param' && s.line >= method.start_line && s.line <= method.end_line);
+    if (real.length === 0) return false;
+
+    const seeds = new Set<number>();
+    for (const src of real) {
+      if (!src.variable) return false;
+      const defs = ir.dfg.defs.filter(d => d.variable === src.variable && d.line === src.line);
+      if (defs.length === 0) return false;
+      for (const d of defs) seeds.add(d.id);
+    }
+    const reached = this.allChainReachableDefs(ir, seeds);
+
+    let returns = 0;
+    for (let l = method.start_line; l <= method.end_line; l++) {
+      const raw = lines[l - 1] ?? '';
+      const slash = raw.indexOf('//');
+      let text = (slash >= 0 ? raw.slice(0, slash) : raw).trim();
+      if (!/\breturn\b/.test(text)) continue;
+      if (text.startsWith('}')) text = text.slice(1).trimStart();
+      const m = /^return\s(.*);$/.exec(text);
+      if (!m) return false;
+      returns++;
+      const expr = m[1].trim();
+      if (/^"(?:[^"\\]|\\.)*"$/.test(expr)) continue;
+      const id = /^([A-Za-z_$][\w$]*)$/.exec(expr)?.[1];
+      if (!id || !this.noReachingDefIn(ir, l, id, reached)) return false;
+    }
+    return returns > 0;
+  }
+
+  /**
+   * `seeds` plus every def they reach over `dfg.chains` (#915). Unlike
+   * `forwardReachableDefs`, it does not stop at cross-file calls, so a value
+   * passed through a helper in another file (`bar = Util.trim(bar)`) still
+   * counts as carrying the source.
+   */
+  private allChainReachableDefs(ir: CircleIR, seeds: Set<number>): Set<number> {
+    const reached = new Set<number>(seeds);
+    const chains = ir.dfg.chains ?? [];
+    const frontier = [...reached];
+    while (frontier.length > 0) {
+      const cur = frontier.pop()!;
+      for (const ch of chains) {
+        if (ch.from_def !== cur || reached.has(ch.to_def)) continue;
+        reached.add(ch.to_def);
+        frontier.push(ch.to_def);
+      }
+    }
+    return reached;
+  }
+
+  /**
+   * True when `varName` is used at `line` and none of its reaching defs there
+   * is in `taintDefIds` (#915). Unlike `taintClobbered`, which reads the first
+   * use only, this checks every reaching def: the Java DFG lists one use per
+   * def that may reach it (`data = ""; if (…) data = source; sink(data)`).
+   * False when the DFG has no reaching def for the use.
+   */
+  private noReachingDefIn(
+    ir: CircleIR,
+    line: number,
+    varName: string,
+    taintDefIds: Set<number> | undefined,
+  ): boolean {
+    if (!taintDefIds || taintDefIds.size === 0) return false;
+    const uses = ir.dfg.uses.filter(u => u.line === line && u.variable === varName && u.def_id !== null);
+    return uses.length > 0 && uses.every(u => !taintDefIds.has(u.def_id!));
   }
 
   /** #914 — local assigned from a source, then only read in branch conditions. */
