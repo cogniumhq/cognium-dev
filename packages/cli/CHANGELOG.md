@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A valueless or missing `-p`/`--profile` is a usage error (exit `2`), in `scan`, `sbom` and `metrics`.** Old: `--profile` with no value, or naming a file that does not exist, was ignored and the command ran without that config. New: `Error: --profile requires a config file path` or `Error: --profile: config file not found: <file>`. The `sbom` usage line and `--help` now list `-p, --profile <file>`.
+- **`scan`: `.mts` and `.cts` files are scanned as TypeScript (#1390).** The CLI's extension map skipped them, unlike circle-ir's `detectLanguage`, so a directory scan left them out.
+- **`scan`: the Bash `predictable-temp-file` rule reports CWE-379 instead of CWE-377 (#1391, circle-ir fix).** It maps to CWE-379 (Creation of Temporary File in Directory with Incorrect Permissions), since 377 is deprecated in CWE 5.0. A `--exclude-cwe CWE-377` no longer hides it; use `CWE-379`.
 - **`sbom`: reads the `exclude` patterns of `cognium.config.json` (or `-p`/`--profile <file>`), so a manifest under an excluded path adds no components (#1388).** `include` is not applied: it lists source files such as `src/**/*.ts`, not manifests. A malformed config now makes `sbom` exit `2`, as it does for `scan`.
 - **`scan`: env in `spawn` options is no longer command injection, and argv with no shell reports at medium.** A flow tagged `argv-no-shell:argument-injection` is reported at medium, like a library-API-surface flow.
 - **`scan`: the entry-path gate no longer drops findings in an Express handler that a router registers as a default import under another name, through an `index.ts` re-export, as `handlers.run`, or inside an array of handlers (Refs #1323, follow-up to #1331; circle-ir fix).**
