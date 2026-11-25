@@ -923,12 +923,29 @@ export function parseGradleDependencies(buildGradle: string): Dependency[] {
   return out;
 }
 
+/** Receives a note about input a manifest parser read in a best-effort way. */
+export type ManifestWarning = (message: string) => void;
+
 /**
- * XML text with every `<!-- … -->` comment removed (multi-line included). An
- * unterminated `<!--` comments out the rest of the text, as an XML parser reads it.
+ * XML text with every `<!-- … -->` comment removed (multi-line included), in one
+ * left-to-right pass that also recognises `<![CDATA[ … ]]>` sections: whichever
+ * opens first wins, so a `<!--` inside CDATA is plain text and a `<![CDATA[` inside
+ * a comment is part of the comment. CDATA sections are kept verbatim (`'keep'`) or
+ * removed (`'drop'`).
+ *
+ * A conforming XML parser rejects an unterminated comment or CDATA section. Here it
+ * runs to the end of the text instead, and `warn` is told, so the dependencies it
+ * hides are not lost silently.
  */
-function stripXmlComments(xml: string): string {
-  return xml.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
+function stripXmlComments(xml: string, cdata: 'keep' | 'drop', warn?: ManifestWarning): string {
+  return xml.replace(/<!\[CDATA\[[\s\S]*?(\]\]>|$)|<!--[\s\S]*?(-->|$)/g, (m, cdataEnd?: string, commentEnd?: string, offset?: number) => {
+    const isCdata = cdataEnd !== undefined;
+    if (!(isCdata ? cdataEnd : commentEnd)) {
+      const line = xml.slice(0, offset).split('\n').length;
+      warn?.(`unterminated ${isCdata ? 'CDATA section' : 'XML comment'} at line ${line} runs to the end of the file; nothing after it is read`);
+    }
+    return isCdata && cdata === 'keep' ? m : '';
+  });
 }
 
 /**
@@ -937,13 +954,15 @@ function stripXmlComments(xml: string): string {
  * A `${property}` version is resolved from this pom's own `<properties>`
  * (controldeck#729); one defined in a parent pom, by another property, or not at
  * all is not visible here and is recorded as `unknown`, never guessed.
- * Comments are removed first (controldeck#727, #728): a declaration inside
- * `<!-- … -->` is not a dependency, and a comment that holds a `<dependency>`
- * with no real closing tag must not swallow the active one after it.
+ * Comments are removed first: a declaration inside `<!-- … -->` is not a
+ * dependency, and a comment that holds a `<dependency>` with no real closing tag
+ * must not swallow the active one after it. A `<!--` inside a CDATA section is
+ * text, not a comment. An unterminated comment runs to the end of the file and is
+ * reported to `warn`.
  */
-export function parseMavenDependencies(rawPomXml: string): Dependency[] {
+export function parseMavenDependencies(rawPomXml: string, warn?: ManifestWarning): Dependency[] {
   if (!rawPomXml) return [];
-  const pomXml = stripXmlComments(rawPomXml);
+  const pomXml = stripXmlComments(rawPomXml, 'keep', warn);
   const out: Dependency[] = [];
   const props = pomProperties(pomXml);
   const depRe = /<dependency>([\s\S]*?)<\/dependency>/g;
@@ -1000,11 +1019,13 @@ function pomProperties(pomXml: string): Map<string, string> {
  * (`*.target`): `<location type="Maven">` with either the flat `groupId` / `artifactId`
  * / `version` form or a `<dependencies><dependency>` list. Tycho resolves the bundles of
  * an Eclipse-based build from these, so on such a project they, not pom `<dependency>`
- * rows, carry the third-party versions. Comments are ignored; `required` scope.
+ * rows, carry the third-party versions. Comments and CDATA sections are ignored (an
+ * unterminated one runs to the end of the file and is reported to `warn`); `required`
+ * scope.
  */
-export function parseTychoTargetDependencies(targetXml: string): Dependency[] {
+export function parseTychoTargetDependencies(targetXml: string, warn?: ManifestWarning): Dependency[] {
   if (!targetXml) return [];
-  const text = stripXmlComments(targetXml).replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '');
+  const text = stripXmlComments(targetXml, 'drop', warn);
   const out: Dependency[] = [];
   const coord = (block: string): void => {
     const gid = block.match(/<groupId>\s*([^<\s]+)\s*<\/groupId>/)?.[1];

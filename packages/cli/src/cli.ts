@@ -2170,7 +2170,9 @@ function parseMaxProjectSourceChars(raw: unknown): number | undefined {
 // ─── SBOM command ────────────────────────────────────────────────────────────
 
 /** Manifest basename → the circle-ir parser that turns its text into deps. */
-const SBOM_MANIFESTS: Record<string, (content: string) => Dependency[]> = {
+// The second argument, where a parser takes it, receives notes about input it read
+// in a best-effort way (e.g. an unterminated XML comment); `sbom` prints them to stderr.
+const SBOM_MANIFESTS: Record<string, (content: string, warn?: (message: string) => void) => Dependency[]> = {
   'package.json': parseNpmDependencies,
   'package-lock.json': parseNpmLockDependencies,
   'npm-shrinkwrap.json': parseNpmLockDependencies,
@@ -2405,7 +2407,8 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
       continue;
     }
     const parse = SBOM_MANIFESTS[basename(m)] ?? (isTychoTarget(m) ? parseTychoTargetDependencies : undefined);
-    deps.push(...(parse ? parse(text) : parseGradleLockfile(text)));
+    const warn = (message: string): void => { console.error(colors.yellow(`Warning: ${termSafe(relative(absPath, m) || m)}: ${message}`)); };
+    deps.push(...(parse ? parse(text, warn) : parseGradleLockfile(text)));
   }
 
   // De-dup across manifests (same key the library uses within one).

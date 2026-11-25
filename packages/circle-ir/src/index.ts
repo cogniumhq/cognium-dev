@@ -52,6 +52,7 @@ export type {
   PnpmImporterDependencies,
   MavenModuleDependencies,
   GradleProjectDependencies,
+  ManifestWarning,
 } from './analysis/sbom.js';
 
 // Known-vulnerability matching against caller-supplied OSV records (deterministic)

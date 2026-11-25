@@ -22,3 +22,21 @@ test('sbom lists .target Maven locations and pom artifactItems', async () => {
     rmSync(root, { recursive: true, force: true });
   }
 }, 60_000);
+
+test('sbom warns on stderr about an unterminated XML comment and keeps the dependencies before it', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'sbom-xml-comment-'));
+  try {
+    writeFileSync(join(root, 'pom.xml'), `<project><dependencies>
+<dependency><groupId>g</groupId><artifactId>kept</artifactId><version>1</version></dependency>
+<!-- never closed
+<dependency><groupId>g</groupId><artifactId>hidden</artifactId><version>2</version></dependency>
+</dependencies></project>`);
+    const proc = Bun.spawn(['bun', 'run', CLI, 'sbom', root, '--deterministic'], { cwd: root, stdout: 'pipe', stderr: 'pipe' });
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    expect(await proc.exited).toBe(0);
+    expect((JSON.parse(out).components as Array<{ name: string }>).map(c => c.name)).toEqual(['g:kept']);
+    expect(err).toContain('Warning: pom.xml: unterminated XML comment at line 3');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
