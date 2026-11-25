@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`scan`: `*.plist` property lists are scanned for hardcoded credentials (#1311, React Native / Expo).** A directory scan now collects `*.plist` files with the same skip rules as `*.properties` (dot-directories, skipped directories, `--exclude-tests`, config `exclude`, 1 MB cap) and reports circle-ir's `hardcoded-credential` findings in them, for example an API key in `ios/<App>/Info.plist`. `--disable-pass scan-secrets` turns it off. A single `.plist` given as the scan path is not scanned.
+- **`scan`: `*.plist` property lists are scanned for hardcoded credentials (#1311, React Native / Expo).** A directory scan now collects `*.plist` files with the same skip rules as `*.properties` (dot-directories, skipped directories, `--exclude-tests`, config `exclude`, 1 MB cap) and reports circle-ir's `hardcoded-credential` findings in them, for example an API key in `ios/<App>/Info.plist`. Firebase's public client identifiers in `GoogleService-Info.plist` are reported as `low`, not `critical`. `--disable-pass scan-secrets` turns it off. A single `.plist` given as the scan path is not scanned.
 
 ### Changed (breaking)
 

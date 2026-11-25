@@ -975,9 +975,20 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
 // rewritten to `NAME = "VALUE"` (same line count) and the pass's own layers run
 // over the result, so every FP guard applies unchanged. Snippets are taken
 // from the original lines. A binary plist (`bplist` header) is skipped.
+//
+// The key name is captured untrimmed and trimmed in code: a `\s*` on either
+// side of a lazy `[^<\n]*?` overlaps it and backtracks polynomially on a long
+// run of spaces after `<key>`.
+//
+// Firebase writes the app's client identifiers into `GoogleService-Info.plist`
+// (`API_KEY`, `CLIENT_ID`, ...). They ship in every app bundle and are limited
+// server-side, so a finding there is reported as a note, not a credential leak.
 // ---------------------------------------------------------------------------
 
-const PLIST_KEY_STRING_RE = /<key>\s*([^<\n]*?)\s*<\/key>\s*<string>([^<\n]*)<\/string>/g;
+const PLIST_KEY_STRING_RE = /<key>([^<\n]*)<\/key>\s*<string>([^<\n]*)<\/string>/g;
+
+const FIREBASE_PLIST_RE = /(?:^|\/)GoogleService-Info\.plist$/i;
+const FIREBASE_PUBLIC_KEYS = new Set(['API_KEY', 'CLIENT_ID', 'REVERSED_CLIENT_ID', 'GOOGLE_APP_ID']);
 
 /** Hardcoded-credential findings for one XML property list (`*.plist`). */
 export function scanPlistSecrets(file: string, text: string): SastFinding[] {
@@ -987,16 +998,28 @@ export function scanPlistSecrets(file: string, text: string): SastFinding[] {
   // Line of each `<string>`, counted forward from the previous match.
   let lineIdx = 0;
   let counted = 0;
+  const firebase = FIREBASE_PLIST_RE.test(file);
+  const publicIdLines = new Map<number, string>();
   PLIST_KEY_STRING_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = PLIST_KEY_STRING_RE.exec(text)) !== null) {
     const stringAt = m.index + m[0].lastIndexOf('<string>');
     for (; counted < stringAt; counted++) if (text.charCodeAt(counted) === 10) lineIdx++;
+    const name = m[1].trim();
     const indent = /^\s*/.exec(lines[lineIdx])?.[0] ?? '';
-    view[lineIdx] = `${indent}${m[1]} = "${m[2]}"`;
+    view[lineIdx] = `${indent}${name} = "${m[2]}"`;
+    if (firebase && FIREBASE_PUBLIC_KEYS.has(name)) publicIdLines.set(lineIdx + 1, name);
   }
   const findings: SastFinding[] = [];
   new ScanSecretsPass().scanText(file, view.join('\n'), [], (f) => findings.push(f));
-  for (const f of findings) f.snippet = lines[f.line - 1].trim().substring(0, 120);
+  for (const f of findings) {
+    f.snippet = lines[f.line - 1].trim().substring(0, 120);
+    const name = publicIdLines.get(f.line);
+    if (name !== undefined) {
+      f.severity = 'low';
+      f.level = 'note';
+      f.message = `Firebase client identifier \`${name}\` in GoogleService-Info.plist: it ships in the app and is not a secret; check that the API key is restricted`;
+    }
+  }
   return findings;
 }

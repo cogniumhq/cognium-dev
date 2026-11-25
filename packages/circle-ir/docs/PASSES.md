@@ -172,7 +172,10 @@ against the legacy Bash `hardcoded-credential` detection in
 `*.test.*`, `*Test.java`, etc.). `analyzeProject` also runs it over the
 XML property lists (`*.plist`) in `AnalyzerOptions.resources`, pairing each
 `<key>` with the `<string>` after it, and reports those findings in
-`ProjectAnalysis.resource_findings` (cognium-dev#1311).
+`ProjectAnalysis.resource_findings` (cognium-dev#1311). Firebase client
+identifiers in `GoogleService-Info.plist` (`API_KEY`, `CLIENT_ID`,
+`REVERSED_CLIENT_ID`, `GOOGLE_APP_ID`) are public, so they are reported as
+`low` / `note`.
 
 | # | rule_id | CWE | level | status | Description |
 |---|---------|-----|-------|--------|-------------|
