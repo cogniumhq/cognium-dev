@@ -3692,9 +3692,11 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   // Type coercion (removes string-based injections)
   // Sprint 29 (#113): include external_taint_escape — a numeric cast cannot
   // carry an unvalidated string payload across a function boundary.
-  { method: 'parseInt', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'xss', 'external_taint_escape', 'path_traversal', 'code_injection'] },
-  { method: 'parseFloat', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'external_taint_escape', 'path_traversal', 'code_injection'] },
-  { method: 'Number', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'external_taint_escape', 'path_traversal', 'code_injection'] },
+  // #1305 E2: a number has no CR/LF, so it cannot split or forge a log entry: log_injection too.
+  // (Still not size-sensitive consumers: a parsed number is attacker-chosen.)
+  { method: 'parseInt', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'xss', 'external_taint_escape', 'path_traversal', 'code_injection', 'log_injection'] },
+  { method: 'parseFloat', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'external_taint_escape', 'path_traversal', 'code_injection', 'log_injection'] },
+  { method: 'Number', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'external_taint_escape', 'path_traversal', 'code_injection', 'log_injection'] },
 
   // Sprint 29 (#113): bounds-clamp Math.min / Math.max — when used to bound
   // a numeric/size value (e.g. `Math.min(size, MAX_BYTES)`), the result is
@@ -4000,7 +4002,7 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   { method: 'fromString', class: 'UUID', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
 
   // JavaScript numeric coercion (Number/parseInt/parseFloat already covered above; add path_traversal/code_injection)
-  { method: 'BigInt', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  { method: 'BigInt', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'path_traversal', 'code_injection', 'log_injection'] },
 
   // Go numeric parse — strconv.Atoi, ParseInt, ParseFloat, ParseUint, ParseBool
   { method: 'Atoi', class: 'strconv', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
