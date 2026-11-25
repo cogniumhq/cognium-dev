@@ -4,7 +4,7 @@
  * Tests the five non-DFG pattern rules added to LanguageSourcesPass for Bash:
  *   1. hardcoded-credential (CWE-798)
  *   2. cleartext-transmission (CWE-319)
- *   3. predictable-temp-file (CWE-377)
+ *   3. predictable-temp-file (CWE-379)
  *   4. insecure-file-permission (CWE-732)
  *   5. unsafe-archive-extraction (CWE-22)
  */
@@ -84,7 +84,15 @@ describe('Bash language-sources pattern rules', () => {
       const result = await analyze(code, 'deploy.sh', 'bash');
       const findings = (result.findings ?? []).filter(f => f.rule_id === 'predictable-temp-file');
       expect(findings.length).toBe(1);
-      expect(findings[0].cwe).toBe('CWE-377');
+      expect(findings[0].cwe).toBe('CWE-379');
+    });
+
+    it('does not emit CWE-377, deprecated in CWE 5.0 (#1309)', async () => {
+      const code = 'cp build.tar /tmp/build.tar\necho ok > /tmp/status';
+      const result = await analyze(code, 'deploy.sh', 'bash');
+      const findings = result.findings ?? [];
+      expect(findings.some(f => f.rule_id === 'predictable-temp-file')).toBe(true);
+      expect(findings.filter(f => f.cwe === 'CWE-377')).toEqual([]);
     });
 
     it('skips mktemp usage', async () => {

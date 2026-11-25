@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Bash: `predictable-temp-file` reports CWE-379 instead of CWE-377 (Refs #1309).** CWE-377 is deprecated in CWE 5.0; CWE-379 is its replacement. The rule, its message and when it fires are unchanged.
 - **JS/TS: subscribe callback taint through `this.method(taintedParam)` into another class method (cognium-dev#1381).** RxJS `.subscribe((payload) => { this.trust(payload) })` and `{ next: (payload) => … }` now keep the downstream `DomSanitizer.bypassSecurityTrust*` XSS sink and emit an interprocedural flow from the `http_body` callback source. Direct sinks inside the callback (#1224) are unchanged.
 - **Java: `CliMainReflectionSuppressPass` also drops `deserialization` on `Class.forName` in fat-jar CLI files (cognium-dev#1349 / static `#162`).** The pass already removed reflection `code_injection` when a file declares `main(String[])` with no web-framework entry signal; `Class.forName` in the same shape still emitted a `deserialization` flow and broke the static-regression cell for `ReflectiveCliTool.java`. Servlet and controller recall shapes are unchanged.
 - **Java: SLF4J log messages built with string concatenation report `log_injection` again (cognium-dev#1378).** The #468 duplicate-suppression gate no longer drops CWE-117 when the logger argument concatenates a tainted local variable; bare `log.info(tainted)` behaviour is unchanged.
