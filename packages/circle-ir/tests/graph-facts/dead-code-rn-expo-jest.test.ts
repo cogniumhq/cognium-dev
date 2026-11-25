@@ -172,6 +172,21 @@ describe('React Native entry and platform files', () => {
     expect(imported('lib/main.ts', 'src/Button.ios.tsx')).toBe(false);
   });
 
+  // react-native-windows / react-native-macos resolve `.windows` / `.macos` like the core platforms (same list as the test-file gate).
+  it('windows and macos variants are platform files too, and index.windows.js is an entry', async () => {
+    const files = [
+      ...rnFiles,
+      { path: `${rnRoot}/src/Button.windows.tsx`, code: 'export default function WinButton() { return winChrome(); }\nfunction winChrome() { return null; }', ids: { packageName: 'rn' } },
+      { path: `${rnRoot}/src/Button.macos.tsx`, code: 'export default function MacButton() { return null; }', ids: { packageName: 'rn' } },
+      { path: `${rnRoot}/index.windows.js`, code: "import { winBoot } from './src/winBoot';\nwinBoot();", ids: { packageName: 'rn' } },
+      { path: `${rnRoot}/src/winBoot.ts`, code: 'export function winBoot() { return 7; }', ids: { packageName: 'rn' } },
+    ];
+    const g = await buildTsCallGraph(files, { packages: [{ root: rnRoot, packageJson: rnDeps }] });
+    const v = verdicts(g);
+    for (const name of ['WinButton', 'winChrome', 'MacButton', 'winBoot']) expect([name, v[name]]).toEqual([name, 'live']);
+    expect(g.entries.some(e => e.framework === 'react-native' && e.file === `${rnRoot}/index.windows.js`)).toBe(true);
+  });
+
   it('the tables can turn platform files off', async () => {
     const g = await buildTsCallGraph(rnFiles, {
       packages: [{ root: rnRoot, packageJson: rnDeps }],

@@ -611,11 +611,16 @@ class Graph {
         this.platformRoots.set(normalizePath(pkg.root), on);
       }
     }
+    // The nearest package root wins; its flag is kept while choosing it (no second lookup).
     let best: string | null = null;
-    for (const root of this.platformRoots.keys()) {
-      if ((root === '' || path.startsWith(root + '/')) && (best === null || root.length > best.length)) best = root;
+    let bestOn = false;
+    for (const [root, on] of this.platformRoots) {
+      if ((root === '' || path.startsWith(root + '/')) && (best === null || root.length > best.length)) {
+        best = root;
+        bestOn = on;
+      }
     }
-    return best !== null && this.platformRoots.get(best) ? table.platforms : [];
+    return bestOn ? table.platforms : [];
   }
 
   /**

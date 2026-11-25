@@ -114,6 +114,15 @@ export interface EntryTables {
   platformFiles?: PlatformFilesTable;
 }
 
+/**
+ * Platform suffixes React Native resolves (`Button.ios.tsx`, `index.android.js`):
+ * the core platforms, `native` and `web`, and `windows` / `macos` for
+ * react-native-windows and react-native-macos. One list for the platform-file
+ * and entry rows below.
+ */
+export const RN_PLATFORM_SUFFIXES: readonly string[] = ['ios', 'android', 'native', 'web', 'windows', 'macos'];
+const RN_PLATFORM = `(?:\\.(?:${RN_PLATFORM_SUFFIXES.join('|')}))?`;
+
 export const DEFAULT_ENTRY_TABLES: EntryTables = {
   routes: {
     packages: ['express', 'fastify', 'koa-router', '@koa/router', 'hono', 'restify', 'polka', 'router'],
@@ -143,8 +152,8 @@ export const DEFAULT_ENTRY_TABLES: EntryTables = {
     shebang: true,
   },
   toolFiles: [
-    { dependencies: ['react-native', 'expo'], pattern: /^index(?:\.(?:ios|android|native|web))?\.[cm]?[jt]sx?$/, kind: 'main', tool: 'react-native' },
-    { dependencies: ['expo'], pattern: /^App(?:\.(?:ios|android|native|web))?\.[jt]sx?$/, kind: 'main', tool: 'expo' },
+    { dependencies: ['react-native', 'expo'], pattern: new RegExp(`^index${RN_PLATFORM}\\.[cm]?[jt]sx?$`), kind: 'main', tool: 'react-native' },
+    { dependencies: ['expo'], pattern: new RegExp(`^App${RN_PLATFORM}\\.[jt]sx?$`), kind: 'main', tool: 'expo' },
     { dependencies: ['react-native', 'expo'], pattern: /^metro\.config\.[cm]?[jt]s$/, kind: 'main', tool: 'metro' },
     { dependencies: ['react-native', 'expo', 'jest'], pattern: /^babel\.config\.[cm]?[jt]s$/, kind: 'main', tool: 'babel' },
     { dependencies: ['expo'], pattern: /^app\.config\.[cm]?[jt]s$/, kind: 'main', tool: 'expo' },
@@ -157,5 +166,5 @@ export const DEFAULT_ENTRY_TABLES: EntryTables = {
     { dependencies: ['vite', 'vitest'], pattern: /^vite\.config\.[cm]?[jt]s$/, kind: 'main', tool: 'vite' },
   ],
   expo: { dependencies: ['expo', 'expo-router'] },
-  platformFiles: { dependencies: ['react-native', 'expo'], platforms: ['ios', 'android', 'native', 'web'] },
+  platformFiles: { dependencies: ['react-native', 'expo'], platforms: RN_PLATFORM_SUFFIXES },
 };
