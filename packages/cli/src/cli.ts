@@ -1142,9 +1142,22 @@ async function scanProject(
     });
   }
 
+  // #1306: every file asked for and given no result above is named, never left to read as clean:
+  // past the ceiling it was never read; read but in none of analyzeProject's lists, it has no result.
+  const covered = new Set(results.map(r => r.file));
+  const read = new Set(filesWithCode.map(f => f.filePath));
+  const unanalysedFiles = files
+    .filter(f => !covered.has(f))
+    .map(file => ({
+      file,
+      reason: (!read.has(file) || projectResult.project_size_budget_exceeded === true ? 'project-size-ceiling' : 'no-result') as
+        'project-size-ceiling' | 'no-result',
+    }));
+
   return {
     results,
     crossFileData: {
+      ...(unanalysedFiles.length > 0 ? { unanalysedFiles } : {}),
       taintPaths: projectResult.taint_paths,
       crossFileCalls: projectResult.cross_file_calls,
       // 3.89.0 (#141): forward the partial-result marker so formatters can
