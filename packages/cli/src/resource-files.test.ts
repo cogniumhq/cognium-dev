@@ -1,6 +1,7 @@
 /**
  * #591 — the CLI collects `*.properties` from a directory scan and hands them to
  * circle-ir as `resources`, so a weak algorithm held in a resource file is found.
+ * #1311 — `*.plist` property lists too, so circle-ir scans them for secrets.
  */
 import { test, expect } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -19,15 +20,17 @@ function project(): string {
   writeFileSync(join(root, 'node_modules/dep/x.properties'), 'a=b');
   writeFileSync(join(root, 'src/test/resources/t.properties'), 'a=b');
   writeFileSync(join(root, 'dist/built.properties'), 'a=b');
+  mkdirSync(join(root, 'ios/App'), { recursive: true });
+  writeFileSync(join(root, 'ios/App/Info.plist'), '<plist version="1.0"><dict/></plist>\n');
   return root;
 }
 
-test('collectResourceFiles: collects *.properties, skips node_modules and other file types', async () => {
+test('collectResourceFiles: collects *.properties and *.plist, skips node_modules and other file types', async () => {
   const root = project();
   try {
     const found = await collectResourceFiles(root, { basePath: root });
     const names = [...found.keys()].map((k) => k.slice(root.length + 1)).sort();
-    expect(names).toEqual(['dist/built.properties', 'src/main/resources/app.properties', 'src/test/resources/t.properties']);
+    expect(names).toEqual(['dist/built.properties', 'ios/App/Info.plist', 'src/main/resources/app.properties', 'src/test/resources/t.properties']);
     expect(found.get(join(root, 'src/main/resources/app.properties'))).toBe('digest.alg=MD5\n');
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -39,17 +42,18 @@ test('collectResourceFiles: honours --exclude-tests and config exclude patterns'
   try {
     const found = await collectResourceFiles(root, { basePath: root, excludeTests: true, excludePatterns: ['dist/**'] });
     const names = [...found.keys()].map((k) => k.slice(root.length + 1)).sort();
-    expect(names).toEqual(['src/main/resources/app.properties']);
+    expect(names).toEqual(['ios/App/Info.plist', 'src/main/resources/app.properties']);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('collectResourceFiles: a single file target yields only a properties file', async () => {
+test('collectResourceFiles: a single file target yields only a properties or plist file', async () => {
   const root = project();
   try {
     expect((await collectResourceFiles(join(root, 'src/main/resources/notes.txt'))).size).toBe(0);
     expect((await collectResourceFiles(join(root, 'src/main/resources/app.properties'))).size).toBe(1);
+    expect((await collectResourceFiles(join(root, 'ios/App/Info.plist'))).size).toBe(1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
