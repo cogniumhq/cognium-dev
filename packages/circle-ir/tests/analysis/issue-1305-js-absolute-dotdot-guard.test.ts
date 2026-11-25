@@ -215,6 +215,118 @@ describe('cognium-dev#1305 E4 — absolute-path and `..`-segment guard', () => {
     expect(await pathTraversalFlows(code)).toHaveLength(0);
   });
 
+  // #1416 re-review 3, point 1: every call around the guarded value must be a path call.
+  it('recall: a decode around the path builder still reports', async () => {
+    const code = [
+      ...head,
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      'fs.readFileSync(decodeURIComponent(path.join(ROOT, name)));',
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('recall: a rewrite of the path builder result on the same line still reports', async () => {
+    const code = [
+      ...head,
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.includes('..')) throw new Error('x');",
+      "fs.readFileSync(path.join(ROOT, name).replace(/%2e/gi, '.'));",
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  // #1416 re-review 3, point 2: the builder's result is followed like an alias.
+  it('recall: the path builder result decoded on a later line still reports', async () => {
+    const code = [
+      ...head,
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      'const full = path.join(ROOT, name);',
+      'fs.readFileSync(decodeURIComponent(full));',
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('the path builder result used as is by a sink is still credited', async () => {
+    const code = [
+      ...head,
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.includes('..')) throw new Error('x');",
+      'const full = path.join(ROOT, name);',
+      'const again = full;',
+      'fs.readFileSync(path.resolve(again));',
+    ].join('\n');
+    expect(await pathTraversalFlows(code)).toHaveLength(0);
+  });
+
+  // #1416 re-review 3, point 3: a bare builder counts only when it comes from `path` / `node:path`.
+  it('recall: a local `normalize` that decodes still reports', async () => {
+    const code = [
+      ...head,
+      'const normalize = (s: string) => decodeURIComponent(s);',
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      'fs.readFileSync(path.join(ROOT, normalize(name)));',
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('recall: a `path` receiver that is not the path module still reports', async () => {
+    const code = [
+      "import fs from 'fs';",
+      "const ROOT = '/srv/data';",
+      'const path = { isAbsolute: (s: string) => s.startsWith("/"), join: (a: string, b: string) => a + "/" + decodeURIComponent(b) };',
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.includes('..')) throw new Error('x');",
+      'fs.readFileSync(path.join(ROOT, name));',
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a bare builder imported from `path` or `node:path` is credited', async () => {
+    for (const imp of [
+      "import { isAbsolute, join } from 'path';",
+      "import { isAbsolute, join as pjoin } from 'node:path';",
+      "const { isAbsolute, join } = require('path');",
+      "const { isAbsolute, resolve: pjoin } = require('node:path');",
+    ]) {
+      const call = imp.includes('pjoin') ? 'pjoin' : 'join';
+      const code = [
+        "import fs from 'fs';",
+        imp,
+        "const ROOT = '/srv/data';",
+        'const name = process.argv[2];',
+        "if (isAbsolute(name) || name.includes('..')) throw new Error('x');",
+        `fs.readFileSync(${call}(ROOT, name));`,
+      ].join('\n');
+      expect(await pathTraversalFlows(code), imp).toHaveLength(0);
+    }
+  });
+
+  // #1416 re-review 3, point 4: only the guarded argument is credited.
+  it('recall: another tainted argument of the path builder still reports', async () => {
+    const code = [
+      ...head,
+      'const name = process.argv[2];',
+      'const other = process.argv[3];',
+      "if (path.isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      'fs.readFileSync(path.join(ROOT, name, other));',
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('literal and constant arguments beside the guarded one are credited', async () => {
+    const code = [
+      ...head,
+      "const SUB = 'files';",
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.includes('..')) throw new Error('x');",
+      "fs.readFileSync(path.join(ROOT, SUB, 'v1', name));",
+    ].join('\n');
+    expect(await pathTraversalFlows(code)).toHaveLength(0);
+  });
+
   // #1416 review 2: path.join on Windows splits on `\` too, so a POSIX-only segment test is not a guard.
   it("recall: a POSIX-only split('/') segment test still reports (`..\\x` passes it)", async () => {
     const code = [

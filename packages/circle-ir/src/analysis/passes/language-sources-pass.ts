@@ -8491,10 +8491,11 @@ function splitsOnBothSeparators(arg: string): boolean {
 /**
  * Calls an argument of which is used as is (#1416 re-review 2): the path builders and the
  * path sinks. An allow-list: any other callee, a local wrapper included, may decode or
- * rewrite its argument, so a guard on the raw value does not cover its result.
+ * rewrite its argument, so a guard on the raw value does not cover its result. A builder
+ * counts only when it comes from `path` / `node:path` (#1416 re-review 3): `path.join`
+ * with `path` imported or required from it, or a bare `join` imported from it.
  */
 const JS_PATH_BUILDERS = new Set(['join', 'resolve', 'normalize']);
-const JS_PATH_BUILDER_RECEIVERS = new Set(['path', 'nodePath', 'Path', 'posix', 'win32']);
 const JS_PATH_SINK_CALLEES = new Set([
   'readFile', 'readFileSync', 'writeFile', 'writeFileSync', 'appendFile', 'appendFileSync',
   'createReadStream', 'createWriteStream', 'open', 'openSync', 'stat', 'statSync',
@@ -8502,6 +8503,98 @@ const JS_PATH_SINK_CALLEES = new Set([
   'mkdir', 'mkdirSync', 'rm', 'rmSync', 'rmdir', 'rmdirSync', 'unlink', 'unlinkSync',
   'copyFile', 'copyFileSync', 'rename', 'renameSync', 'sendFile', 'download',
 ]);
+/** Sinks whose first two arguments are both paths: the other one must be constant too. */
+const JS_TWO_PATH_SINKS = new Set(['copyFile', 'copyFileSync', 'rename', 'renameSync']);
+const JS_PATH_MODULES = new Set(['path', 'node:path', 'path/posix', 'node:path/posix', 'path/win32', 'node:path/win32']);
+
+/** What a file binds to the `path` module (#1416 re-review 3). */
+interface JsPathBindings {
+  /** Local names of the module itself, or of its `posix` / `win32` objects. */
+  modules: Set<string>;
+  /** Local names of `join` / `resolve` / `normalize` imported from it. */
+  builders: Set<string>;
+  /** `const NAME = <expr>` bound once in the file: NAME → expr. */
+  constants: Map<string, string>;
+}
+
+const JS_IDENT = /^[A-Za-z_$][\w$]*$/;
+
+/** The module named by a `'…'` / `"…"` string, or undefined. */
+function quotedModule(text: string): string | undefined {
+  const t = text.trim();
+  const q = t.charAt(0);
+  if ((q !== "'" && q !== '"') || t.length < 2 || t.charAt(t.length - 1) !== q) return undefined;
+  return t.slice(1, -1);
+}
+
+/** Records `{ a, b as c }` (import) or `{ a, b: c }` (require) taken from the path module. */
+function addPathNamedBindings(inner: string, sep: 'as' | ':', b: JsPathBindings): void {
+  for (const part of inner.split(',')) {
+    const t = part.trim();
+    if (!t) continue;
+    const at = sep === 'as' ? t.search(/\sas\s/) : t.indexOf(':');
+    const imported = (at < 0 ? t : t.slice(0, at)).trim();
+    const local = (at < 0 ? t : t.slice(at + (sep === 'as' ? 4 : 1))).trim();
+    if (!JS_IDENT.test(local)) continue;
+    if (JS_PATH_BUILDERS.has(imported)) b.builders.add(local);
+    else if (imported === 'posix' || imported === 'win32') b.modules.add(local);
+  }
+}
+
+/**
+ * The `path` bindings of a file, by a plain scan of its lines: `import path from 'path'`,
+ * `import * as p from 'node:path'`, `import { join as j, posix } from 'path'`,
+ * `const path = require('path')`, `const { join, resolve: r } = require('node:path')`.
+ */
+function jsPathBindings(lines: string[]): JsPathBindings {
+  const b: JsPathBindings = { modules: new Set(), builders: new Set(), constants: new Map() };
+  const seen = new Set<string>();
+  for (const raw of lines) {
+    const line = raw.trim().replace(/;$/, '').trimEnd();
+    if (line.startsWith('import ')) {
+      const from = line.lastIndexOf(' from ');
+      if (from < 0) continue;
+      const mod = quotedModule(line.slice(from + 6));
+      if (mod === undefined || !JS_PATH_MODULES.has(mod)) continue;
+      let clause = line.slice(7, from).trim();
+      if (clause.startsWith('type ')) continue;
+      const brace = clause.indexOf('{');
+      if (brace >= 0) {
+        const close = clause.indexOf('}', brace);
+        if (close > brace) addPathNamedBindings(clause.slice(brace + 1, close), 'as', b);
+        clause = clause.slice(0, brace);
+      }
+      for (const part of clause.split(',')) {
+        const t = part.trim();
+        const local = t.startsWith('*') ? t.slice(t.indexOf(' as ') + 4).trim() : t;
+        if (JS_IDENT.test(local)) b.modules.add(local);
+      }
+      continue;
+    }
+    const decl = /^(const|let|var)\s+/.exec(line);
+    if (!decl) continue;
+    const rest = line.slice(decl[0].length);
+    const eq = rest.indexOf('=');
+    if (eq < 0 || rest.charAt(eq + 1) === '=') continue;
+    const target = rest.slice(0, eq).trim();
+    const init = rest.slice(eq + 1).trim();
+    if (init.startsWith('require(') && init.endsWith(')')) {
+      const mod = quotedModule(init.slice(8, -1));
+      if (mod !== undefined && JS_PATH_MODULES.has(mod)) {
+        if (JS_IDENT.test(target)) b.modules.add(target);
+        else if (target.startsWith('{') && target.endsWith('}')) addPathNamedBindings(target.slice(1, -1), ':', b);
+        continue;
+      }
+    }
+    if (decl[1] === 'const' && JS_IDENT.test(target)) {
+      // a name declared twice (shadowed in some scope) is not a known constant
+      if (seen.has(target)) b.constants.delete(target);
+      else b.constants.set(target, init);
+      seen.add(target);
+    }
+  }
+  return b;
+}
 
 /** The identifier that ends `text` (after trailing whitespace), or undefined. A plain scan, no regex. */
 function trailingIdentifier(text: string): string | undefined {
@@ -8509,54 +8602,193 @@ function trailingIdentifier(text: string): string | undefined {
   let k = t.length;
   while (k > 0 && /[\w$]/.test(t[k - 1])) k--;
   const id = t.slice(k);
-  return id && /^[A-Za-z_$]/.test(id) ? id : undefined;
+  return id && /^[A-Za-z_$][\w$]*$/.test(id) ? id : undefined;
 }
 
-/** Whether `head` (the text before a call's `(`) names a path builder or a path sink. */
-function isPathCall(head: string): boolean {
+/** Whether the receiver chain that ends `text` (`path`, `path.posix`) is the path module. */
+function isPathModuleRef(text: string, b: JsPathBindings): boolean {
+  const recv = trailingIdentifier(text);
+  if (recv === undefined) return false;
+  const before = text.trimEnd().slice(0, -recv.length).trimEnd();
+  if (!before.endsWith('.')) return b.modules.has(recv);
+  // `x.posix` / `x.win32` where `x` is the module; any other member (`this.path`) is not
+  if (recv !== 'posix' && recv !== 'win32') return false;
+  const outer = before.slice(0, -1);
+  const id = trailingIdentifier(outer);
+  return id !== undefined && !outer.trimEnd().slice(0, -id.length).trimEnd().endsWith('.') && b.modules.has(id);
+}
+
+type JsPathCallKind = 'builder' | 'sink' | undefined;
+
+/** What `head` (the text before a call's `(`) names: a path builder, a path sink, or neither. */
+function pathCallKind(head: string, b: JsPathBindings): JsPathCallKind {
   const callee = trailingIdentifier(head);
-  if (!callee) return false;
-  if (JS_PATH_SINK_CALLEES.has(callee)) return true;
-  if (!JS_PATH_BUILDERS.has(callee)) return false;
+  if (!callee) return undefined;
   const rest = head.trimEnd().slice(0, -callee.length).trimEnd();
-  if (!rest.endsWith('.')) return true;   // a bare `join(…)` imported from `path`
-  const receiver = trailingIdentifier(rest.slice(0, -1));
-  return receiver !== undefined && JS_PATH_BUILDER_RECEIVERS.has(receiver);
+  const member = rest.endsWith('.');
+  if (!member && b.builders.has(callee)) return 'builder';
+  if (member && JS_PATH_BUILDERS.has(callee) && isPathModuleRef(rest.slice(0, -1), b)) return 'builder';
+  if (JS_PATH_SINK_CALLEES.has(callee)) return 'sink';
+  return undefined;
+}
+
+/** The index of the `)` that closes the `(` at `open`, skipping quoted strings; -1 if not on the line. */
+function closingParen(line: string, open: number): number {
+  let depth = 0;
+  for (let k = open; k < line.length; k++) {
+    const ch = line[k];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const q = ch;
+      for (k++; k < line.length && line[k] !== q; k++) if (line[k] === '\\') k++;
+    } else if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (--depth === 0) return ch === ')' ? k : -1;
+    }
+  }
+  return -1;
+}
+
+/** The top-level arguments of the call whose `(` is at `open` and `)` at `close`, trimmed. */
+function callArguments(line: string, open: number, close: number): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let from = open + 1;
+  for (let k = open + 1; k < close; k++) {
+    const ch = line[k];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const q = ch;
+      for (k++; k < close && line[k] !== q; k++) if (line[k] === '\\') k++;
+    } else if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+    else if (ch === ',' && depth === 0) { args.push(line.slice(from, k).trim()); from = k + 1; }
+  }
+  args.push(line.slice(from, close).trim());
+  return args;
 }
 
 /**
- * Whether every mention of `v` on `line` uses the value as is (#1416 review 1, re-review 2):
- * a direct argument of a path builder or a path sink (`path.join(ROOT, name)`,
- * `fs.readFileSync(name)`). A method call on it (`name.replace(…)`), an argument of any
- * other call (`decodeURIComponent(name)`, a local `dec(name)`), an assignment or any other
- * expression around it is not as is.
+ * Whether `arg` is a constant path piece (#1416 re-review 3): a string literal, `__dirname`,
+ * `process.cwd()`, a `const` bound once to one of these, or a path builder over them.
  */
-function usedAsIs(line: string, v: string): boolean {
+function isConstantPathArg(arg: string, b: JsPathBindings, depth = 0): boolean {
+  const a = arg.trim();
+  if (depth > 4 || a === '') return false;
+  const q = a.charAt(0);
+  if ((q === "'" || q === '"') && a.length >= 2 && a.charAt(a.length - 1) === q && !a.slice(1, -1).includes(q)) return true;
+  if (q === '`' && a.length >= 2 && a.charAt(a.length - 1) === '`' && !a.slice(1, -1).includes('`') && !a.includes('${')) return true;
+  if (a === '__dirname' || a === 'process.cwd()' || a === 'import.meta.dirname') return true;
+  if (JS_IDENT.test(a)) {
+    const init = b.constants.get(a);
+    return init !== undefined && isConstantPathArg(init.replace(/;$/, ''), b, depth + 1);
+  }
+  const open = a.indexOf('(');
+  if (open > 0 && closingParen(a, open) === a.length - 1 && pathCallKind(a.slice(0, open), b) === 'builder') {
+    return callArguments(a, open, a.length - 1).every((x) => isConstantPathArg(x, b, depth + 1));
+  }
+  return false;
+}
+
+/** The start of the callee expression (`fs.readFileSync`, `path?.join`) that ends just before `open`. */
+function calleeStart(line: string, open: number): number {
+  let k = open;
+  while (k > 0 && /\s/.test(line[k - 1])) k--;
+  while (k > 0) {
+    const ch = line[k - 1];
+    if (/[\w$.]/.test(ch)) k--;
+    else if (ch === '?' && line[k] === '.') k--;
+    else break;
+  }
+  return k;
+}
+
+/** The nearest unclosed `(` before `at`, or -1. */
+function enclosingOpenParen(line: string, at: number): number {
+  let depth = 0;
+  for (let k = at - 1; k >= 0; k--) {
+    const ch = line[k];
+    if (ch === ')') depth++;
+    else if (ch === '(') {
+      if (depth === 0) return k;
+      depth--;
+    }
+  }
+  return -1;
+}
+
+/** How a line uses a guarded value (#1416 re-review 3). */
+interface JsPathUse {
+  /** Every mention is used as is. */
+  asIs: boolean;
+  /** `const x = <path builder>(…v…)`: the name the builder's result is bound to. */
+  boundTo?: string;
+}
+
+/**
+ * Whether every mention of `v` on `line` uses the value as is (#1416 review 1, re-reviews 2
+ * and 3): a direct argument of a path builder or a path sink, and every call around it up
+ * to the sink a path builder too (`fs.readFileSync(path.join(ROOT, name))`). A method call
+ * on it (`name.replace(…)`), an argument of any other call (`decodeURIComponent(name)`, a
+ * local `dec(name)`), any call around the builder (`decodeURIComponent(path.join(ROOT,
+ * name))`, `path.join(ROOT, name).replace(…)`), an assignment or any other expression
+ * around it is not as is. The other arguments of a builder (and of a two-path sink such as
+ * `rename`) must be constant (`isConstantPathArg`) or another guarded value in `carriers`,
+ * so `path.join(ROOT, name, other)` with a tainted `other` is not as is. A builder that is
+ * not inside a sink may stand only as `const|let|var x = <builder>(…);`; its result `x` is
+ * returned in `boundTo` for the caller to follow.
+ */
+function jsPathUse(line: string, v: string, b: JsPathBindings, carriers: ReadonlySet<string>): JsPathUse {
   const esc = v.replace(/\$/g, '\\$');
   const ref = new RegExp(`(?<![\\w$.])${esc}(?![\\w$])`, 'g');
+  const otherOk = (arg: string) => carriers.has(arg) || isConstantPathArg(arg, b);
   let m: RegExpExecArray | null;
   let any = false;
+  let boundTo: string | undefined;
   while ((m = ref.exec(line)) !== null) {
     any = true;
-    const before = line.slice(0, m.index).trimEnd();
-    const after = line.slice(m.index + v.length).trimStart();
-    const prev = before.slice(-1);
-    const next = after.charAt(0);
-    if ((prev !== '(' && prev !== ',') || (next !== ')' && next !== ',')) return false;
-    // the call it is an argument of: the text before the nearest unclosed `(`
-    let depth = 0;
-    let open = -1;
-    for (let k = before.length - 1; k >= 0; k--) {
-      const ch = before[k];
-      if (ch === ')') depth++;
-      else if (ch === '(') {
-        if (depth === 0) { open = k; break; }
-        depth--;
+    // the expression that carries the value: the mention, then each builder call around it
+    let start = m.index;
+    let end = m.index + v.length;
+    let builders = 0;
+    for (;;) {
+      const prev = line.slice(0, start).trimEnd().slice(-1);
+      const next = line.slice(end).trimStart().charAt(0);
+      if ((prev === '(' || prev === ',') && (next === ')' || next === ',')) {
+        const open = enclosingOpenParen(line, start);
+        if (open < 0) return { asIs: false };
+        const kind = pathCallKind(line.slice(0, open), b);
+        if (kind === undefined) return { asIs: false };
+        const close = closingParen(line, open);
+        if (close < 0) return { asIs: false };
+        const args = callArguments(line, open, close);
+        const mine = line.slice(start, end).trim();
+        if (kind === 'sink') {
+          const callee = trailingIdentifier(line.slice(0, open)) ?? '';
+          if (JS_TWO_PATH_SINKS.has(callee) && !args.slice(0, 2).every((x) => x === mine || otherOk(x))) return { asIs: false };
+          break;   // the path is consumed here; what the sink returns is not a path
+        }
+        let own = false;
+        for (const x of args) {
+          if (!own && x === mine) { own = true; continue; }
+          if (!otherOk(x)) return { asIs: false };
+        }
+        start = calleeStart(line, open);
+        end = close + 1;
+        builders++;
+        continue;
       }
+      // not an argument: only a builder result bound on its own, `const x = <builder>(…);`
+      if (builders === 0) return { asIs: false };
+      const lhs = /^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=$/.exec(line.slice(0, start).trim());
+      const tail = line.slice(end).trim();
+      if (!lhs || !(tail === '' || tail === ';' || tail.startsWith('//') || (tail.startsWith(';') && tail.slice(1).trim().startsWith('//')))) {
+        return { asIs: false };
+      }
+      if (boundTo !== undefined && boundTo !== lhs[1]) return { asIs: false };
+      boundTo = lhs[1];
+      break;
     }
-    if (open < 0 || !isPathCall(before.slice(0, open))) return false;
   }
-  return any;
+  return { asIs: any, boundTo };
 }
 
 /** `const|let|var x = <one of names>;` on its own: the alias name, or undefined. */
@@ -8590,9 +8822,15 @@ function plainAliasOf(line: string, names: Iterable<string>): string | undefined
  * `fs.readFileSync(name)`). A line that decodes or rewrites it
  * (`decodeURIComponent(name)`, `name.replace(…)`, a local `dec(name)`, …) is not
  * credited: the guard checked the raw value, and `%2e%2e/` decodes to `../`
- * after it. A plain alias (`const safe = name`) is followed, not credited: its
- * later lines are held to the same rule, so `decodeURIComponent(safe)` still
- * reports. Only `path_traversal` is sanitized.
+ * after it. Every call around the value up to the sink must be a path call too,
+ * so `decodeURIComponent(path.join(ROOT, name))` is not credited, and a builder
+ * counts only when it comes from `path` / `node:path`, so a local `normalize`
+ * that decodes is not one. The other arguments of the builder must be constant
+ * (`ROOT`, `'sub'`, `__dirname`): `path.join(ROOT, name, other)` is not credited.
+ * A plain alias (`const safe = name`) and a builder's result (`const full =
+ * path.join(ROOT, name)`) are followed, not credited: their later lines are
+ * held to the same rule, so `decodeURIComponent(safe)` and
+ * `decodeURIComponent(full)` still report. Only `path_traversal` is sanitized.
  */
 function findJsAbsoluteDotDotGuardSanitizers(code: string): TaintSanitizer[] {
   const sanitizers: TaintSanitizer[] = [];
@@ -8602,6 +8840,7 @@ function findJsAbsoluteDotDotGuardSanitizers(code: string): TaintSanitizer[] {
   // Matched against the condition with its whitespace removed.
   const absRe =
     /(?<![!\w$.])(?:(?:path|nodePath|Path)\.(?:(?:posix|win32)\.)?)?isAbsolute\(([A-Za-z_$][\w$]*)\)/;
+  let bindings: JsPathBindings | undefined;
 
   for (let i = 0; i < lines.length; i++) {
     const open = /\bif\s*\(/.exec(lines[i]);
@@ -8628,6 +8867,7 @@ function findJsAbsoluteDotDotGuardSanitizers(code: string): TaintSanitizer[] {
     if (!dd || (dd[1] !== undefined && !splitsOnBothSeparators(dd[1]))) continue;
     if (!guardRejects(lines, i, terminatorRe, 4)) continue;
 
+    const pb = (bindings ??= jsPathBindings(lines));
     const range = jsGuardCreditLines(lines, i, v);
     const inRange = new Set(range);
     // the guarded value and its plain aliases, each with the lines it is live on
@@ -8642,7 +8882,17 @@ function findJsAbsoluteDotDotGuardSanitizers(code: string): TaintSanitizer[] {
           carriers.set(alias, new Set(jsGuardCreditLines(lines, l, alias).filter((x) => x > l && inRange.has(x))));
           continue;
         }
-        if (!named.every(([n]) => usedAsIs(lines[l], n))) continue;
+        const live = new Set(named.map(([n]) => n));
+        const uses = named.map(([n]) => jsPathUse(lines[l], n, pb, live));
+        if (!uses.every((u) => u.asIs)) continue;
+        const bound = new Set(uses.map((u) => u.boundTo));
+        if (bound.size > 1) continue;
+        const [result] = bound;
+        if (result !== undefined) {
+          // `const full = path.join(ROOT, name)`: followed like an alias, not credited on its own
+          carriers.set(result, new Set(jsGuardCreditLines(lines, l, result).filter((x) => x > l && inRange.has(x))));
+          continue;
+        }
       }
       sanitizers.push({
         type: 'js_absolute_dotdot_guard',
