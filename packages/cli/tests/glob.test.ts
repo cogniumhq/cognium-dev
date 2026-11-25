@@ -136,6 +136,9 @@ describe('detectLanguage', () => {
   test('detects TypeScript', () => {
     expect(detectLanguage('app.ts')).toBe('typescript');
     expect(detectLanguage('component.tsx')).toBe('typescript');
+    // .mts/.cts were missing, unlike circle-ir's detectLanguage (#1390)
+    expect(detectLanguage('module.mts')).toBe('typescript');
+    expect(detectLanguage('legacy.cts')).toBe('typescript');
   });
 
   test('detects Python', () => {
