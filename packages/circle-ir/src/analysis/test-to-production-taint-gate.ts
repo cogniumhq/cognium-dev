@@ -4,8 +4,8 @@
  */
 import type { TaintPath } from '../types/index.js';
 
-/** Test-file naming for JS/TS only (issue acceptance: `*.test.*`, `*.spec.*`, `__tests__/`). */
-const JS_TS_TEST_FILE = /(?:\.(?:test|spec)\.[cm]?[jt]sx?$)|(?:(?:^|\/)__tests__\/)/i;
+/** Test-file naming for JS/TS only: `*.test.*`, `*.spec.*`, `__tests__/` (#1187) and Jest manual mocks under `__mocks__/` (#1311). */
+const JS_TS_TEST_FILE = /(?:\.(?:test|spec)\.[cm]?[jt]sx?$)|(?:(?:^|\/)__(?:tests|mocks)__\/)/i;
 
 const JS_TS_FILE = /\.(?:[cm]?[jt]sx?)$/i;
 
