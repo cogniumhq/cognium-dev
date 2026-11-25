@@ -8541,14 +8541,173 @@ function addPathNamedBindings(inner: string, sep: 'as' | ':', b: JsPathBindings)
   }
 }
 
+/** The identifier that starts `text` (after leading whitespace), or undefined. A plain scan, no regex. */
+function leadingIdentifier(text: string): string | undefined {
+  const t = text.trimStart();
+  let k = 0;
+  while (k < t.length && /[\w$]/.test(t[k])) k++;
+  const id = t.slice(0, k);
+  return id && JS_IDENT.test(id) ? id : undefined;
+}
+
+/** The index of the bracket that closes the `(` / `[` / `{` at `open`, skipping quoted strings; -1 if none. */
+function matchingBracket(text: string, open: number): number {
+  let depth = 0;
+  for (let k = open; k < text.length; k++) {
+    const ch = text[k];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const q = ch;
+      for (k++; k < text.length && text[k] !== q; k++) if (text[k] === '\\') k++;
+    } else if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if ((ch === ')' || ch === ']' || ch === '}') && --depth === 0) return k;
+  }
+  return -1;
+}
+
+/**
+ * `text` cut at its first top-level `;` or unbalanced closing bracket, then split at the
+ * top-level `sep` characters; quoted strings and bracketed parts are kept whole.
+ */
+function splitTopLevel(text: string, sep: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let k = 0; k < text.length; k++) {
+    const ch = text[k];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const q = ch;
+      for (k++; k < text.length && text[k] !== q; k++) if (text[k] === '\\') k++;
+    } else if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (--depth < 0) { parts.push(text.slice(from, k)); return parts; }
+    } else if (depth === 0 && ch === ';') { parts.push(text.slice(from, k)); return parts; }
+    else if (depth === 0 && ch === sep) { parts.push(text.slice(from, k)); from = k + 1; }
+  }
+  parts.push(text.slice(from));
+  return parts;
+}
+
+/** Adds the names a binding target binds: `a`, `a: T`, `...a`, `{ a, b: c, d = 1 }`, `[a, [b]]`. */
+function addBindingNames(target: string, out: string[], depth = 0): void {
+  let t = target.trim();
+  if (t.startsWith('...')) t = t.slice(3).trim();
+  const c = t.charAt(0);
+  if ((c === '{' || c === '[') && depth < 8) {
+    const close = matchingBracket(t, 0);
+    for (const part of splitTopLevel(t.slice(1, close < 0 ? t.length : close), ',')) {
+      const element = splitTopLevel(part, '=')[0];
+      const kv = c === '{' ? splitTopLevel(element, ':') : [element];
+      addBindingNames(kv.length > 1 ? kv.slice(1).join(':') : kv[0], out, depth + 1);
+    }
+    return;
+  }
+  const id = leadingIdentifier(t);
+  if (id !== undefined) out.push(id);
+}
+
+/** Adds the names a parameter list (the text inside its parentheses) binds. */
+function addParameterNames(params: string, out: string[]): void {
+  for (const p of splitTopLevel(params, ',')) addBindingNames(splitTopLevel(p, '=')[0], out);
+}
+
+/** Each `(` of a line mapped to the `)` that closes it, in one pass that skips quoted strings. */
+function parenPairs(line: string): Map<number, number> {
+  const pairs = new Map<number, number>();
+  const open: number[] = [];
+  for (let k = 0; k < line.length; k++) {
+    const ch = line[k];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const q = ch;
+      for (k++; k < line.length && line[k] !== q; k++) if (line[k] === '\\') k++;
+    } else if (ch === '(') open.push(k);
+    else if (ch === ')' && open.length > 0) pairs.set(open.pop() as number, k);
+  }
+  return pairs;
+}
+
+/** Whether `text` ends with the word `function`, optionally followed by `*` (a generator). */
+function endsWithFunctionKeyword(text: string): boolean {
+  let t = text.trimEnd();
+  if (t.endsWith('*')) t = t.slice(0, -1).trimEnd();
+  if (!t.endsWith('function')) return false;
+  const before = t.charAt(t.length - 9);
+  return before === '' || !/[\w$.]/.test(before);
+}
+
+/** Words that take a parenthesised head followed by a block, and so are not method definitions. */
+const JS_BLOCK_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'with', 'return', 'typeof', 'await', 'function']);
+
+/**
+ * Every name a line declares (#1416 re-review 4): `const` / `let` / `var` targets, destructuring
+ * included; `function` and `class` names; the parameters of functions, arrows, methods and
+ * `catch`; import bindings. A plain scan: it may also list a name that is not declared (that
+ * only costs a credit), but a declaration on one line is not missed.
+ */
+function jsDeclaredNames(line: string): string[] {
+  const out: string[] = [];
+  if (line.startsWith('import ')) {
+    const from = line.lastIndexOf(' from ');
+    let clause = (from < 0 ? '' : line.slice(7, from)).trim();
+    if (clause.startsWith('type ')) return out;
+    const brace = clause.indexOf('{');
+    if (brace >= 0) {
+      const close = clause.indexOf('}', brace);
+      for (const part of clause.slice(brace + 1, close > brace ? close : clause.length).split(',')) {
+        const t = part.trim().replace(/^type\s/, '').trim();
+        const at = t.lastIndexOf(' as ');
+        const id = leadingIdentifier(at < 0 ? t : t.slice(at + 4));
+        if (id !== undefined) out.push(id);
+      }
+      clause = clause.slice(0, brace);
+    }
+    for (const part of clause.split(',')) {
+      const t = part.trim();
+      const id = leadingIdentifier(t.startsWith('*') ? t.slice(t.indexOf(' as ') + 4) : t);
+      if (id !== undefined) out.push(id);
+    }
+    return out;
+  }
+  for (const m of line.matchAll(/\b(?:const|let|var)\s/g)) {
+    for (const declarator of splitTopLevel(line.slice(m.index + m[0].length), ',')) {
+      addBindingNames(splitTopLevel(declarator, '=')[0], out);
+    }
+  }
+  for (const m of line.matchAll(/\b(?:function|class)\b/g)) {
+    const id = leadingIdentifier(line.slice(m.index + m[0].length).replace(/^\s*\*/, ''));
+    if (id !== undefined) out.push(id);
+  }
+  const closeOf = parenPairs(line);
+  for (const [k, close] of closeOf) {
+    const after = line.slice(close + 1).trimStart();
+    const head = line.slice(0, k);
+    const name = trailingIdentifier(head);
+    const isFunction = name === 'function' || endsWithFunctionKeyword(name === undefined ? head : head.trimEnd().slice(0, -name.length));
+    const method = name !== undefined && !JS_BLOCK_KEYWORDS.has(name) && after.startsWith('{');
+    if (after.startsWith('=>') || isFunction || method) addParameterNames(line.slice(k + 1, close), out);
+  }
+  for (let k = line.indexOf('=>'); k >= 0; k = line.indexOf('=>', k + 2)) {
+    const id = trailingIdentifier(line.slice(0, k));
+    if (id !== undefined && !line.slice(0, k).trimEnd().endsWith(')')) out.push(id);
+  }
+  return out;
+}
+
 /**
  * The `path` bindings of a file, by a plain scan of its lines: `import path from 'path'`,
  * `import * as p from 'node:path'`, `import { join as j, posix } from 'path'`,
  * `const path = require('path')`, `const { join, resolve: r } = require('node:path')`.
+ * A name the file declares more than once (re-declared or shadowed in any scope, as a
+ * variable, function or parameter) is dropped from all three sets (#1416 re-review 4).
  */
 function jsPathBindings(lines: string[]): JsPathBindings {
   const b: JsPathBindings = { modules: new Set(), builders: new Set(), constants: new Map() };
-  const seen = new Set<string>();
+  const declared = new Map<string, number>();
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (!trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('/*')) {
+      for (const n of jsDeclaredNames(trimmed)) declared.set(n, (declared.get(n) ?? 0) + 1);
+    }
+  }
   for (const raw of lines) {
     const line = raw.trim().replace(/;$/, '').trimEnd();
     if (line.startsWith('import ')) {
@@ -8586,14 +8745,15 @@ function jsPathBindings(lines: string[]): JsPathBindings {
         continue;
       }
     }
-    if (decl[1] === 'const' && JS_IDENT.test(target)) {
-      // a name declared twice (shadowed in some scope) is not a known constant
-      if (seen.has(target)) b.constants.delete(target);
-      else b.constants.set(target, init);
-      seen.add(target);
-    }
+    if (decl[1] === 'const' && JS_IDENT.test(target)) b.constants.set(target, init);
   }
-  return b;
+  // a name declared more than once means something else in some scope
+  const once = (n: string): boolean => declared.get(n) === 1;
+  return {
+    modules: new Set([...b.modules].filter(once)),
+    builders: new Set([...b.builders].filter(once)),
+    constants: new Map([...b.constants].filter(([n]) => once(n))),
+  };
 }
 
 /** The identifier that ends `text` (after trailing whitespace), or undefined. A plain scan, no regex. */

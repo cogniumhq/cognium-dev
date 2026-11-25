@@ -327,6 +327,83 @@ describe('cognium-dev#1305 E4 — absolute-path and `..`-segment guard', () => {
     expect(await pathTraversalFlows(code)).toHaveLength(0);
   });
 
+  // #1416 re-review 4: a name declared again in an inner scope loses its file-level meaning.
+  it('recall: an inner `let` over a top-level constant still reports', async () => {
+    const code = [
+      ...head,
+      "const SUB = 'files';",
+      'function serve() {',
+      '  let SUB = process.argv[3];',
+      '  const name = process.argv[2];',
+      "  if (path.isAbsolute(name) || name.includes('..')) throw new Error('x');",
+      '  return fs.readFileSync(path.join(ROOT, SUB, name));',
+      '}',
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('recall: an inner `const join` that decodes, over `join` from path, still reports', async () => {
+    const code = [
+      "import fs from 'fs';",
+      "import { isAbsolute, join } from 'path';",
+      "const ROOT = '/srv/data';",
+      'function serve() {',
+      "  const join = (a: string, b: string) => a + '/' + decodeURIComponent(b);",
+      '  const name = process.argv[2];',
+      "  if (isAbsolute(name) || name.includes('..')) throw new Error('x');",
+      '  return fs.readFileSync(join(ROOT, name));',
+      '}',
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('recall: an inner `const path = {join}` over the imported path module still reports', async () => {
+    const code = [
+      ...head,
+      'function serve() {',
+      "  const path = { isAbsolute: (s: string) => s.startsWith('/'), join: (a: string, b: string) => a + '/' + decodeURIComponent(b) };",
+      '  const name = process.argv[2];',
+      "  if (path.isAbsolute(name) || name.includes('..')) throw new Error('x');",
+      '  return fs.readFileSync(path.join(ROOT, name));',
+      '}',
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('recall: a parameter or `var` that shadows a path name still reports', async () => {
+    for (const fn of [
+      'function serve(path: { join: (a: string, b: string) => string }) {',
+      'function serve(opts: object, { SUB }: { SUB: string }) {',
+      'const serve = (SUB: string) => {',
+      'function serve() { var SUB = process.argv[3];',
+      'const serve = function (SUB: string) {',
+    ]) {
+      const code = [
+        ...head,
+        "const SUB = 'files';",
+        fn,
+        '  const name = process.argv[2];',
+        "  if (path.isAbsolute(name) || name.includes('..')) throw new Error('x');",
+        '  return fs.readFileSync(path.join(ROOT, SUB, name));',
+        '}',
+      ].join('\n');
+      expect((await pathTraversalFlows(code)).length, fn).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it('the same guard inside a function, with no shadowing, is still credited', async () => {
+    const code = [
+      ...head,
+      "const SUB = 'files';",
+      'function serve(req: { query: { name: string } }) {',
+      '  const name = process.argv[2];',
+      "  if (path.isAbsolute(name) || name.includes('..')) throw new Error('x');",
+      '  return fs.readFileSync(path.join(ROOT, SUB, name));',
+      '}',
+    ].join('\n');
+    expect(await pathTraversalFlows(code)).toHaveLength(0);
+  });
+
   // #1416 review 2: path.join on Windows splits on `\` too, so a POSIX-only segment test is not a guard.
   it("recall: a POSIX-only split('/') segment test still reports (`..\\x` passes it)", async () => {
     const code = [
