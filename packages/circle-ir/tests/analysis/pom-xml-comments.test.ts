@@ -3,10 +3,11 @@
  * inside XML comments. A commented-out sample declaration whose comment closes as
  * `</dependency -->` (no real end tag) opened a block that ran on to the next real
  * `</dependency>`: the commented coordinate was listed (#727) and the active dependency
- * after the comment was dropped (#728). Comments are now removed before reading.
+ * after the comment was dropped (#728). Comments are now removed before reading, in one
+ * left-to-right pass that recognises CDATA, so a `<!--` inside CDATA is text (#1398 review).
  */
 import { describe, it, expect } from 'vitest';
-import { parseMavenDependencies } from '../../src/analysis/sbom.js';
+import { parseMavenDependencies, parseTychoTargetDependencies } from '../../src/analysis/sbom.js';
 
 const keys = (ds: { name: string; version: string; scope: string }[]) => ds.map(d => `${d.name}@${d.version}/${d.scope}`).sort();
 
@@ -107,12 +108,98 @@ describe('XML comments in pom.xml (controldeck#727, #728)', () => {
     ]);
   });
 
-  it('an unterminated comment comments out the rest of the file', () => {
+  it('an unterminated comment runs to the end of the file and is reported, with its line', () => {
     const pom = `<project><dependencies>
       <dependency><groupId>com.live</groupId><artifactId>before</artifactId><version>1</version></dependency>
       <!-- never closed
       <dependency><groupId>com.gone</groupId><artifactId>after</artifactId><version>2</version></dependency>
     </dependencies></project>`;
-    expect(keys(parseMavenDependencies(pom))).toEqual(['com.live:before@1/required']);
+    const warnings: string[] = [];
+    expect(keys(parseMavenDependencies(pom, w => warnings.push(w)))).toEqual(['com.live:before@1/required']);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/^unterminated XML comment at line 3 /);
+  });
+
+  it('well-formed comments and CDATA produce no warning', () => {
+    const warnings: string[] = [];
+    parseMavenDependencies(issuePom, w => warnings.push(w));
+    parseMavenDependencies(`<project><x><![CDATA[ <!-- ]]></x><!-- ok --></project>`, w => warnings.push(w));
+    expect(warnings).toEqual([]);
+  });
+});
+
+// A `<!--` inside a CDATA section is text, not a comment opener (e.g. an antrun
+// `<script>`). Before the single-pass scan it deleted real dependencies.
+describe('CDATA in pom.xml and *.target', () => {
+  const dep = (a: string, v: string) =>
+    `<dependency><groupId>g</groupId><artifactId>${a}</artifactId><version>${v}</version></dependency>`;
+  const cdataPlugin = `<build><plugins><plugin><artifactId>maven-antrun-plugin</artifactId>
+      <configuration><target><echo><![CDATA[ echo "<!--" ]]></echo></target></configuration>
+    </plugin></plugins></build>`;
+
+  it('with no `-->` anywhere after it, the dependencies after the CDATA are kept', () => {
+    const pom = `<project>
+      <dependencies>${dep('a', '1')}</dependencies>
+      ${cdataPlugin}
+      <profiles><profile><dependencies>${dep('b', '2')}</dependencies></profile></profiles>
+    </project>`;
+    const warnings: string[] = [];
+    expect(keys(parseMavenDependencies(pom, w => warnings.push(w)))).toEqual(['g:a@1/required', 'g:b@2/required']);
+    expect(warnings).toEqual([]);
+  });
+
+  it('with a real comment later, nothing between the CDATA and that comment is removed', () => {
+    const pom = `<project>
+      <x><![CDATA[ <!-- ]]></x>
+      <dependencies>${dep('a', '1')}
+      <!-- note -->
+      ${dep('b', '2')}</dependencies>
+    </project>`;
+    expect(keys(parseMavenDependencies(pom))).toEqual(['g:a@1/required', 'g:b@2/required']);
+  });
+
+  it('CDATA content is left intact: a `-->` inside CDATA does not close an earlier comment', () => {
+    const pom = `<project><dependencies>
+      <!-- <![CDATA[ --> ${dep('in-comment', '9')}
+      <x><![CDATA[ --> ]]></x>
+      ${dep('live', '1')}
+    </dependencies></project>`;
+    // The comment opens first, so its own `-->` (right after `<![CDATA[`) closes it; the
+    // later `<![CDATA[ --> ]]>` is a CDATA section and stays as text.
+    expect(keys(parseMavenDependencies(pom))).toEqual(['g:in-comment@9/required', 'g:live@1/required']);
+  });
+
+  it('a `<![CDATA[` inside a comment is part of the comment', () => {
+    const pom = `<project><dependencies>
+      <!-- sample: <![CDATA[ ${dep('gone', '9')} -->
+      ${dep('live', '1')}
+    </dependencies></project>`;
+    expect(keys(parseMavenDependencies(pom))).toEqual(['g:live@1/required']);
+  });
+
+  it('Tycho: a `<!--` inside CDATA does not hide the Maven location after it', () => {
+    const target = `<?xml version="1.0"?><target name="t"><locations>
+      <location type="InstallableUnit"><repository location="x"/><![CDATA[<!--]]></location>
+      <location includeDependencyScope="compile" type="Maven">
+        <dependencies>${dep('tycho-a', '1.0')}</dependencies>
+      </location>
+      <!-- <location type="Maven"><dependencies>${dep('tycho-commented', '2')}</dependencies></location> -->
+    </locations></target>`;
+    const warnings: string[] = [];
+    expect(keys(parseTychoTargetDependencies(target, w => warnings.push(w)))).toEqual(['g:tycho-a@1.0/required']);
+    expect(warnings).toEqual([]);
+  });
+
+  it('Tycho: CDATA is still dropped, so a coordinate inside it is not listed', () => {
+    const target = `<target><locations><location type="Maven"><![CDATA[${dep('in-cdata', '9')}]]>
+      <dependencies>${dep('live', '1')}</dependencies></location></locations></target>`;
+    expect(keys(parseTychoTargetDependencies(target))).toEqual(['g:live@1/required']);
+  });
+
+  it('Tycho: an unterminated comment is reported', () => {
+    const warnings: string[] = [];
+    const target = `<target><locations><location type="Maven">${dep('a', '1')}</location>\n<!-- open`;
+    expect(keys(parseTychoTargetDependencies(target, w => warnings.push(w)))).toEqual(['g:a@1/required']);
+    expect(warnings).toEqual([expect.stringMatching(/^unterminated XML comment at line 2 /)]);
   });
 });

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`sbom`: a `<!--` inside a `<![CDATA[ … ]]>` section of a `pom.xml` or Tycho `*.target` no longer hides the dependencies after it (circle-ir fix).** An unterminated comment or CDATA section is read as running to the end of the file and is reported on stderr as `Warning: <manifest>: unterminated XML comment at line N …`.
 - **A valueless or missing `-p`/`--profile` is a usage error (exit `2`), in `scan`, `sbom` and `metrics`.** Old: `--profile` with no value, or naming a file that does not exist, was ignored and the command ran without that config. New: `Error: --profile requires a config file path` or `Error: --profile: config file not found: <file>`. The `sbom` usage line and `--help` now list `-p, --profile <file>`.
 - **`scan`: `.mts` and `.cts` files are scanned as TypeScript (#1390).** The CLI's extension map skipped them, unlike circle-ir's `detectLanguage`, so a directory scan left them out.
 - **`scan`: the Bash `predictable-temp-file` rule reports CWE-379 instead of CWE-377 (#1391, circle-ir fix).** It maps to CWE-379 (Creation of Temporary File in Directory with Incorrect Permissions), since 377 is deprecated in CWE 5.0. A `--exclude-cwe CWE-377` no longer hides it; use `CWE-379`.
