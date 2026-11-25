@@ -126,6 +126,20 @@ const INCOMPLETE_REASONS: ReadonlySet<ScanNotification['reason']> = new Set([
   'analysis-error', 'file-timeout', 'cross-file-budget', 'project-size-ceiling',
 ]);
 
+/**
+ * A scanned file name made safe to write to a terminal (#1305 R1): C0 and C1
+ * control characters, DEL and bidirectional overrides are written as `\xNN` or
+ * `\u{NNNN}`, so a file named with an escape sequence or a newline cannot
+ * recolour, move the cursor or forge an output line. Other text is unchanged.
+ */
+export function termSafe(name: string): string {
+  // eslint-disable-next-line no-control-regex
+  return name.replace(/[\x00-\x1f\x7f-\x9f‪-‮⁦-⁩]/g, c => {
+    const n = c.charCodeAt(0);
+    return n <= 0xff ? `\\x${n.toString(16).padStart(2, '0')}` : `\\u{${n.toString(16)}}`;
+  });
+}
+
 export function parseErrorText(p: NonNullable<ScanResult['parseErrors']>): string {
   const at = p.lines.length > 0 ? ` (first at line ${p.lines[0]})` : '';
   return `${p.count} syntax error(s)${at}; the parser could not read the code around them, so findings in this file may be incomplete`;
@@ -587,11 +601,11 @@ function formatCrossFilePaths(taintPaths: TaintPath[]): string {
 
     // Hop chain: source → ... → sink
     const hopChain = p.hops.length > 0
-      ? p.hops.map(h => `${h.file}:${h.line}`).join(' → ')
-      : `${p.source.file}:${p.source.line} → ${p.sink.file}:${p.sink.line}`;
+      ? p.hops.map(h => `${termSafe(h.file)}:${h.line}`).join(' → ')
+      : `${termSafe(p.source.file)}:${p.source.line} → ${termSafe(p.sink.file)}:${p.sink.line}`;
     lines.push(`      ${hopChain}`);
-    lines.push(`      Source: ${p.source.type} at ${p.source.file}:${p.source.line}`);
-    lines.push(`      Sink:   ${p.sink.type} at ${p.sink.file}:${p.sink.line}`);
+    lines.push(`      Source: ${p.source.type} at ${termSafe(p.source.file)}:${p.source.line}`);
+    lines.push(`      Sink:   ${p.sink.type} at ${termSafe(p.sink.file)}:${p.sink.line}`);
     lines.push(`      Confidence: ${p.confidence.toFixed(2)}`);
 
     const help = VULNERABILITY_HELP[p.sink.type];
@@ -631,22 +645,22 @@ export function formatResults(
 
   for (const result of results) {
     if (result.error) {
-      lines.push(colors.red(`[ERROR] ${result.file}: ${result.error}`));
+      lines.push(colors.red(`[ERROR] ${termSafe(result.file)}: ${result.error}`));
       continue;
     }
 
     if (result.parseErrors) {
-      lines.push(colors.yellow(`[PARTIAL] ${result.file}: ${parseErrorText(result.parseErrors)}`));
+      lines.push(colors.yellow(`[PARTIAL] ${termSafe(result.file)}: ${parseErrorText(result.parseErrors)}`));
     }
 
     if (result.vulnerabilities.length === 0) {
       if (verbose) {
-        lines.push(colors.green(`[OK] ${result.file}`));
+        lines.push(colors.green(`[OK] ${termSafe(result.file)}`));
       }
       continue;
     }
 
-    lines.push(colors.bold(result.file));
+    lines.push(colors.bold(termSafe(result.file)));
 
     for (const vuln of result.vulnerabilities) {
       const colorFn = SEVERITY_COLORS[vuln.severity] || ((text: string) => text);
@@ -697,7 +711,7 @@ export function formatResults(
   if (crossFileData?.skippedPaths?.length) {
     lines.push('');
     lines.push(colors.yellow(`⚠ ${crossFileData.skippedPaths.length} path(s) not scanned:`));
-    for (const p of crossFileData.skippedPaths) lines.push(colors.yellow(`  ${p.path} (${p.reason})`));
+    for (const p of crossFileData.skippedPaths) lines.push(colors.yellow(`  ${termSafe(p.path)} (${p.reason})`));
   }
   if (crossFileData?.projectSizeBudgetExceeded) {
     lines.push('');

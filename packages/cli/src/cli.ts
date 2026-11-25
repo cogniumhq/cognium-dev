@@ -37,7 +37,7 @@ import {
   formatResults, formatJSON, formatSARIF,
   scanNotifications,
   SINK_SEVERITY, SINK_CWE,
-  applyTagSeverityDowngrade,
+  applyTagSeverityDowngrade, termSafe,
   type ScanResult, type CrossFileData, type ProjectProfileSummary,
 } from './formatters.js';
 import { version } from './version.js';
@@ -1417,7 +1417,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       skipped: skippedPaths,
     });
     for (const p of skippedPaths) {
-      if (p.reason !== 'symlink inside the scan root') console.error(colors.yellow(`⚠ Not scanned: ${relative(absPath, p.path) || p.path} (${p.reason})`));
+      if (p.reason !== 'symlink inside the scan root') console.error(colors.yellow(`⚠ Not scanned: ${termSafe(relative(absPath, p.path) || p.path)} (${p.reason})`));
     }
 
     if (files.length === 0) {
@@ -1826,7 +1826,7 @@ async function runMetrics(targetPath: string, options: MetricsOptions): Promise<
       skipped: skippedPaths,
     });
     for (const p of skippedPaths) {
-      if (p.reason !== 'symlink inside the scan root') console.error(colors.yellow(`⚠ Not scanned: ${relative(absPath, p.path) || p.path} (${p.reason})`));
+      if (p.reason !== 'symlink inside the scan root') console.error(colors.yellow(`⚠ Not scanned: ${termSafe(relative(absPath, p.path) || p.path)} (${p.reason})`));
     }
 
     if (files.length === 0) {

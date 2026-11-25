@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { formatResults, formatJSON, formatSARIF, applyTagSeverityDowngrade, ARGV_NO_SHELL_TAG, type ScanResult, type CrossFileData } from '../src/formatters.js';
+import { formatResults, formatJSON, formatSARIF, applyTagSeverityDowngrade, ARGV_NO_SHELL_TAG, termSafe, type ScanResult, type CrossFileData } from '../src/formatters.js';
 import { version } from '../src/version.js';
 
 function makeResult(file: string, vulns: ScanResult['vulnerabilities'], error?: string): ScanResult {
@@ -230,5 +230,38 @@ describe('applyTagSeverityDowngrade', () => {
   test('untagged severity is unchanged', () => {
     expect(applyTagSeverityDowngrade('critical', undefined)).toBe('critical');
     expect(applyTagSeverityDowngrade('critical', ['other'])).toBe('critical');
+  });
+});
+
+// ─── termSafe / file names in text output (#1305 R1) ─────────────────────────
+
+describe('file names in text output', () => {
+  test('termSafe escapes control characters and bidi overrides, keeps the rest', () => {
+    expect(termSafe('src/Foo.java')).toBe('src/Foo.java');
+    expect(termSafe('src\\win\\Ünï.ts')).toBe('src\\win\\Ünï.ts');
+    expect(termSafe('a\x1b[2Jb')).toBe('a\\x1b[2Jb');
+    expect(termSafe('a\nb\r\tc\x7f\x9b')).toBe('a\\x0ab\\x0d\\x09c\\x7f\\x9b');
+    expect(termSafe('x‮txt.js')).toBe('x\\u{202e}txt.js');
+  });
+
+  test('formatResults writes no raw escape sequence or newline from a file name', () => {
+    const evil = 'src/a\x1b]0;pwned\x07\n[OK] forged.ts';
+    const results = [makeResult(evil, [sqlVuln]), makeResult(evil, [], 'boom')];
+    const crossFileData: CrossFileData = {
+      taintPaths: [],
+      crossFileCalls: [],
+      skippedPaths: [{ path: evil, reason: 'unreadable' }],
+    };
+    const prev = process.env.NO_COLOR;
+    process.env.NO_COLOR = '1';
+    try {
+      const output = formatResults(results, true, crossFileData);
+      expect(output).not.toContain('\x1b');
+      expect(output).not.toContain('\x07');
+      expect(output.split('\n').some(l => l.startsWith('[OK] forged.ts'))).toBe(false);
+      expect(output).toContain('src/a\\x1b]0;pwned\\x07\\x0a[OK] forged.ts');
+    } finally {
+      if (prev === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = prev;
+    }
   });
 });
