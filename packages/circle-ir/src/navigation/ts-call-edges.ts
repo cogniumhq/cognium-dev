@@ -460,6 +460,9 @@ class Graph {
   /** Per-block name index (#1338): one scan per statement_block / for loop body. */
   private readonly blockBindings = new WeakMap<Node, Map<string, LocalBinding>>();
 
+  /** Package root → whether its files have platform variants; built on first use. */
+  private platformRoots: Map<string, boolean> | null = null;
+
   constructor(private readonly options: TsCallGraphOptions) {
     this.maxInferred = options.maxInferred ?? 16;
     this.tables = options.entryTables ?? DEFAULT_ENTRY_TABLES;
@@ -581,7 +584,111 @@ class Graph {
       for (const ext of EXTENSIONS) if (this.files.has(stem + ext)) return stem + ext;
       for (const ext of EXTENSIONS) if (this.files.has(`${stem}/index${ext}`)) return `${stem}/index${ext}`;
     }
+    // React Native: `./Button` may exist only as `Button.ios.tsx`, `Button.android.tsx`, ….
+    const platforms = this.platformsFor(from);
+    for (const stem of stems) {
+      for (const p of platforms) for (const ext of EXTENSIONS) if (this.files.has(`${stem}.${p}${ext}`)) return `${stem}.${p}${ext}`;
+      for (const p of platforms) for (const ext of EXTENSIONS) if (this.files.has(`${stem}/index.${p}${ext}`)) return `${stem}/index.${p}${ext}`;
+    }
     return null;
+  }
+
+  /** The platform suffixes a file's nearest package resolves (React Native, Expo); none outside them. */
+  private platformsFor(path: string): readonly string[] {
+    const table = this.tables.platformFiles;
+    if (!table) return [];
+    if (this.platformRoots === null) {
+      this.platformRoots = new Map();
+      for (const pkg of this.options.packages ?? []) {
+        let on = false;
+        try {
+          const m = (JSON.parse(pkg.packageJson) ?? {}) as Record<string, unknown>;
+          const deps = { ...(m.dependencies as Record<string, unknown> | undefined), ...(m.devDependencies as Record<string, unknown> | undefined) };
+          on = table.dependencies.some(n => Object.prototype.hasOwnProperty.call(deps, n));
+        } catch {
+          // manifestEntries reports a manifest that does not parse.
+        }
+        this.platformRoots.set(normalizePath(pkg.root), on);
+      }
+    }
+    let best: string | null = null;
+    for (const root of this.platformRoots.keys()) {
+      if ((root === '' || path.startsWith(root + '/')) && (best === null || root.length > best.length)) best = root;
+    }
+    return best !== null && this.platformRoots.get(best) ? table.platforms : [];
+  }
+
+  /**
+   * Platform variants of one module (`Button.ts`, `Button.ios.tsx`,
+   * `Button.android.tsx`) are built for different platforms from the same
+   * imports: whatever reaches a declaration in one reaches its counterpart,
+   * by name or by export, in each other.
+   */
+  linkPlatformVariants(): void {
+    const groups = new Map<string, FileCtx[]>();
+    for (const ctx of this.sortedFiles()) {
+      const platforms = this.platformsFor(ctx.path);
+      if (platforms.length === 0 || ctx.path.endsWith('.d.ts')) continue;
+      const stem = ctx.path.replace(/\.[cm]?[jt]sx?$/, '');
+      const dot = stem.lastIndexOf('.');
+      const platform = dot > stem.lastIndexOf('/') && platforms.includes(stem.slice(dot + 1));
+      const base = platform ? stem.slice(0, dot) : stem;
+      const group = groups.get(base) ?? [];
+      group.push(ctx);
+      groups.set(base, group);
+    }
+    const counterpart = new Map<string, Set<string>>();
+    const fileCounterpart = new Map<string, string[]>();
+    const rel = (ctx: FileCtx, d: StableDecl): string => d.qualified_name.slice(ctx.module.qualified_name.length);
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      for (const a of group) {
+        fileCounterpart.set(a.path, group.filter(b => b !== a).map(b => b.path));
+        for (const b of group) {
+          if (a === b) continue;
+          const byRel = new Map<string, StableDecl[]>();
+          for (const d of b.ids.decls) byRel.set(rel(b, d), [...(byRel.get(rel(b, d)) ?? []), d]);
+          const link = (from: StableDecl, key: string): void => {
+            for (const to of byRel.get(key) ?? []) {
+              if (to.kind !== from.kind) continue;
+              const set = counterpart.get(from.id) ?? new Set<string>();
+              set.add(to.id);
+              counterpart.set(from.id, set);
+            }
+          };
+          for (const d of a.ids.decls) link(d, rel(a, d));
+          // An export may have a different name in each variant (`export default function IosButton`).
+          for (const name of new Set([...a.exports.keys(), 'default'])) {
+            const ta = this.resolveExport(a, name, 0);
+            const tb = this.resolveExport(b, name, 0);
+            if (ta.kind !== 'decls' || tb.kind !== 'decls' || ta.ctx !== a || tb.ctx !== b) continue;
+            for (const da of ta.decls) {
+              for (const db of tb.decls) {
+                if (da.kind !== db.kind) continue;
+                const pa = rel(a, da);
+                const pb = rel(b, db);
+                if (pa === '' || pb === '') continue;
+                for (const d of a.ids.decls) {
+                  const r = rel(a, d);
+                  if (r === pa || r.startsWith(pa + '.') || r.startsWith(pa + '/')) link(d, pb + r.slice(pa.length));
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    if (counterpart.size === 0) return;
+    const copy = <T extends { to: string }>(list: T[]): void => {
+      for (const e of [...list]) for (const to of [...(counterpart.get(e.to) ?? [])].sort()) list.push({ ...e, to });
+    };
+    copy(this.edges);
+    copy(this.references);
+    copy(this.fieldUses);
+    copy(this.loadEdges);
+    for (const ctx of this.files.values()) {
+      for (const m of [...ctx.loads]) for (const other of fileCounterpart.get(m) ?? []) if (other !== ctx.path && !ctx.loads.includes(other)) ctx.loads.push(other);
+    }
   }
 
   private scanModule(ctx: FileCtx): void {
@@ -2312,6 +2419,7 @@ export async function buildTsCallGraph(files: readonly TsSourceFile[], options: 
     graph.link();
     graph.run();
     graph.manifestEntries();
+    graph.linkPlatformVariants();
   } finally {
     for (const t of trees) disposeTree(t);
   }
