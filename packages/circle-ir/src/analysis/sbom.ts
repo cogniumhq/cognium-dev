@@ -926,11 +926,14 @@ export function parseGradleDependencies(buildGradle: string): Dependency[] {
 /**
  * Parse a Maven `pom.xml` `<dependency>` blocks. Name is `groupId:artifactId`.
  * `<scope>test|provided</scope>` → dev, `<optional>true</optional>` → optional.
- * A `${...}` version is recorded as `unknown` (unresolved property reference).
+ * A `${property}` version is resolved from this pom's own `<properties>`
+ * (controldeck#729); one defined in a parent pom, by another property, or not at
+ * all is not visible here and is recorded as `unknown`, never guessed.
  */
 export function parseMavenDependencies(pomXml: string): Dependency[] {
   if (!pomXml) return [];
   const out: Dependency[] = [];
+  const props = pomProperties(pomXml);
   const depRe = /<dependency>([\s\S]*?)<\/dependency>/g;
   let m: RegExpExecArray | null;
   while ((m = depRe.exec(pomXml)) !== null) {
@@ -938,8 +941,7 @@ export function parseMavenDependencies(pomXml: string): Dependency[] {
     const gid = block.match(/<groupId>\s*([^<\s]+)\s*<\/groupId>/)?.[1];
     const aid = block.match(/<artifactId>\s*([^<\s]+)\s*<\/artifactId>/)?.[1];
     if (!gid || !aid) continue;
-    let version = block.match(/<version>\s*([^<\s]+)\s*<\/version>/)?.[1] ?? 'unknown';
-    if (version.startsWith('${')) version = 'unknown';
+    const version = pomVersion(block, props);
     const mvnScope = block.match(/<scope>\s*([^<\s]+)\s*<\/scope>/)?.[1];
     const optional = /<optional>\s*true\s*<\/optional>/.test(block);
     const scope: DependencyScope =
@@ -949,22 +951,25 @@ export function parseMavenDependencies(pomXml: string): Dependency[] {
   // cognium-dev#1077 — `maven-dependency-plugin` `<artifactItem>`s (`copy` / `unpack`)
   // put third-party jars into a module (e.g. an OSGi bundle's `lib/` on
   // `Bundle-ClassPath`). They ship with it, so they count as `required` declarations.
-  // A `${property}` version is resolved from this pom's own `<properties>`; one defined
-  // in a parent pom is not visible here and stays `unknown`.
-  const props = pomProperties(pomXml);
+  // Their `${property}` versions resolve as above.
   const itemRe = /<artifactItem>([\s\S]*?)<\/artifactItem>/g;
   while ((m = itemRe.exec(pomXml)) !== null) {
     const block = m[1];
     const gid = block.match(/<groupId>\s*([^<\s]+)\s*<\/groupId>/)?.[1];
     const aid = block.match(/<artifactId>\s*([^<\s]+)\s*<\/artifactId>/)?.[1];
     if (!gid || !aid) continue;
-    let version = block.match(/<version>\s*([^<\s]+)\s*<\/version>/)?.[1] ?? 'unknown';
-    const ref = /^\$\{([^}]+)\}$/.exec(version);
-    if (ref) version = props.get(ref[1]) ?? 'unknown';
-    else if (version.includes('${')) version = 'unknown';
-    out.push(dep('maven', `${gid}:${aid}`, version, 'required'));
+    out.push(dep('maven', `${gid}:${aid}`, pomVersion(block, props), 'required'));
   }
   return out;
+}
+
+/** A block's `<version>`: literal, a whole `${property}` found in `props`, else `unknown`. */
+function pomVersion(block: string, props: Map<string, string>): string {
+  const version = block.match(/<version>\s*([^<\s]+)\s*<\/version>/)?.[1];
+  if (!version) return 'unknown';
+  const ref = /^\$\{([^}]+)\}$/.exec(version);
+  if (ref) return props.get(ref[1]) ?? 'unknown';
+  return version.includes('${') ? 'unknown' : version;
 }
 
 /** A pom's own `<properties>` (name → literal value); values that reference another property are left out. */
