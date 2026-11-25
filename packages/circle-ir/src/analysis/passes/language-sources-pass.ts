@@ -5694,7 +5694,8 @@ export function findBashPatternFindings(sourceCode: string, file: string): SastF
           pass: 'language-sources',
           category: 'security',
           rule_id: 'predictable-temp-file',
-          cwe: 'CWE-377',
+          // CWE-377 is deprecated in CWE 5.0; CWE-379 is its successor (#1309).
+          cwe: 'CWE-379',
           severity: 'medium',
           level: 'warning',
           message: `Predictable temp file: /tmp/${tmpRel}. Use mktemp instead`,
