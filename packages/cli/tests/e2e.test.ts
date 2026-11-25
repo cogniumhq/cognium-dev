@@ -601,6 +601,28 @@ describe('#424 project size ceiling', () => {
     expect(r.stdout).not.toMatch(/analysed 0 of/);
   });
 
+  // #1306: in SARIF the files past the ceiling were named nowhere, so each read as clean.
+  test('SARIF names every file the ceiling left unread, each at its own location', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cognium-1306-'));
+    try {
+      for (const name of ['A', 'B', 'C']) {
+        writeFileSync(join(dir, `${name}.java`), `public class ${name} {\n  int x() { return 1; }\n}\n`.padEnd(100, ' '));
+      }
+      const r = await run('scan', dir, '-f', 'sarif', '--max-project-source-chars', '150');
+      const invocation = JSON.parse(r.stdout).runs[0].invocations[0];
+      expect(invocation.executionSuccessful).toBe(false);
+      const unread = invocation.toolExecutionNotifications
+        .filter((n: { properties?: { reason?: string }; locations?: unknown }) => n.properties?.reason === 'project-size-ceiling' && n.locations)
+        .map((n: { locations: Array<{ physicalLocation: { artifactLocation: { uri: string } } }> }) => n.locations[0].physicalLocation.artifactLocation.uri);
+      // One file fits under the cap; the other two were never read, and each is named.
+      expect(unread).toHaveLength(2);
+      expect(new Set(unread).size).toBe(2);
+      for (const uri of unread) expect(uri).toMatch(/[ABC]\.java$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   test('0 disables the cap and restores the plain summary', async () => {
     const r = await run('scan', '.', '--max-project-source-chars', '0');
     expect(r.stdout).not.toContain('Project size ceiling reached');
