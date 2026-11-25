@@ -64,6 +64,28 @@ req.end();
     expect(moduleSideEffectFindings(r.findings).length).toBeGreaterThanOrEqual(1);
   });
 
+  it('#1305 E3 — Map#get on a local named http inside a test callback should NOT fire', async () => {
+    const code = `import { describe, it, expect } from 'vitest';
+describe('router', () => {
+  it('maps routes', () => {
+    const http = new Map();
+    http.set('/a', 1);
+    expect(http.get('/a')).toBe(1);
+  });
+});
+`;
+    const r = await analyze(code, 'router.test.ts', 'typescript');
+    expect(moduleSideEffectFindings(r.findings).length).toBe(0);
+  });
+
+  it('#1305 E3 — module-level http.get on an imported node:http still fires', async () => {
+    const code = `import http from 'node:http';
+http.get('http://attacker.example/x');
+`;
+    const r = await analyze(code, 'preload.ts', 'typescript');
+    expect(moduleSideEffectFindings(r.findings).length).toBeGreaterThanOrEqual(1);
+  });
+
   it('#93.3 — package.json with benign postinstall (node-gyp rebuild) should NOT fire', async () => {
     const code = `{
   "name": "demo",

@@ -45,7 +45,7 @@
  */
 
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
-import type { CallInfo } from '../../types/index.js';
+import type { CallInfo, CircleIR } from '../../types/index.js';
 
 // JavaScript / TypeScript ----------------------------------------------------
 //
@@ -62,6 +62,9 @@ const JS_EXEC_RECEIVERS = new Set([
 const JS_NETWORK_RECEIVER_METHOD = new Set([
   'https:request', 'http:request', 'https:get', 'http:get',
 ]);
+// Node's own modules behind those receivers. A receiver bound to one of these
+// by an import / require is the real network API.
+const JS_NODE_HTTP_MODULE_RE = /^(node:)?https?$/;
 // Methods where the env-signal qualifier applies (e.g. fetch + process.env).
 const JS_NETWORK_MAYBE = new Set([
   'fetch',
@@ -170,7 +173,7 @@ export class ModuleSideEffectPass implements AnalysisPass<ModuleSideEffectResult
     // Call-layer detection ------------------------------------------------
     for (const call of graph.ir.calls) {
       if (language === 'rust' && !isRustBuildScript) continue;
-      const det = this.detectCall(call, language);
+      const det = this.detectCall(call, language, graph.ir);
       if (!det) continue;
       emit(call.location.line, det.pattern, det.api);
     }
@@ -190,6 +193,7 @@ export class ModuleSideEffectPass implements AnalysisPass<ModuleSideEffectResult
   private detectCall(
     call: CallInfo,
     language: string,
+    ir: CircleIR,
   ): { pattern: string; api: string } | null {
     const method = call.method_name;
     const receiver = call.receiver ?? '';
@@ -207,7 +211,10 @@ export class ModuleSideEffectPass implements AnalysisPass<ModuleSideEffectResult
       // https.request, http.request, http.get, https.get — bare module-init
       // network calls are highly suspicious.
       const recvMethod = `${receiver}:${method}`;
-      if (JS_NETWORK_RECEIVER_METHOD.has(recvMethod)) {
+      if (
+        JS_NETWORK_RECEIVER_METHOD.has(recvMethod) &&
+        !this.isLocalNonHttpBinding(receiver, ir)
+      ) {
         return {
           pattern: 'module-level network request',
           api: `${receiver}.${method}`,
@@ -282,6 +289,24 @@ export class ModuleSideEffectPass implements AnalysisPass<ModuleSideEffectResult
     }
 
     return null;
+  }
+
+  /**
+   * True when `name` is a variable or parameter declared in this file and no
+   * import / require binds it to Node's `http` / `https` module — e.g.
+   * `const http = new Map(); http.get(k)` inside a test callback (#1305 E3).
+   * A name with no binding at all stays flagged: it may be a global.
+   */
+  private isLocalNonHttpBinding(name: string, ir: CircleIR): boolean {
+    const boundToHttp = ir.imports.some(
+      (imp) =>
+        (imp.alias ?? imp.imported_name) === name &&
+        JS_NODE_HTTP_MODULE_RE.test(imp.from_package ?? ''),
+    );
+    if (boundToHttp) return false;
+    return ir.dfg.defs.some(
+      (def) => def.variable === name && (def.kind === 'local' || def.kind === 'param'),
+    );
   }
 
   /**

@@ -9,6 +9,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { ModuleSideEffectPass } from '../../../src/analysis/passes/module-side-effect-pass.js';
+import type { CircleIR } from '../../../src/types/index.js';
 import { makeIR, makeCtx, call } from './_pass-fixtures.js';
 
 const run = (
@@ -16,10 +17,12 @@ const run = (
   language = 'javascript',
   file = 'index.js',
   code = '',
+  extra: Partial<CircleIR> = {},
 ) => {
   const ir = makeIR({
     meta: { circle_ir: '3.0', file, language, loc: 20, hash: '' },
     calls,
+    ...extra,
   });
   const ctx = makeCtx(ir, code, language);
   new ModuleSideEffectPass().run(ctx);
@@ -43,6 +46,39 @@ describe('ModuleSideEffectPass', () => {
 
     it('flags a module-level https.request', () => {
       const ctx = run([call('https', 'request', [['opts']])]);
+      expect(ctx.findings).toHaveLength(1);
+    });
+
+    // #1305 E3: a local variable that happens to be named `http` is not the
+    // http module, so `Map#get` on it is not a network request.
+    const def = (variable: string, kind: 'local' | 'param' = 'local') =>
+      ({ id: 1, variable, line: 4, kind });
+    const dfg = (...defs: ReturnType<typeof def>[]) => ({ defs, uses: [], chains: [] });
+
+    it('does not flag get on a local variable named http (#1305 E3)', () => {
+      const ctx = run([call('http', 'get', [['"/a"']], 6)], 'typescript', 'router.test.ts', '',
+        { dfg: dfg(def('http')) });
+      expect(ctx.findings).toHaveLength(0);
+    });
+
+    it('does not flag get on a parameter named https (#1305 E3)', () => {
+      const ctx = run([call('https', 'get', [['key']], 6)], 'javascript', 'index.js', '',
+        { dfg: dfg(def('https', 'param')) });
+      expect(ctx.findings).toHaveLength(0);
+    });
+
+    it('still flags https.request when the local is the required https module', () => {
+      const ctx = run([call('https', 'request', [['opts']])], 'javascript', 'index.js', '', {
+        dfg: dfg(def('https')),
+        imports: [{ imported_name: '*', from_package: 'https', alias: 'https', is_wildcard: true, line_number: 1 }],
+      });
+      expect(ctx.findings).toHaveLength(1);
+    });
+
+    it('still flags http.get imported from node:http', () => {
+      const ctx = run([call('http', 'get', [['"http://x"']])], 'typescript', 'index.ts', '', {
+        imports: [{ imported_name: 'default', from_package: 'node:http', alias: 'http', is_wildcard: false, line_number: 1 }],
+      });
       expect(ctx.findings).toHaveLength(1);
     });
 
