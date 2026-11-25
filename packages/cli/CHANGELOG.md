@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`sbom`: reads the `exclude` patterns of `cognium.config.json` (or `-p`/`--profile <file>`), so a manifest under an excluded path adds no components (#1388).** `include` is not applied: it lists source files such as `src/**/*.ts`, not manifests. A malformed config now makes `sbom` exit `2`, as it does for `scan`.
 - **`scan`: env in `spawn` options is no longer command injection, and argv with no shell reports at medium.** A flow tagged `argv-no-shell:argument-injection` is reported at medium, like a library-API-surface flow.
 - **`scan`: the entry-path gate no longer drops findings in an Express handler that a router registers as a default import under another name, through an `index.ts` re-export, as `handlers.run`, or inside an array of handlers (Refs #1323, follow-up to #1331; circle-ir fix).**
 - **`scan`: a directory scan runs the per-file phase on `--threads` worker threads (#1324).** `--threads` (default 4, capped at the number of CPUs and the number of files) now applies to directory scans. Each file is analysed on a worker, and the results are merged in the original file order before the cross-file phase, so the output is the same as with `--threads 1`, which keeps the in-process path. A timed-out file is reported as before. A file whose analysis throws is reported as not analysed and siblings still run (cognium-dev#1351). If a worker cannot start or exits, its files are analysed on the main thread.

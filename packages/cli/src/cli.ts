@@ -2337,6 +2337,9 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
     process.exit(2);
   }
 
+  // #1388: only the config's `exclude` applies. `include` is deliberately not applied: for
+  // scan it lists source files (`src/**/*.ts`), not manifests, so it would empty the SBOM.
+  // A malformed config throws, and the top-level handler exits 2.
   const config = loadConfig(options.profile);
   const manifests = await collectManifestFiles(absPath, { excludePatterns: config?.exclude });
   if (manifests.length === 0) {

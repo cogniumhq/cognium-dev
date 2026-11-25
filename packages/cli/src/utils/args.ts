@@ -70,7 +70,7 @@ export const COMMAND_OPTIONS: Readonly<Record<string, readonly string[]>> = {
     'project-profile-explain', 'cross-file-budget-ms', 'max-project-source-chars',
   ],
   metrics: ['language', 'l', 'format', 'f', 'output', 'o', 'quiet', 'q', 'category', 'exclude-tests', 'profile', 'p'],
-  sbom: ['format', 'f', 'output', 'o', 'name', 'prod-only', 'prod', 'deterministic', 'license-map'],
+  sbom: ['format', 'f', 'output', 'o', 'name', 'prod-only', 'prod', 'deterministic', 'license-map', 'profile', 'p'],
   deadcode: ['language', 'l', 'format', 'f', 'output', 'o', 'root-kinds', 'verdicts', 'bound-registrations', 'exported-packages'],
   reach: ['language', 'l', 'format', 'f', 'output', 'o', 'root-kinds', 'bound-registrations', 'base', 'exported-packages'],
   entries: ['language', 'l', 'format', 'f', 'output', 'o', 'facts-arrow', 'facts-scheme', 'exported-packages'],
@@ -238,6 +238,8 @@ SBOM OPTIONS:
   --prod-only                Exclude dev/test dependencies
   --license-map <file>       JSON {"name@version"|"name": "<SPDX>"} for licences not found in node_modules
   --deterministic            Omit timestamp / serialNumber / namespace for reproducible output
+  -p, --profile <file>       Load config from file [default: cognium.config.json];
+                               its "exclude" patterns skip manifests ("include" is not used)
   -o, --output <file>        Write the document to a file (default: stdout)
                                Discovers package.json / requirements.txt / pyproject.toml /
                                pom.xml / build.gradle(.kts) / Cargo.toml / go.mod.
