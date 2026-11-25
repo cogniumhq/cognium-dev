@@ -284,6 +284,7 @@ export async function parse(
  * Locations are capped at 50 entries to bound memory on pathological inputs.
  */
 export function extractParseStatus(tree: Tree): {
+  state: 'complete' | 'partial';
   success: boolean;
   has_errors: boolean;
   error_count: number;
@@ -292,7 +293,7 @@ export function extractParseStatus(tree: Tree): {
   const root = tree.rootNode;
   // Fast path: no errors anywhere in the tree — skip the full walk.
   if (!root.hasError) {
-    return { success: true, has_errors: false, error_count: 0, error_locations: [] };
+    return { state: 'complete', success: true, has_errors: false, error_count: 0, error_locations: [] };
   }
 
   const MAX_LOCATIONS = 50;
@@ -324,6 +325,7 @@ export function extractParseStatus(tree: Tree): {
   }
 
   return {
+    state: 'partial',
     success: false,
     has_errors: true,
     error_count: errorCount,
@@ -505,6 +507,23 @@ async function getDefaultLanguagePath(language: SupportedLanguage): Promise<stri
  */
 export function isInitialized(): boolean {
   return parserInitialized;
+}
+
+/**
+ * `SupportedLanguage` values with no grammar in `wasm/` (#1307). They parse
+ * only when the caller supplies one through `languagePaths` or
+ * `languageModules`.
+ */
+const LANGUAGES_WITHOUT_BUNDLED_GRAMMAR: ReadonlySet<SupportedLanguage> = new Set<SupportedLanguage>(['c', 'cpp']);
+
+/**
+ * Whether `parse()` has a grammar for `language`: one ships in `wasm/`, or the
+ * caller configured one in `initParser()`.
+ */
+export function hasGrammar(language: SupportedLanguage): boolean {
+  return !LANGUAGES_WITHOUT_BUNDLED_GRAMMAR.has(language)
+    || configuredLanguageModules[language] !== undefined
+    || configuredLanguagePaths[language] !== undefined;
 }
 
 /**

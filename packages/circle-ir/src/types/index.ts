@@ -1264,6 +1264,15 @@ export interface CircleIR {
  */
 export interface ParseStatus {
   /**
+   * `complete`: parsed without ERROR or MISSING nodes. `partial`: parsed with
+   * recovered errors, so IR may be incomplete. `unsupported`: not parsed at
+   * all because no grammar is available for the language (#1307); every IR
+   * field is empty and `reason` says why.
+   */
+  state?: 'complete' | 'partial' | 'unsupported';
+  /** Why the file was not fully parsed. Set when `state` is `unsupported`. */
+  reason?: string;
+  /**
    * `true` when tree-sitter parsed the file without any ERROR or MISSING
    * nodes. Equivalent to `!tree.rootNode.hasError`.
    */
