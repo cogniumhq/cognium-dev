@@ -112,3 +112,21 @@ describe('MavenDeclaredIndex', () => {
     expect(only.declared('pom.xml', 'org.yaml:snakeyaml')?.version).toBe('1.33');
   });
 });
+
+describe('MavenDeclaredIndex: comments are found by the CDATA-aware pass (#1401 review 2)', () => {
+  it('a `<!--` inside an antrun CDATA under <build> does not eat the declarations after it', () => {
+    const pom = `<project>
+      <groupId>com.example</groupId><artifactId>cdata</artifactId><version>1.0</version>
+      <build><plugins><plugin><artifactId>maven-antrun-plugin</artifactId><configuration><target>
+        <echo><![CDATA[ <!-- not a comment ]]></echo>
+      </target></configuration></plugin></plugins></build>
+      <dependencies>
+        <dependency><groupId>org.yaml</groupId><artifactId>snakeyaml</artifactId><version>2.2</version></dependency>
+      </dependencies>
+      <!-- <dependency><groupId>org.yaml</groupId><artifactId>snakeyaml</artifactId><version>9.9</version></dependency> -->
+    </project>`;
+    const idx = new MavenDeclaredIndex([{ path: 'pom.xml', content: pom }]);
+    expect(idx.declared('pom.xml', 'org.yaml:snakeyaml')).toMatchObject({ version: '2.2', origin: 'direct' });
+  });
+});
+
