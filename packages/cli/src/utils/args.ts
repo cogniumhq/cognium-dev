@@ -189,7 +189,7 @@ SCAN OPTIONS:
   --exclude-cwe <cwes>       Exclude specific CWEs (comma-separated, e.g., "CWE-330,CWE-327")
   --disable-pass <passes>    Disable specific passes (comma-separated, e.g., "naming-convention,todo-in-prod")
   --exclude-tests            Exclude test files and directories
-  --profile <file>           Load config from file [default: cognium.config.json]
+  -p, --profile <file>       Load config from file [default: cognium.config.json]
   --project-profile <p>      Force project profile (shape/env). Disables auto-detection.
                                - shape: library|application|cli|server|plugin
                                - env:   production|dev|sample|benchmark|test
@@ -226,7 +226,7 @@ METRICS OPTIONS:
                                - Valid categories: complexity, size, coupling,
                                  inheritance, cohesion, documentation, duplication
   --exclude-tests            Exclude test files and directories
-  --profile <file>           Load config from file [default: cognium.config.json]
+  -p, --profile <file>       Load config from file [default: cognium.config.json]
   -o, --output <file>        Write results to file
   -q, --quiet                Suppress progress output
 

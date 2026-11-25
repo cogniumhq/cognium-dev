@@ -48,7 +48,7 @@ import { computeRecheck, parseRecheckOptions, recheckExitCode } from './recheck.
 import { startFileWatchdog, type FileWatchdog } from './file-watchdog.js';
 import { ScanPool, scanPoolSize, serveScanWorker, decodeScanError } from './scan-pool.js';
 import { isMainThread, workerData } from 'worker_threads';
-import { UsageError, EXIT_ERROR, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush, writeStdout } from './utils/options.js';
+import { UsageError, EXIT_ERROR, parseFormat, parseSeverity, parseWholeNumber, parseProfile, exitAfterFlush, writeStdout } from './utils/options.js';
 import { writeJson } from './utils/json-stream.js';
 import { spinner, type Spinner } from './utils/spinner.js';
 import { SCAN_SKIPPED_DIRECTORIES, isScanSkippedDirectory, isStructureSkippedDirectory } from './utils/skip-dirs.js';
@@ -368,7 +368,7 @@ export function isTestFile(filePath: string): boolean {
   return TEST_PATTERNS.some(pattern => pattern.test(filePath));
 }
 
-// Language detection by extension
+// Language detection by extension. Mirrors circle-ir's detectLanguage (#1390).
 const LANG_MAP: Record<string, string> = {
   '.java': 'java',
   '.js': 'javascript',
@@ -377,6 +377,8 @@ const LANG_MAP: Record<string, string> = {
   '.cjs': 'javascript',
   '.ts': 'typescript',
   '.tsx': 'typescript',
+  '.mts': 'typescript',
+  '.cts': 'typescript',
   '.py': 'python',
   '.go': 'go',
   '.cs': 'csharp',
@@ -2506,7 +2508,7 @@ async function main(): Promise<void> {
       quiet: options.quiet === true || options.q === true,
       language: languageFromCliOptions(options),
       excludeTests: options['exclude-tests'] === true,
-      profile: (options.profile || options.p) as string | undefined,
+      profile: parseProfile(options.profile ?? options.p),
     };
 
     await runMetrics(targetPath, metricsOptions);
@@ -2517,7 +2519,7 @@ async function main(): Promise<void> {
   if (command === 'sbom') {
     if (args.length === 0) {
       console.error(colors.red('Error: sbom command requires a path argument'));
-      console.error('\nUsage: cognium-dev sbom <path> [--format cyclonedx|spdx] [--output <file>]');
+      console.error('\nUsage: cognium-dev sbom <path> [--format cyclonedx|spdx] [--profile <file>] [--output <file>]');
       process.exit(EXIT_ERROR);
     }
     const rawFormat = ((options.format || options.f || 'cyclonedx') as string).toLowerCase();
@@ -2536,7 +2538,7 @@ async function main(): Promise<void> {
       prodOnly: options['prod-only'] === true || options.prod === true,
       deterministic: options.deterministic === true,
       licenseMap: options['license-map'] as string | undefined,
-      profile: (options.profile || options.p) as string | undefined,
+      profile: parseProfile(options.profile ?? options.p),
     };
     try {
       await runSbom(args[0], sbomOptions);
@@ -2641,7 +2643,7 @@ async function main(): Promise<void> {
       verbose: options.verbose === true || options.v === true,
       excludeTests: options['exclude-tests'] === true,
       excludeCwe: (options['exclude-cwe']) as string | undefined,
-      profile: (options.profile || options.p) as string | undefined,
+      profile: parseProfile(options.profile ?? options.p),
       disablePass: (options['disable-pass']) as string | undefined,
       crossFileBudgetMs: parseCrossFileBudgetMs(options['cross-file-budget-ms']),
       maxProjectSourceChars: parseMaxProjectSourceChars(options['max-project-source-chars']),

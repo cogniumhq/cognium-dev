@@ -508,3 +508,33 @@ test('sbom --profile / -p <file> applies that config\'s exclude; a malformed one
     rmSync(dir, { recursive: true, force: true });
   }
 }, 60_000);
+
+test('a valueless or missing --profile / -p is a usage error for sbom and scan, not ignored', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'profile-arg-'));
+  try {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p', dependencies: { lodash: '4.17.21' } }));
+    writeFileSync(join(dir, 'app.js'), 'console.log(1);\n');
+    const missing = join(dir, 'no-such-config.json');
+    const cases: Array<[string[], string]> = [];
+    for (const command of ['sbom', 'scan']) {
+      for (const flag of ['--profile', '-p']) {
+        cases.push([[command, dir, flag], 'requires a config file path']);
+        cases.push([[command, dir, flag, missing], `config file not found: ${missing}`]);
+      }
+      cases.push([[command, dir, '--profile='], 'requires a config file path']);
+      // The next token is another option, so --profile has no value.
+      cases.push([[command, dir, '--profile', command === 'sbom' ? '--deterministic' : '-q'], 'requires a config file path']);
+    }
+    for (const [args, message] of cases) {
+      const proc = Bun.spawn(['bun', 'run', CLI, ...args], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
+      ]);
+      expect({ args, code }).toEqual({ args, code: 2 });
+      expect(stderr).toContain(message);
+      expect(stdout).toBe('');
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 120_000);
