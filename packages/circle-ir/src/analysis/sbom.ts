@@ -1060,28 +1060,33 @@ function pomProperties(pomXml: string): Map<string, string> {
   return out;
 }
 
+/** A resolved property value longer than this is left out, so values built from doubling references stay bounded. */
+const MAX_PROPERTY_VALUE = 256;
+
 /**
  * Properties with every `${name}` in their values replaced by that property's
  * resolved value. A value that refers, directly or through others, to a name
- * not in `raw` (e.g. `${project.version}`) or to itself is left out.
+ * not in `raw` (e.g. `${project.version}`) or to itself, or that resolves to
+ * more than `MAX_PROPERTY_VALUE` characters, is left out.
  */
 function resolvePomProperties(raw: ReadonlyMap<string, string>): Map<string, string> {
+  // A name is set to null before its value is expanded, so a name met again on its own path reads as
+  // null: the cycle's result. Every stored value is at most MAX_PROPERTY_VALUE long, so one expansion
+  // is bounded by the raw value's length times that.
   const done = new Map<string, string | null>();
-  const resolving = new Set<string>();
   const resolveName = (name: string): string | null => {
     const known = done.get(name);
     if (known !== undefined) return known;
     const value = raw.get(name);
-    if (value === undefined || resolving.has(name)) return null;
-    resolving.add(name);
+    if (value === undefined) return null;
+    done.set(name, null);
     let ok = true;
     const out = value.replace(/\$\{([^}]*)\}/g, (_, ref: string) => {
       const v = resolveName(ref);
       if (v === null) ok = false;
       return v ?? '';
     });
-    resolving.delete(name);
-    const result = ok && !out.includes('${') ? out : null;
+    const result = ok && out.length <= MAX_PROPERTY_VALUE && !out.includes('${') ? out : null;
     done.set(name, result);
     return result;
   };

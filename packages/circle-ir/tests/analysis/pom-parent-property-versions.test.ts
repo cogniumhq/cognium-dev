@@ -90,4 +90,35 @@ describe('pom ${property} versions from the parent pom', () => {
     expect(mavenArtifactId(mod)).toBe('shop-core');
     expect(mavenArtifactId(root)).toBe('shop-parent');
   });
+  it('a value that doubles the previous one, forty times over, is left unresolved; the run neither throws nor stops (review)', () => {
+    const props = ['<a0>x</a0>', ...Array.from({ length: 40 }, (_, n) => `<a${n + 1}>\${a${n}}\${a${n}}</a${n + 1}>`)].join('');
+    const pom = `<project><artifactId>big</artifactId><properties>${props}</properties>
+  <dependencies>
+    <dependency><groupId>org.a</groupId><artifactId>literal</artifactId><version>1.2.3</version></dependency>
+    <dependency><groupId>org.a</groupId><artifactId>small</artifactId><version>\${a3}</version></dependency>
+    <dependency><groupId>org.a</groupId><artifactId>huge</artifactId><version>\${a40}</version></dependency>
+  </dependencies></project>`;
+    const v = versions(parseMavenDependencies(pom));
+    expect(v['org.a:literal']).toBe('1.2.3');
+    expect(v['org.a:small']).toBe('xxxxxxxx');
+    expect(v['org.a:huge']).toBe('unknown');
+  });
+
+  it('a value of up to 256 characters resolves; a longer one is unknown', () => {
+    const at = (n: number) => `<project><artifactId>p</artifactId><properties><base>${'v'.repeat(n - 1)}</base><v>\${base}.</v></properties>
+  <dependencies><dependency><groupId>org.a</groupId><artifactId>b</artifactId><version>\${v}</version></dependency></dependencies></project>`;
+    expect(versions(parseMavenDependencies(at(256)))['org.a:b']).toBe(`${'v'.repeat(255)}.`);
+    expect(versions(parseMavenDependencies(at(257)))['org.a:b']).toBe('unknown');
+  });
+
+  it('a cycle through several properties stays unknown; a name outside it still resolves', () => {
+    const pom = `<project><artifactId>p</artifactId><properties><a>\${b}</a><b>\${c}</b><c>\${a}</c><d>1.0</d><e>\${d}-x</e></properties>
+  <dependencies>
+    <dependency><groupId>org.a</groupId><artifactId>cyc</artifactId><version>\${b}</version></dependency>
+    <dependency><groupId>org.a</groupId><artifactId>ok</artifactId><version>\${e}</version></dependency>
+  </dependencies></project>`;
+    const v = versions(parseMavenDependencies(pom));
+    expect(v['org.a:cyc']).toBe('unknown');
+    expect(v['org.a:ok']).toBe('1.0-x');
+  });
 });
