@@ -468,3 +468,43 @@ test('sbom: a pom.xml under a config exclude adds no components; without the exc
     rmSync(dir, { recursive: true, force: true });
   }
 }, 60_000);
+
+test('sbom --profile / -p <file> applies that config\'s exclude; a malformed one exits 2 (#1388)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-profile-'));
+  try {
+    const pom = (g: string, a: string, v: string) =>
+      `<project><dependencies><dependency><groupId>${g}</groupId><artifactId>${a}</artifactId><version>${v}</version></dependency></dependencies></project>`;
+    writeFileSync(join(dir, 'pom.xml'), pom('com.google.guava', 'guava', '32.1.0-jre'));
+    mkdirSync(join(dir, 'fixtures'), { recursive: true });
+    writeFileSync(join(dir, 'fixtures', 'pom.xml'), pom('org.apache.commons', 'commons-text', '1.9'));
+    // The profile lives outside the target and the working directory has no cognium.config.json.
+    const cfgDir = mkdtempSync(join(tmpdir(), 'sbom-profile-cfg-'));
+    const profile = join(cfgDir, 'custom.json');
+    writeFileSync(profile, JSON.stringify({ exclude: ['fixtures/**'] }));
+    const run = (...extra: string[]) =>
+      Bun.spawn(['bun', 'run', CLI, 'sbom', dir, '--deterministic', ...extra], { cwd: cfgDir, stdout: 'pipe', stderr: 'pipe' });
+    const guava = 'pkg:maven/com.google.guava/guava@32.1.0-jre';
+    const commonsText = 'pkg:maven/org.apache.commons/commons-text@1.9';
+    try {
+      for (const flag of ['--profile', '-p']) {
+        const proc = run(flag, profile);
+        const out = await new Response(proc.stdout).text();
+        expect(await proc.exited).toBe(0);
+        expect(purlsOf(out)).toEqual([guava]);
+      }
+      const plain = run();
+      const plainOut = await new Response(plain.stdout).text();
+      expect(await plain.exited).toBe(0);
+      expect(purlsOf(plainOut).sort()).toEqual([guava, commonsText].sort());
+
+      writeFileSync(profile, '{ "exclude": [');
+      const bad = run('--profile', profile);
+      expect(await bad.exited).toBe(2);
+      expect(await new Response(bad.stderr).text()).toContain('Failed to parse');
+    } finally {
+      rmSync(cfgDir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 60_000);
