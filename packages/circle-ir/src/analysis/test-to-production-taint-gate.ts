@@ -4,8 +4,12 @@
  */
 import type { TaintPath } from '../types/index.js';
 
-/** Test-file naming for JS/TS only (issue acceptance: `*.test.*`, `*.spec.*`, `__tests__/`). */
-const JS_TS_TEST_FILE = /(?:\.(?:test|spec)\.[cm]?[jt]sx?$)|(?:(?:^|\/)__tests__\/)/i;
+/**
+ * Test-file naming for JS/TS only (issue acceptance: `*.test.*`, `*.spec.*`, `__tests__/`).
+ * #1311: React Native / Expo platform tests (`*.test.ios.ts`, `*.spec.native.tsx`, …).
+ */
+const JS_TS_TEST_FILE =
+  /(?:\.(?:test|spec)(?:\.(?:ios|android|native|web|windows|macos))?\.[cm]?[jt]sx?$)|(?:(?:^|\/)__tests__\/)/i;
 
 const JS_TS_FILE = /\.(?:[cm]?[jt]sx?)$/i;
 
