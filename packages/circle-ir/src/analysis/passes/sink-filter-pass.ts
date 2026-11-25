@@ -3106,6 +3106,38 @@ export function jsSinkArgumentValues(lineText: string, method?: string): string[
   return [...out];
 }
 
+/**
+ * `const host = new URL(nxt, base).hostname;` → `{ name: 'host', of: 'nxt' }`.
+ * Also `.host` and `.origin`, with `let` / `var` and a TS type annotation.
+ */
+export function jsUrlHostOf(lineText: string): { name: string; of: string } | undefined {
+  const m = /^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*string\s*)?=\s*new\s+URL\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*(?:,[^()]*)?\)\s*\.\s*(?:hostname|host|origin)\s*(?:;\s*)?$/
+    .exec(lineText);
+  return m ? { name: m[1], of: m[2] } : undefined;
+}
+
+/**
+ * The condition of an `if (…)` that opens the line and leads straight into the
+ * `method(` call (`if (c) res.redirect(x)`, `if (c) { return res.redirect(x); }`),
+ * trimmed. Undefined for any other shape.
+ */
+export function jsSameLineIfCondition(lineText: string, method?: string): string | undefined {
+  if (!method) return undefined;
+  const open = /^\s*(?:\}\s*else\s+)?if\s*\(/.exec(lineText);
+  if (!open) return undefined;
+  let depth = 1, i = open[0].length;
+  for (; i < lineText.length && depth > 0; i++) {
+    const ch = lineText[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+  }
+  if (depth !== 0) return undefined;
+  const rest = lineText.slice(i);
+  const call = new RegExp(`^\\s*\\{?\\s*(?:return\\s+)?(?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)*${method.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`)
+    .test(rest);
+  return call ? lineText.slice(open[0].length, i - 1).trim() : undefined;
+}
+
 /** True if a guard line mentions one of the sink's values as a whole name. */
 function guardTestsValue(line: string, values: string[]): boolean {
   return values.some(v => new RegExp(
@@ -3428,12 +3460,28 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         // any guard in the window still drops it, as before.
         const sinkValues = jsSinkArgumentValues(sinkLineText, sink.method);
         const startLine = Math.max(0, sink.line - 7);
+        // A host read from a sink value (`const host = new URL(nxt, base).hostname`)
+        // is tested in its place: an allow-list on it checks where `nxt` goes.
+        const guardValues = [...sinkValues];
+        for (let i = startLine; i < sink.line - 1 && sinkValues.length > 0; i++) {
+          const host = jsUrlHostOf(sourceLines[i] ?? '');
+          if (host && sinkValues.includes(host.of)) guardValues.push(host.name);
+        }
         for (let i = startLine; i < sink.line - 1; i++) {
           const line = sourceLines[i] ?? '';
           if (/\bif\s*\(/.test(line) && guardPatterns.test(line)
-              && (sinkValues.length === 0 || guardTestsValue(line, sinkValues))) {
+              && (sinkValues.length === 0 || guardTestsValue(line, guardValues))) {
             return false;
           }
+        }
+        // The one-line form, `if (ALLOWED.some(p => nxt.startsWith(p))) res.redirect(nxt);`:
+        // the condition must open the line's statement, lead straight into the
+        // sink call, and not be negated.
+        const sameLineGuard = jsSameLineIfCondition(sinkLineText, sink.method);
+        if (sameLineGuard !== undefined && sinkValues.length > 0
+            && !sameLineGuard.startsWith('!') && guardPatterns.test(sameLineGuard)
+            && guardTestsValue(sameLineGuard, guardValues)) {
+          return false;
         }
         // 8b. Sanitized via encodeURIComponent/encodeURI on the sink line.
         if (/\bencodeURIComponent\s*\(|\bencodeURI\s*\(/.test(sinkLineText)) {
