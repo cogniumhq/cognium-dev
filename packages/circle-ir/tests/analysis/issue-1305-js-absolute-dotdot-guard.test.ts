@@ -37,7 +37,7 @@ describe('cognium-dev#1305 E4 — absolute-path and `..`-segment guard', () => {
     const code = [
       ...head,
       'const name = process.argv[2];',
-      "if (name.split('/').includes('..') || path.isAbsolute(name)) {",
+      "if (name.split(/[/\\\\]/).includes('..') || path.isAbsolute(name)) {",
       "  throw new Error('bad name');",
       '}',
       "console.log(fs.readFileSync(path.join(ROOT, name), 'utf-8'));",
@@ -119,5 +119,64 @@ describe('cognium-dev#1305 E4 — absolute-path and `..`-segment guard', () => {
       "console.log(fs.readFileSync(path.join(ROOT, name), 'utf-8'));",
     ].join('\n');
     expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  // #1416 review 1: the guard checked the raw value; a decoded or rewritten one is not covered.
+  it('recall: a decoded value after the guard still reports (%2e%2e/ passes the raw check)', async () => {
+    const code = [
+      ...head,
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      'const full = path.join(ROOT, decodeURIComponent(name));',
+      'fs.readFileSync(full);',
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('recall: a .replace-derived value after the guard still reports', async () => {
+    const code = [
+      ...head,
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.includes('..')) throw new Error('x');",
+      // inline: the engine carries taint through `.replace(…)` only as a call argument here, not
+      // into a separate `const n2 = name.replace(…)` (that form reports nothing with or without a guard)
+      "const full = path.join(ROOT, name.replace(/%2e/gi, '.'));",
+      'fs.readFileSync(full);',
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a plain alias of the guarded value is still credited', async () => {
+    const code = [
+      ...head,
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.includes('..')) throw new Error('x');",
+      'const safe = name;',
+      'fs.readFileSync(path.join(ROOT, safe));',
+    ].join('\n');
+    expect(await pathTraversalFlows(code)).toHaveLength(0);
+  });
+
+  // #1416 review 2: path.join on Windows splits on `\` too, so a POSIX-only segment test is not a guard.
+  it("recall: a POSIX-only split('/') segment test still reports (`..\\x` passes it)", async () => {
+    const code = [
+      ...head,
+      'const name = process.argv[2];',
+      "if (path.isAbsolute(name) || name.split('/').includes('..')) throw new Error('x');",
+      'fs.readFileSync(path.join(ROOT, name));',
+    ].join('\n');
+    expect((await pathTraversalFlows(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a split on both separators, in either order or as an alternation, is credited', async () => {
+    for (const split of ['/[\\\\/]/', '/[/\\\\]/', '/\\/|\\\\/']) {
+      const code = [
+        ...head,
+        'const name = process.argv[2];',
+        `if (path.isAbsolute(name) || name.split(${split}).includes('..')) throw new Error('x');`,
+        'fs.readFileSync(path.join(ROOT, name));',
+      ].join('\n');
+      expect(await pathTraversalFlows(code), split).toHaveLength(0);
+    }
   });
 });

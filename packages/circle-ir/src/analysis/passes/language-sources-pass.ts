@@ -8474,6 +8474,79 @@ function findJsPathResolveStartsWithGuardSanitizers(
 }
 
 /**
+ * Whether a `split(…)` argument splits on both `/` and `\\` (#1416 review 2): a regex
+ * literal whose body holds a backslash escape and a slash, e.g. `/[\\/]/`, `/[/\\]/`,
+ * `/\\/|\\\\/`. A string (`'/'`), `path.sep` or any other argument is one separator.
+ * `arg` has its whitespace removed.
+ */
+function splitsOnBothSeparators(arg: string): boolean {
+  const m = /^\/(.+)\/[a-z]*$/.exec(arg);
+  if (!m) return false;
+  const body = m[1];
+  const hasBackslash = body.includes('\\\\');
+  const hasSlash = body.replace(/\\\\/g, '').includes('/');
+  return hasBackslash && hasSlash;
+}
+
+/** Calls whose result is a decoded or rewritten value, not the value a guard checked. */
+const JS_REWRITING_CALLEES = new Set([
+  'decodeURIComponent', 'decodeURI', 'unescape', 'atob', 'from', 'replace', 'replaceAll',
+  'slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toLowerCase', 'toUpperCase',
+  'concat', 'padStart', 'padEnd', 'repeat', 'String', 'split', 'map',
+]);
+
+/** The identifier that ends `text` (after trailing whitespace), or undefined. A plain scan, no regex. */
+function trailingIdentifier(text: string): string | undefined {
+  const t = text.trimEnd();
+  let k = t.length;
+  while (k > 0 && /[\w$]/.test(t[k - 1])) k--;
+  const id = t.slice(k);
+  return id && /^[A-Za-z_$]/.test(id) ? id : undefined;
+}
+
+/**
+ * Whether every mention of `v` on `line` uses the value as is (#1416 review 1): a direct
+ * argument of a call that is not decoding or rewriting (`path.join(ROOT, name)`,
+ * `fs.readFileSync(name)`), or the right side of a plain alias (`const x = name;`). A
+ * method call on it (`name.replace(…)`), an argument of `decodeURIComponent(…)` and the
+ * like, or any other expression around it is not as is.
+ */
+function usedAsIs(line: string, v: string): boolean {
+  const esc = v.replace(/\$/g, '\\$');
+  const ref = new RegExp(`(?<![\\w$.])${esc}(?![\\w$])`, 'g');
+  let m: RegExpExecArray | null;
+  let any = false;
+  while ((m = ref.exec(line)) !== null) {
+    any = true;
+    const before = line.slice(0, m.index).trimEnd();
+    const after = line.slice(m.index + v.length).trimStart();
+    const prev = before.slice(-1);
+    const next = after.charAt(0);
+    if (prev === '=' && /(?:^|[^=!<>])=$/.test(before)) {
+      // a plain alias: `const|let|var x = v` and nothing after but `;`
+      if (!/^\s*(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=$/.test(before) || !/^;?\s*(?:\/\/.*)?$/.test(after)) return false;
+      continue;
+    }
+    if ((prev !== '(' && prev !== ',') || (next !== ')' && next !== ',')) return false;
+    // the call it is an argument of: the identifier before the nearest unclosed `(`
+    let depth = 0;
+    let open = -1;
+    for (let k = before.length - 1; k >= 0; k--) {
+      const ch = before[k];
+      if (ch === ')') depth++;
+      else if (ch === '(') {
+        if (depth === 0) { open = k; break; }
+        depth--;
+      }
+    }
+    if (open < 0) return false;
+    const callee = trailingIdentifier(before.slice(0, open));
+    if (!callee || JS_REWRITING_CALLEES.has(callee)) return false;
+  }
+  return any;
+}
+
+/**
  * JS/TS: absolute-path + `..`-segment reject guard (cognium-dev#1305 E4).
  *
  *   if (path.isAbsolute(name) || name.split(/[\\/]/).includes('..')) throw new Error('bad name');
@@ -8484,13 +8557,19 @@ function findJsPathResolveStartsWithGuardSanitizers(
  * stays under that root — the two ways out are exactly the two rejected. BOTH
  * checks must be in one `||` condition on the same variable, and the guard must
  * reject (`guardRejects`, #333): either check alone leaves the other escape
- * open. The `..` check may be a segment test (`split(…).includes('..')`) or the
- * stricter substring test (`name.includes('..')`). A negated check or an `&&`
- * in the condition is a different guard and earns nothing.
+ * open. The `..` check may be the substring test (`name.includes('..')`) or a
+ * segment test that splits on BOTH separators (`name.split(/[\\/]/).includes('..')`):
+ * `path.join` on Windows also splits on `\`, so a POSIX-only `split('/')` lets
+ * `..\x` through and earns nothing. A negated check or an `&&` in the condition
+ * is a different guard and earns nothing.
  *
- * Credits the guard line and every later line in the same block that names the
- * variable, until it is reassigned (`jsGuardCreditLines`). Only
- * `path_traversal` is sanitized.
+ * Credits the guard line and every later line in the same block, until the
+ * variable is reassigned (`jsGuardCreditLines`), where the variable is used as
+ * is: a direct argument (`path.join(ROOT, name)`, the sink) or a plain alias
+ * (`const x = name`). A line that decodes or rewrites it
+ * (`decodeURIComponent(name)`, `name.replace(…)`, `Buffer.from(name)`, …) is not
+ * credited: the guard checked the raw value, and `%2e%2e/` decodes to `../`
+ * after it. Only `path_traversal` is sanitized.
  */
 function findJsAbsoluteDotDotGuardSanitizers(code: string): TaintSanitizer[] {
   const sanitizers: TaintSanitizer[] = [];
@@ -8519,14 +8598,17 @@ function findJsAbsoluteDotDotGuardSanitizers(code: string): TaintSanitizer[] {
     const v = abs[1];
     const esc = v.replace(/\$/g, '\\$');
     const dotDot = new RegExp(
-      `(?<![!\\w$.])${esc}(?:\\.split\\([^)]*\\))?\\.includes\\((['"\`])\\.\\.\\1\\)`,
+      `(?<![!\\w$.])${esc}(?:\\.split\\(([^)]*)\\))?\\.includes\\((['"\`])\\.\\.\\2\\)`,
     );
-    if (!dotDot.test(cond)) continue;
+    const dd = dotDot.exec(cond);
+    // a segment test must split on both separators (not POSIX-only); no split = the substring test
+    if (!dd || (dd[1] !== undefined && !splitsOnBothSeparators(dd[1]))) continue;
     if (!guardRejects(lines, i, terminatorRe, 4)) continue;
 
     const varRefRe = new RegExp(`(?<![\\w$.])${esc}(?![\\w$])`);
     for (const l of jsGuardCreditLines(lines, i, v)) {
       if (!varRefRe.test(lines[l])) continue;
+      if (l !== i && !usedAsIs(lines[l], v)) continue;
       sanitizers.push({
         type: 'js_absolute_dotdot_guard',
         method: 'isAbsolute',
