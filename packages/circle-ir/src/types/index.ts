@@ -1204,6 +1204,13 @@ export interface ProjectAnalysis {
    * gate (`disabledPasses: ['require-entry-path']`) keeps them.
    */
   entry_path_dropped?: number;
+  /**
+   * Findings in resource files from `AnalyzerOptions.resources` that are not
+   * source files, so have no entry in `files`: hardcoded credentials in
+   * `*.plist` property lists (cognium-dev#1311). Present only when at least one
+   * was found; `disabledPasses: ['scan-secrets']` turns it off.
+   */
+  resource_findings?: SastFinding[];
 }
 
 export interface FileAnalysis {

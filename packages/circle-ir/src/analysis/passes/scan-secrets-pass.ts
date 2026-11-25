@@ -694,8 +694,19 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
   readonly category = 'security' as const;
 
   run(ctx: PassContext): ScanSecretsPassResult {
-    const file = ctx.graph.ir.meta.file;
+    return this.scanText(ctx.graph.ir.meta.file, ctx.code, ctx.getFindings?.() ?? [], (f) => ctx.addFinding(f));
+  }
 
+  /**
+   * The pass body over raw text: no graph is read, so `scanPlistSecrets` runs
+   * the same layers on a resource file that has no parse tree.
+   */
+  scanText(
+    file: string,
+    code: string,
+    prior: readonly SastFinding[],
+    addFinding: (finding: SastFinding) => void,
+  ): ScanSecretsPassResult {
     if (isTestFile(file) || isGeneratedFile(file)) {
       return { providerFindings: 0, entropyFindings: 0 };
     }
@@ -706,8 +717,7 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
     // entropy`) is deliberately NOT downgraded.
     const demoPath = DEMO_PATH_RE.test(file);
 
-    const lines = ctx.code.split('\n');
-    const prior = ctx.getFindings?.() ?? [];
+    const lines = code.split('\n');
     // Build dedup index keyed on `${line}:${rule_id}` for O(1) lookup.
     const seen = new Set<string>();
     for (const f of prior) {
@@ -724,17 +734,17 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
     //
     // Provider patterns (Layer 1) and named-credential matcher (Layer 1b)
     // are unaffected — they run unconditionally below.
-    const hasEntropyCandidate = FAST_CANDIDATE_PROBE_RE.test(ctx.code);
+    const hasEntropyCandidate = FAST_CANDIDATE_PROBE_RE.test(code);
 
     // Pre-scan: line ranges to suppress in the entropy layer (#125 Gates 1 & 3).
     // Provider patterns and named-credential layers are intentionally NOT gated
     // by these — they retain full recall on real credential shapes.
     // Only computed when the entropy layer has work to do.
     const annotationLines: Set<number> = hasEntropyCandidate
-      ? findAnnotationLineRanges(ctx.code)
+      ? findAnnotationLineRanges(code)
       : new Set<number>();
     const arrayLines: Set<number> = hasEntropyCandidate
-      ? findStringArrayLineRanges(ctx.code)
+      ? findStringArrayLineRanges(code)
       : new Set<number>();
 
     let providerFindings = 0;
@@ -777,7 +787,7 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
         seen.add(key);
 
         const dg = applyDemoDowngrade(demoPath, pattern.severity, pattern.level);
-        ctx.addFinding({
+        addFinding({
           id: `hardcoded-credential-${file}-${lineNum}`,
           pass: this.name,
           category: this.category,
@@ -815,7 +825,7 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
       seen.add(key);
 
       const dg = applyDemoDowngrade(demoPath, 'high', 'error');
-      ctx.addFinding({
+      addFinding({
         id: `hardcoded-credential-${file}-${lineNum}`,
         pass: this.name,
         category: this.category,
@@ -847,7 +857,7 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
       seen.add(key);
 
       const dg = applyDemoDowngrade(demoPath, 'high', 'error');
-      ctx.addFinding({
+      addFinding({
         id: `hardcoded-credential-${file}-${lineNum}`,
         pass: this.name,
         category: this.category,
@@ -896,7 +906,7 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
         if (seen.has(`${lineNum}:hardcoded-credential`)) continue;
         seen.add(key);
 
-        ctx.addFinding({
+        addFinding({
           id: `hardcoded-credential-entropy-${file}-${lineNum}`,
           pass: this.name,
           category: this.category,
@@ -953,4 +963,63 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
     const threshold = isHex ? 3.3 : 4.1;
     return shannonEntropy(value) >= threshold;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Property-list resources (cognium-dev #1311)
+//
+// An iOS / React Native / Expo app keeps config in XML property lists
+// (`ios/<App>/Info.plist`), which are not source files and were never read.
+// A credential there is a `<key>NAME</key>` followed by `<string>VALUE</string>`,
+// so the value never sits on a line with its name. Each such `<string>` line is
+// rewritten to `NAME = "VALUE"` (same line count) and the pass's own layers run
+// over the result, so every FP guard applies unchanged. Snippets are taken
+// from the original lines. A binary plist (`bplist` header) is skipped.
+//
+// The key name is captured untrimmed and trimmed in code: a `\s*` on either
+// side of a lazy `[^<\n]*?` overlaps it and backtracks polynomially on a long
+// run of spaces after `<key>`.
+//
+// Firebase writes the app's client identifiers into `GoogleService-Info.plist`
+// (`API_KEY`, `CLIENT_ID`, ...). They ship in every app bundle and are limited
+// server-side, so a finding there is reported as a note, not a credential leak.
+// ---------------------------------------------------------------------------
+
+const PLIST_KEY_STRING_RE = /<key>([^<\n]*)<\/key>\s*<string>([^<\n]*)<\/string>/g;
+
+const FIREBASE_PLIST_RE = /(?:^|\/)GoogleService-Info\.plist$/i;
+const FIREBASE_PUBLIC_KEYS = new Set(['API_KEY', 'CLIENT_ID', 'REVERSED_CLIENT_ID', 'GOOGLE_APP_ID']);
+
+/** Hardcoded-credential findings for one XML property list (`*.plist`). */
+export function scanPlistSecrets(file: string, text: string): SastFinding[] {
+  if (text.startsWith('bplist')) return [];
+  const lines = text.split('\n');
+  const view = [...lines];
+  // Line of each `<string>`, counted forward from the previous match.
+  let lineIdx = 0;
+  let counted = 0;
+  const firebase = FIREBASE_PLIST_RE.test(file);
+  const publicIdLines = new Map<number, string>();
+  PLIST_KEY_STRING_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PLIST_KEY_STRING_RE.exec(text)) !== null) {
+    const stringAt = m.index + m[0].lastIndexOf('<string>');
+    for (; counted < stringAt; counted++) if (text.charCodeAt(counted) === 10) lineIdx++;
+    const name = m[1].trim();
+    const indent = /^\s*/.exec(lines[lineIdx])?.[0] ?? '';
+    view[lineIdx] = `${indent}${name} = "${m[2]}"`;
+    if (firebase && FIREBASE_PUBLIC_KEYS.has(name)) publicIdLines.set(lineIdx + 1, name);
+  }
+  const findings: SastFinding[] = [];
+  new ScanSecretsPass().scanText(file, view.join('\n'), [], (f) => findings.push(f));
+  for (const f of findings) {
+    f.snippet = lines[f.line - 1].trim().substring(0, 120);
+    const name = publicIdLines.get(f.line);
+    if (name !== undefined) {
+      f.severity = 'low';
+      f.level = 'note';
+      f.message = `Firebase client identifier \`${name}\` in GoogleService-Info.plist: it ships in the app and is not a secret; check that the API key is restricted`;
+    }
+  }
+  return findings;
 }

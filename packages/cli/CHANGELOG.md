@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`scan`: `*.plist` property lists are scanned for hardcoded credentials (#1311, React Native / Expo).** A directory scan now collects `*.plist` files with the same skip rules as `*.properties` (dot-directories, skipped directories, `--exclude-tests`, config `exclude`, 1 MB cap) and reports circle-ir's `hardcoded-credential` findings in them, for example an API key in `ios/<App>/Info.plist`. Firebase's public client identifiers in `GoogleService-Info.plist` are reported as `low`, not `critical`. `--disable-pass scan-secrets` turns it off. A single `.plist` given as the scan path is not scanned.
+
 ### Changed (breaking)
 
 - **Usage and configuration errors exit `2` instead of `1`, in every command.** This covers a bad `-f`/`--format`, `--severity`, `--threads` or `--language` value, a missing path argument, an unknown command, a malformed `cognium.config.json` or an invalid `severity` in it, `deadcode`/`reach`/`entries`/`depcalls` option errors, `sbom` option errors and `sbom` finding no manifests. Old: exit `1`, the same code as "security findings present". New: exit `2`, with a one-line `Error: …` on stderr. Exit `1` now means only that `scan` found security findings, or that the `recheck` no-new-high rule failed. Analysis results keep their exit codes (0, 1 for findings; a partial run exits by its findings). `--help` has an EXIT CODES section. A script that treated `1` as "findings" no longer sees a typo as findings; a script that expected `1` on a bad option must expect `2`. Refs #1306
