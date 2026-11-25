@@ -120,6 +120,20 @@ describe('XML comments in pom.xml (controldeck#727, #728)', () => {
     expect(warnings[0]).toMatch(/^unterminated XML comment at line 3 /);
   });
 
+  it('an unterminated CDATA section is reported as CDATA, and what follows it is not read (#1401 review 1)', () => {
+    const pom = `<project><dependencies>
+      <dependency><groupId>com.live</groupId><artifactId>before</artifactId><version>1</version></dependency>
+      <x><![CDATA[ never closed
+      <dependency><groupId>com.gone</groupId><artifactId>after</artifactId><version>2</version></dependency>
+    </dependencies></project>`;
+    const warnings: string[] = [];
+    // The warning says nothing after it is read, and that is now true in the pom's keep-CDATA mode too.
+    expect(keys(parseMavenDependencies(pom, w => warnings.push(w)))).toEqual(['com.live:before@1/required']);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/^unterminated CDATA section at line 3 /);
+    expect(warnings[0]).not.toMatch(/comment/);
+  });
+
   it('well-formed comments and CDATA produce no warning', () => {
     const warnings: string[] = [];
     parseMavenDependencies(issuePom, w => warnings.push(w));

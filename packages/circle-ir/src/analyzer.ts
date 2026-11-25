@@ -165,7 +165,7 @@ import { MissingStreamPass } from './analysis/passes/missing-stream-pass.js';
 import { GodClassPass } from './analysis/passes/god-class-pass.js';
 import { NamingConventionPass, type NamingConventionOptions } from './analysis/passes/naming-convention-pass.js';
 import { SecurityHeadersPass, type SecurityHeadersOptions, checkInheritedCorsHeaders } from './analysis/passes/security-headers-pass.js';
-import { ScanSecretsPass } from './analysis/passes/scan-secrets-pass.js';
+import { ScanSecretsPass, scanPlistSecrets } from './analysis/passes/scan-secrets-pass.js';
 import { PythonReceiverTaintFormatPass } from './analysis/passes/python-receiver-taint-format-pass.js';
 import { Spring4ShellPass } from './analysis/passes/spring4shell-pass.js';
 import { InsecureCookiePass } from './analysis/passes/insecure-cookie-pass.js';
@@ -275,6 +275,9 @@ export interface AnalyzerOptions {
    * `load(...)`ed from (`getResourceAsStream("<name>")`), instead of trusting the
    * default literal. A path matches a resource name when it equals it or ends
    * in `/<name>`; a name that matches more than one differing file is ignored.
+   *
+   * `analyzeProject` scans each `*.plist` entry for hardcoded credentials and
+   * reports them in `ProjectAnalysis.resource_findings` (cognium-dev#1311).
    */
   resources?: ReadonlyMap<string, string>;
 
@@ -879,13 +882,14 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
       // queries both at tree-root scope; without cache membership each
       // query fell back to a full-tree `findNodes` walk per file.
       // `explicit_constructor_invocation` (`super(…)` / `this(…)`) is read by
-      // `extractCalls` under `navigationTypes`.
+      // `extractCalls` under `navigationTypes`; `method_reference` by
+      // `extractCalls` always.
       return new Set([
         'method_invocation', 'object_creation_expression', 'class_declaration',
         'method_declaration', 'constructor_declaration', 'field_declaration',
         'import_declaration', 'interface_declaration', 'enum_declaration',
         'package_declaration', 'local_variable_declaration',
-        'explicit_constructor_invocation',
+        'explicit_constructor_invocation', 'method_reference',
       ]);
   }
 }
@@ -2215,6 +2219,14 @@ export async function analyzeProject(
   }
   if (entryPathDropped > 0) {
     projectAnalysis.entry_path_dropped = entryPathDropped;
+  }
+  // #1311: property lists are not source files; scan them for credentials here.
+  if (options.resources !== undefined && !disabledPasses.includes('scan-secrets')) {
+    const resourceFindings: SastFinding[] = [];
+    for (const [path, text] of options.resources) {
+      if (/\.plist$/i.test(path)) resourceFindings.push(...scanPlistSecrets(path, text));
+    }
+    if (resourceFindings.length > 0) projectAnalysis.resource_findings = resourceFindings;
   }
   return projectAnalysis;
 }
