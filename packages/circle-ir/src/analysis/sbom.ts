@@ -924,14 +924,26 @@ export function parseGradleDependencies(buildGradle: string): Dependency[] {
 }
 
 /**
+ * XML text with every `<!-- … -->` comment removed (multi-line included). An
+ * unterminated `<!--` comments out the rest of the text, as an XML parser reads it.
+ */
+function stripXmlComments(xml: string): string {
+  return xml.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
+}
+
+/**
  * Parse a Maven `pom.xml` `<dependency>` blocks. Name is `groupId:artifactId`.
  * `<scope>test|provided</scope>` → dev, `<optional>true</optional>` → optional.
  * A `${property}` version is resolved from this pom's own `<properties>`
  * (controldeck#729); one defined in a parent pom, by another property, or not at
  * all is not visible here and is recorded as `unknown`, never guessed.
+ * Comments are removed first (controldeck#727, #728): a declaration inside
+ * `<!-- … -->` is not a dependency, and a comment that holds a `<dependency>`
+ * with no real closing tag must not swallow the active one after it.
  */
-export function parseMavenDependencies(pomXml: string): Dependency[] {
-  if (!pomXml) return [];
+export function parseMavenDependencies(rawPomXml: string): Dependency[] {
+  if (!rawPomXml) return [];
+  const pomXml = stripXmlComments(rawPomXml);
   const out: Dependency[] = [];
   const props = pomProperties(pomXml);
   const depRe = /<dependency>([\s\S]*?)<\/dependency>/g;
@@ -992,7 +1004,7 @@ function pomProperties(pomXml: string): Map<string, string> {
  */
 export function parseTychoTargetDependencies(targetXml: string): Dependency[] {
   if (!targetXml) return [];
-  const text = targetXml.replace(/<!--[\s\S]*?-->/g, '').replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '');
+  const text = stripXmlComments(targetXml).replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '');
   const out: Dependency[] = [];
   const coord = (block: string): void => {
     const gid = block.match(/<groupId>\s*([^<\s]+)\s*<\/groupId>/)?.[1];
