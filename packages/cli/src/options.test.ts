@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'bun:test';
-import { UsageError, parseFormat, parseSeverity, parseWholeNumber } from './utils/options';
+import { UsageError, parseFormat, parseSeverity, parseWholeNumber, parseProfile } from './utils/options';
+import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
 describe('parseFormat (#1006)', () => {
   const allowed = ['text', 'json', 'sarif'] as const;
@@ -34,4 +37,25 @@ describe('parseWholeNumber (#1006, #1007)', () => {
     expect(() => parseWholeNumber('file-timeout-ms', true, 0, 0)).toThrow(UsageError);
   });
   it('allows 0 where the minimum is 0', () => expect(parseWholeNumber('file-timeout-ms', '0', 0, 0)).toBe(0));
+});
+
+describe('parseProfile', () => {
+  it('passes through absent', () => expect(parseProfile(undefined)).toBeUndefined());
+  it('returns an existing file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'profile-'));
+    try {
+      const file = join(dir, 'custom.json');
+      writeFileSync(file, '{}');
+      expect(parseProfile(file)).toBe(file);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('refuses a missing value', () => {
+    expect(() => parseProfile(true)).toThrow('--profile requires a config file path');
+    expect(() => parseProfile('')).toThrow(UsageError);
+  });
+  it('refuses a file that does not exist', () => {
+    expect(() => parseProfile('__no_such_profile__.json')).toThrow('--profile: config file not found: __no_such_profile__.json');
+  });
 });
