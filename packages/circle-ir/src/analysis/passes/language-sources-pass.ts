@@ -5694,7 +5694,8 @@ export function findBashPatternFindings(sourceCode: string, file: string): SastF
           pass: 'language-sources',
           category: 'security',
           rule_id: 'predictable-temp-file',
-          // CWE-377 is deprecated in CWE 5.0; CWE-379 is its successor (#1309).
+          // Maps to CWE-379 (Creation of Temporary File in Directory with Incorrect
+          // Permissions), since 377 is deprecated in CWE 5.0 (#1309).
           cwe: 'CWE-379',
           severity: 'medium',
           level: 'warning',

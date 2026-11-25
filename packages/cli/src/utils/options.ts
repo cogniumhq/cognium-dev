@@ -6,6 +6,8 @@
  * than silently printed as text.
  */
 
+import { existsSync } from 'fs';
+
 /**
  * Exit status of every usage, configuration and runtime error, in every
  * command. `1` is reserved for a result: security findings from `scan`, a
@@ -52,6 +54,22 @@ export function parseSeverity(raw: unknown): string | undefined {
     }
   }
   return parts.join(',');
+}
+
+/**
+ * `-p/--profile`: the config file path, or `undefined` when the option is
+ * absent. A valueless `--profile` or a file that does not exist used to be
+ * ignored, so the command ran with no config (or the default one).
+ */
+export function parseProfile(raw: unknown): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    throw new UsageError('--profile requires a config file path');
+  }
+  if (!existsSync(raw)) {
+    throw new UsageError(`--profile: config file not found: ${raw}`);
+  }
+  return raw;
 }
 
 /** A whole number ≥ `min`, or `fallback` when the option is absent. */
