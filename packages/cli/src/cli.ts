@@ -1056,8 +1056,18 @@ async function scanProject(
   const filesWithCode: Array<{ code: string; filePath: string; language: SupportedLanguage }> = [];
   let sourceChars = 0;
   let readTruncated = false;
+  // #1306: a file that cannot be read (EACCES, removed since the walk) is
+  // reported as not analysed; it no longer ends the scan with no report.
+  const unreadable: ScanResult[] = [];
   for (const f of files) {
-    const code = readFileSync(f, 'utf-8');
+    let code: string;
+    try {
+      code = readFileSync(f, 'utf-8');
+    } catch (e) {
+      const why = (e as NodeJS.ErrnoException).code ?? (e instanceof Error ? e.message : String(e));
+      unreadable.push({ file: f, vulnerabilities: [], error: `could not read the file (${why}); file skipped` });
+      continue;
+    }
     // A first file that alone exceeds the cap is KEPT, so a scan is never
     // silently empty. `maxProjectSourceChars` is therefore not passed to
     // `analyzeProject` below: its own check has no such exemption and would
@@ -1125,6 +1135,7 @@ async function scanProject(
     const parseErrors = parseErrorsOf(analysis);
     return { file, vulnerabilities: dedupeVulnerabilities(vulnerabilities), ...(parseErrors ? { parseErrors } : {}) };
   });
+  results.push(...unreadable);
   // #1007: a file skipped by --file-timeout-ms is reported as an error, never as clean.
   for (const t of projectResult.timed_out_files ?? []) {
     results.push({
