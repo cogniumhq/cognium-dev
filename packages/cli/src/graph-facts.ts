@@ -779,7 +779,8 @@ export function reachText(r: ReachReport): string {
   lines.push(...partialFilesText(r.partialFiles, 'file(s) did not parse fully at either pin'));
   lines.push('');
   for (const d of r.removed) {
-    const reach = d.strong ? `strong from ${d.strong.entry.kind}${d.strong.entry.path ? ` ${d.strong.entry.path}` : ''}`
+    // A route path comes from a string literal in the scanned source: escaped like a file name.
+    const reach = d.strong ? `strong from ${d.strong.entry.kind}${d.strong.entry.path ? ` ${termSafe(d.strong.entry.path)}` : ''}`
       : d.weak ? `weak from ${d.weak.entry.kind}` : 'no path';
     const unresolved = d.unresolvedCount > 0 ? `, ${d.unresolvedCount} unresolved site(s)` : '';
     const moves = d.moveCandidates.length > 0 ? `, ${d.moveCandidates.length} move candidate(s)` : '';
@@ -850,7 +851,8 @@ export function entriesText(r: EntriesReport): string {
   const sorted = [...r.entries].sort((a, b) =>
     (a.file < b.file ? -1 : a.file > b.file ? 1 : 0) || a.line - b.line);
   for (const e of sorted) {
-    const route = e.method || e.path ? ` ${[e.method, e.path].filter(Boolean).join(' ')}` : '';
+    // The method and path come from the scanned source: escaped like a file name.
+    const route = e.method || e.path ? ` ${termSafe([e.method, e.path].filter(Boolean).join(' '))}` : '';
     lines.push(`  ${e.kind.padEnd(10)} ${e.certainty.padEnd(12)} ${termSafe(e.file)}:${e.line}${route}`);
   }
   return lines.join('\n');

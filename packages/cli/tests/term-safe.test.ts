@@ -113,6 +113,44 @@ describe('graph-facts text reports', () => {
   });
 });
 
+/** A route path from a string literal in the scanned source, with the same payload. */
+const EVIL_ROUTE = '/a\x1b]0;pwned\x07\n[OK] forged';
+const EVIL_ROUTE_SHOWN = '/a\\x1b]0;pwned\\x07\\x0a[OK] forged';
+
+describe('graph-facts route paths (#1394 follow-up)', () => {
+  const engine = { package: 'circle-ir' as const, version: '0.0.0' };
+
+  test('entry points: the route method and path are escaped', () => {
+    const text = entriesText({
+      root: '/r', language: 'java', engine, entryIndexDigest: 'x', unresolvedRegistrations: [], partial: [], partialFiles: [],
+      summary: { http: 2 }, entries: [
+        { kind: 'http', certainty: 'certain', file: 'A.java', line: 2, method: 'GET', path: EVIL_ROUTE },
+        { kind: 'http', certainty: 'certain', file: 'B.java', line: 3, path: EVIL_ROUTE },
+      ],
+    } as never);
+    expectSafe(text);
+    expect(text).toContain(`A.java:2 GET ${EVIL_ROUTE_SHOWN}`);
+    expect(text).toContain(`B.java:3 ${EVIL_ROUTE_SHOWN}`);
+  });
+
+  test('removal reach: the path of the entry a removed declaration is reached from is escaped', () => {
+    const text = reachText({
+      root: '/r', base: 'main', language: 'java', engine, scheme: 's', partialFiles: [], moved: [], locations: {},
+      removed: [{ file: 'A.java', qualified_name: 'A.b', id: 'x', kind: 'method', strong: { entry: { kind: 'http', path: EVIL_ROUTE } }, weak: null, unresolvedCount: 0, moveCandidates: [] }],
+    } as never);
+    expectSafe(text);
+    expect(text).toContain(`strong from http ${EVIL_ROUTE_SHOWN}`);
+  });
+
+  test('an ordinary route is unchanged', () => {
+    const text = entriesText({
+      root: '/r', language: 'java', engine, entryIndexDigest: 'x', unresolvedRegistrations: [], partial: [], partialFiles: [],
+      summary: { http: 1 }, entries: [{ kind: 'http', certainty: 'certain', file: 'A.java', line: 2, method: 'POST', path: '/api/v1/users/{id}' }],
+    } as never);
+    expect(text).toContain('A.java:2 POST /api/v1/users/{id}');
+  });
+});
+
 describe('project profile folder names', () => {
   test('the profile block in text results escapes a module folder', () => {
     const prev = process.env.NO_COLOR;
