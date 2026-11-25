@@ -4484,8 +4484,10 @@ function isPythonNoopBody(
   if (method.parameters.length === 0) return false;
   const text = sourceLines.slice(method.start_line - 1, method.end_line).join('\n');
   // `def name(params) -> T:` then the body, on the same line or below. The header is
-  // matched without crossing a newline inside a default value or annotation.
-  const header = /^\s*(?:async\s+)?def\s+\w+\s*\(([^()]*)\)\s*(?:->\s*[\w.\[\], ]+)?\s*:/.exec(text);
+  // matched without crossing a newline inside a default value or annotation. The
+  // annotation starts and ends on a non-space so no two quantifiers share a run of
+  // spaces: `\s*[\w.\[\], ]+\s*` backtracked cubically on a long gap (#1305 R2).
+  const header = /^\s*(?:async\s+)?def\s+\w+\s*\(([^()]*)\)\s*(?:->\s*[\w.\[\],](?:[\w.\[\], ]*[\w.\[\],])?\s*)?:/.exec(text);
   if (!header) return false;
   const body = text.slice(header[0].length).replace(/#.*$/gm, '').trim();
   const m = /^return\s+([^\n;]+)$/.exec(body);
@@ -4535,7 +4537,10 @@ function isGoNoopBody(
   const text = sourceLines.slice(method.start_line - 1, method.end_line).join('\n');
   // `func name(params) T {` — a plain function; a method (`func (s *T) name`) is judged by a
   // call through its receiver, which is never skipped, so it is not a no-op helper here.
-  const header = /^\s*func\s+\w+\s*\(([^()]*)\)\s*\(?[\w.\[\]*, ]*\)?\s*\{/.exec(text);
+  // The result is `(…)` or a type that starts and ends on a non-space, so no two
+  // quantifiers share a run of spaces: `\s*\(?[\w.\[\]*, ]*\)?\s*` backtracked
+  // cubically on a long gap (#1305 R2).
+  const header = /^\s*func\s+\w+\s*\(([^()]*)\)\s*(?:(?:\([\w.\[\]*, ]*\)|[\w.\[\]*,](?:[\w.\[\]*, ]*[\w.\[\]*,])?)\s*)?\{/.exec(text);
   if (!header) return false;
   const close = text.lastIndexOf('}');
   if (close < header[0].length) return false;
