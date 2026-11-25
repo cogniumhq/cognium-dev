@@ -318,6 +318,7 @@ export type {
   ScriptTable,
   ToolFileRow,
   ExpoTable,
+  PlatformFilesTable,
   JavaSourceFile,
   JavaGraphOptions,
   JavaGraph,

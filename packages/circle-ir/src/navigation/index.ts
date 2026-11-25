@@ -51,6 +51,7 @@ export {
   type TestRunnerTable,
   type ToolFileRow,
   type ExpoTable,
+  type PlatformFilesTable,
 } from './ts-entry-tables.js';
 export {
   buildJavaGraph,
