@@ -2234,8 +2234,16 @@ const isTychoTarget = (file: string): boolean => file.endsWith('.target') && bas
 const isSbomInput = (file: string): boolean =>
   Boolean(SBOM_MANIFESTS[basename(file)]) || gradleLockDirProject(file) !== null || isTychoTarget(file);
 
-/** Recursively find recognised manifest files under a path (or the path itself if it is one). */
-export async function collectManifestFiles(targetPath: string): Promise<string[]> {
+/**
+ * Recursively find recognised manifest files under a path (or the path itself if it is one).
+ * #1388: config `exclude` patterns apply as in `collectFiles`, relative to the path. `include`
+ * does not: it names source files (`src/**\/*.ts`), which would leave out every manifest.
+ */
+export async function collectManifestFiles(
+  targetPath: string,
+  options: { excludePatterns?: string[] } = {},
+): Promise<string[]> {
+  const { excludePatterns } = options;
   const found: string[] = [];
   const pathStat = await stat(targetPath);
   if (pathStat.isFile()) {
@@ -2245,11 +2253,14 @@ export async function collectManifestFiles(targetPath: string): Promise<string[]
   const walk = async (dir: string): Promise<void> => {
     for (const e of await readdir(dir, { withFileTypes: true })) {
       if (e.name.startsWith('.')) continue;
+      const fullPath = join(dir, e.name);
+      const relativePath = relative(targetPath, fullPath);
       if (e.isDirectory()) {
         if (isStructureSkippedDirectory(e.name)) continue;
-        await walk(join(dir, e.name));
-      } else if (isSbomInput(join(dir, e.name))) {
-        found.push(join(dir, e.name));
+        if (excludePatterns?.some(p => matchesGlob(relativePath + '/', p) || matchesGlob(relativePath, p))) continue;
+        await walk(fullPath);
+      } else if (isSbomInput(fullPath) && !(excludePatterns && matchesAnyPattern(relativePath, excludePatterns))) {
+        found.push(fullPath);
       }
     }
   };
@@ -2265,6 +2276,8 @@ interface SbomOptions {
   deterministic?: boolean;
   /** JSON file `{ "name@version" | "name": "<SPDX>" }`, applied after node_modules. */
   licenseMap?: string;
+  /** Config file (default `cognium.config.json`) whose `exclude` applies (#1388). */
+  profile?: string;
 }
 
 /**
@@ -2324,7 +2337,8 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
     process.exit(2);
   }
 
-  const manifests = await collectManifestFiles(absPath);
+  const config = loadConfig(options.profile);
+  const manifests = await collectManifestFiles(absPath, { excludePatterns: config?.exclude });
   if (manifests.length === 0) {
     console.error(colors.red('Error: no supported manifests found (package.json/-lock, requirements.txt, pyproject.toml, poetry.lock, pom.xml with dependency-tree.txt/-list.txt, build.gradle, gradle.lockfile, Cargo.toml/.lock, go.mod, *.target)'));
     process.exit(EXIT_ERROR);
@@ -2521,6 +2535,7 @@ async function main(): Promise<void> {
       prodOnly: options['prod-only'] === true || options.prod === true,
       deterministic: options.deterministic === true,
       licenseMap: options['license-map'] as string | undefined,
+      profile: (options.profile || options.p) as string | undefined,
     };
     try {
       await runSbom(args[0], sbomOptions);
