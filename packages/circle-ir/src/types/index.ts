@@ -176,6 +176,15 @@ export interface CallInfo {
    */
   in_type?: string | null;
   is_constructor?: boolean;
+  /**
+   * Java only: the call site is a method reference, not an invocation, and
+   * this is its form. `method` is `X::m` (`System.out::println`,
+   * `String::length`, `this::f`), with `X` as the receiver; `super` is
+   * `super::m`; `constructor` is `T::new`, named like `new T(…)`. A method
+   * reference passes no arguments where it is written, so `arguments` is
+   * empty. `T[]::new` creates an array and is not a call site.
+   */
+  reference_form?: 'method' | 'super' | 'constructor';
   // PENDING: Call resolution
   resolved?: boolean;
   resolution?: CallResolution;
@@ -1204,6 +1213,13 @@ export interface ProjectAnalysis {
    * gate (`disabledPasses: ['require-entry-path']`) keeps them.
    */
   entry_path_dropped?: number;
+  /**
+   * Findings in resource files from `AnalyzerOptions.resources` that are not
+   * source files, so have no entry in `files`: hardcoded credentials in
+   * `*.plist` property lists (cognium-dev#1311). Present only when at least one
+   * was found; `disabledPasses: ['scan-secrets']` turns it off.
+   */
+  resource_findings?: SastFinding[];
 }
 
 export interface FileAnalysis {

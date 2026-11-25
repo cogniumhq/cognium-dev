@@ -12,6 +12,7 @@ describe('parseFormat (#1006)', () => {
     expect(() => parseFormat('xml', allowed, 'text')).toThrow(UsageError);
   });
   it('refuses a missing value', () => expect(() => parseFormat(true, allowed, 'text')).toThrow(UsageError));
+  it('refuses a blank format string', () => expect(() => parseFormat('   ', allowed, 'text')).toThrow(UsageError));
 });
 
 describe('parseSeverity (#1006)', () => {
@@ -25,6 +26,10 @@ describe('parseSeverity (#1006)', () => {
     expect(() => parseSeverity('high,nope')).toThrow(UsageError);
   });
   it('refuses a missing value', () => expect(() => parseSeverity(true)).toThrow(UsageError));
+  it('refuses commas with no severity tokens', () => {
+    expect(() => parseSeverity(',')).toThrow(UsageError);
+    expect(() => parseSeverity('  ,  ')).toThrow(UsageError);
+  });
 });
 
 describe('parseWholeNumber (#1006, #1007)', () => {
