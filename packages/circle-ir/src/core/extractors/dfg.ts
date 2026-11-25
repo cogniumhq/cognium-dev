@@ -251,6 +251,17 @@ function buildJavaDFGBody(tree: Tree, cache?: NodeCache): DFG {
     scopeStack.pop();
   }
 
+  // Static and instance initializer blocks run like method bodies
+  for (const block of javaInitializerBlocks(tree, cache)) {
+    scopeStack.push(new Map());
+    const result = processBlock(block, defIdCounter, useIdCounter, scopeStack, false);
+    defs.push(...result.defs);
+    uses.push(...result.uses);
+    defIdCounter = result.nextDefId;
+    useIdCounter = result.nextUseId;
+    scopeStack.pop();
+  }
+
   // Also extract field definitions
   const classes = getNodesFromCache(tree.rootNode, 'class_declaration', cache);
   for (const cls of classes) {
@@ -270,6 +281,26 @@ function buildJavaDFGBody(tree: Tree, cache?: NodeCache): DFG {
   linkMultiLineValues(chains, uses);
 
   return { defs, uses, chains };
+}
+
+/**
+ * The bodies of `static { … }` blocks and of instance initializers (a block
+ * directly in a class or enum body), in source order.
+ */
+function javaInitializerBlocks(tree: Tree, cache?: NodeCache): Node[] {
+  const blocks: Node[] = [];
+  for (const init of getNodesFromCache(tree.rootNode, 'static_initializer', cache)) {
+    const block = init.namedChildren.find(c => c?.type === 'block');
+    if (block) blocks.push(block);
+  }
+  for (const type of ['class_body', 'enum_body_declarations']) {
+    for (const body of getNodesFromCache(tree.rootNode, type, cache)) {
+      for (const child of body.namedChildren) {
+        if (child?.type === 'block') blocks.push(child);
+      }
+    }
+  }
+  return blocks.sort((a, b) => a.startIndex - b.startIndex);
 }
 
 /**

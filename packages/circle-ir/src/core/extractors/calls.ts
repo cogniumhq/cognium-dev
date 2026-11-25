@@ -2321,6 +2321,22 @@ function findEnclosingMethod(node: Node): string | null {
     return '<init>';
   }
 
+  return findEnclosingInitializer(node);
+}
+
+/**
+ * `<clinit>` for a node inside a `static { … }` block, `<init>` for one inside
+ * an instance initializer `{ … }` (a block directly in a class or enum body),
+ * else `null`. Code there runs at class load or construction, so its calls
+ * belong to that pseudo-method rather than to no method at all.
+ */
+function findEnclosingInitializer(node: Node): string | null {
+  for (let cur = node.parent; cur; cur = cur.parent) {
+    if (cur.type === 'static_initializer') return '<clinit>';
+    if (cur.type === 'block' && (cur.parent?.type === 'class_body' || cur.parent?.type === 'enum_body_declarations')) {
+      return '<init>';
+    }
+  }
   return null;
 }
 
