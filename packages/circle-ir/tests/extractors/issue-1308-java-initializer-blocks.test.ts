@@ -77,4 +77,25 @@ describe('Java initializer blocks (#1308)', () => {
     expect(dfg.chains).toContainEqual({ from_def: c!.id, to_def: d!.id, via: 'c' });
     expect(dfg.uses.find(u => u.variable === 'c' && u.line === 6)?.def_id).toBe(c!.id);
   });
+
+  it('an anonymous class initializer inside a method, lambda or initializer is processed once', async () => {
+    const tree = await parse(`public class A {
+  void m() {
+    Runnable r = new Runnable() { { int z = 1; foo(z); } public void run() {} };
+  }
+  Runnable f() {
+    return () -> { new Object() { { int w = 2; bar(w); } }; };
+  }
+  static {
+    new Object() { { int v = 3; baz(v); } };
+  }
+}`, 'java');
+    const dfg = buildDFG(tree, undefined, 'java');
+    expect(dfg.defs.filter(d => d.variable === 'z')).toHaveLength(1);
+    const key = (x: { variable: string; line: number; column?: number }) => `${x.variable}@${x.line}:${x.column}`;
+    const defKeys = dfg.defs.map(key);
+    const useKeys = dfg.uses.map(key);
+    expect(new Set(defKeys).size).toBe(defKeys.length);
+    expect(new Set(useKeys).size).toBe(useKeys.length);
+  });
 });
