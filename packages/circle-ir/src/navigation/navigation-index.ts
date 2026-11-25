@@ -2422,7 +2422,9 @@ function buildFileRecord(f: NavigationFile): FileRecord {
     staticImports,
     staticWildcards,
     types,
-    calls: f.ir.calls ?? [],
+    // A method reference is not bound as a call here: the Java graph reads
+    // it from the tree as a reference edge (`java-graph.ts`).
+    calls: (f.ir.calls ?? []).filter(c => c.reference_form === undefined),
     lines: f.source?.split('\n'),
   };
 }
