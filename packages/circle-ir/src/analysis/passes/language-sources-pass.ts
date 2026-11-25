@@ -653,6 +653,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(
         ...findJsPathResolveStartsWithGuardSanitizers(code),
       );
+      // cognium-dev#1305 E4: isAbsolute(x) || x has a `..` segment → reject.
+      additionalSanitizers.push(...findJsAbsoluteDotDotGuardSanitizers(code));
       // JS/TS open_redirect: a same-site relative-path guard that rejects `//` AND `/\`.
       additionalSanitizers.push(...findJsRelativeRedirectGuardSanitizers(code));
       // cognium-dev#1146: same-file helper returns path.resolve after allow-list guard.
@@ -8464,6 +8466,72 @@ function findJsPathResolveStartsWithGuardSanitizers(
         method: 'startsWith',
         line: l + 1,
         sanitizes: ['path_traversal', 'external_taint_escape'],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * JS/TS: absolute-path + `..`-segment reject guard (cognium-dev#1305 E4).
+ *
+ *   if (path.isAbsolute(name) || name.split(/[\\/]/).includes('..')) throw new Error('bad name');
+ *   const full = path.join(ROOT, name);
+ *   fs.readFileSync(full);
+ *
+ * A name that is not absolute and has no `..` segment, joined onto a root,
+ * stays under that root — the two ways out are exactly the two rejected. BOTH
+ * checks must be in one `||` condition on the same variable, and the guard must
+ * reject (`guardRejects`, #333): either check alone leaves the other escape
+ * open. The `..` check may be a segment test (`split(…).includes('..')`) or the
+ * stricter substring test (`name.includes('..')`). A negated check or an `&&`
+ * in the condition is a different guard and earns nothing.
+ *
+ * Credits the guard line and every later line in the same block that names the
+ * variable, until it is reassigned (`jsGuardCreditLines`). Only
+ * `path_traversal` is sanitized.
+ */
+function findJsAbsoluteDotDotGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const terminatorRe =
+    /\b(?:throw|return|continue|res\s*\.\s*status\s*\([^)]*\)\s*\.\s*(?:send|end|json))/;
+  // Matched against the condition with its whitespace removed.
+  const absRe =
+    /(?<![!\w$.])(?:(?:path|nodePath|Path)\.(?:(?:posix|win32)\.)?)?isAbsolute\(([A-Za-z_$][\w$]*)\)/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const open = /\bif\s*\(/.exec(lines[i]);
+    if (!open) continue;
+    // The condition: the balanced parens after `if`, on this line only.
+    let depth = 0;
+    let end = -1;
+    for (let k = open.index + open[0].length - 1; k < lines[i].length; k++) {
+      if (lines[i][k] === '(') depth++;
+      else if (lines[i][k] === ')' && --depth === 0) { end = k; break; }
+    }
+    if (end < 0) continue;
+    const cond = lines[i].slice(open.index + open[0].length, end).replace(/\s+/g, '');
+    if (cond.includes('&&') || !cond.includes('||')) continue;
+    const abs = absRe.exec(cond);
+    if (!abs) continue;
+    const v = abs[1];
+    const esc = v.replace(/\$/g, '\\$');
+    const dotDot = new RegExp(
+      `(?<![!\\w$.])${esc}(?:\\.split\\([^)]*\\))?\\.includes\\((['"\`])\\.\\.\\1\\)`,
+    );
+    if (!dotDot.test(cond)) continue;
+    if (!guardRejects(lines, i, terminatorRe, 4)) continue;
+
+    const varRefRe = new RegExp(`(?<![\\w$.])${esc}(?![\\w$])`);
+    for (const l of jsGuardCreditLines(lines, i, v)) {
+      if (!varRefRe.test(lines[l])) continue;
+      sanitizers.push({
+        type: 'js_absolute_dotdot_guard',
+        method: 'isAbsolute',
+        line: l + 1,
+        sanitizes: ['path_traversal'],
       });
     }
   }
