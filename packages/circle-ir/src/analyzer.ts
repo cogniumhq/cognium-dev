@@ -1202,6 +1202,14 @@ async function analyzeFile(
   } else {
     types = extractTypes(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
   }
+  // cognium-dev#1307 — keep the declarations a partial parse folded into an
+  // ERROR node (JS / TS) or into an unclosed method body (Java).
+  if (parseStatus.has_errors) {
+    const { recoverPartialParseTypes } = await import('./core/partial-parse-recovery.js');
+    types = await recoverPartialParseTypes(tree, code, language, parseGrammar, types, {
+      navigationTypes: options.navigationTypes,
+    });
+  }
   phaseEnd('extractTypes', tTypes);
   checkDeadline('extractTypes');
   const tCalls = phaseStart();

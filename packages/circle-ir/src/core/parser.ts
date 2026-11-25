@@ -5,7 +5,7 @@
  */
 
 import { Parser, Language, Tree, Node } from 'web-tree-sitter';
-import type { SupportedLanguage } from '../types/index.js';
+import type { ParseErrorLocation, SupportedLanguage } from '../types/index.js';
 import { stabilizeTypeScriptConditionalDefaults } from './ts-grammar-workarounds.js';
 
 // Lazy-loaded Node.js modules for WASM path resolution
@@ -282,21 +282,23 @@ export async function parse(
  * "no findings" from "no findings because half the file didn't parse".
  *
  * Locations are capped at 50 entries to bound memory on pathological inputs.
+ * Each location carries the ERROR / MISSING node's span (cognium-dev#1307).
  */
 export function extractParseStatus(tree: Tree): {
+  state: 'complete' | 'partial';
   success: boolean;
   has_errors: boolean;
   error_count: number;
-  error_locations: Array<{ line: number; column: number }>;
+  error_locations: ParseErrorLocation[];
 } {
   const root = tree.rootNode;
   // Fast path: no errors anywhere in the tree — skip the full walk.
   if (!root.hasError) {
-    return { success: true, has_errors: false, error_count: 0, error_locations: [] };
+    return { state: 'complete', success: true, has_errors: false, error_count: 0, error_locations: [] };
   }
 
   const MAX_LOCATIONS = 50;
-  const locations: Array<{ line: number; column: number }> = [];
+  const locations: ParseErrorLocation[] = [];
   let errorCount = 0;
 
   // Iterative DFS using a stack — avoids recursion limits on deeply nested
@@ -310,6 +312,8 @@ export function extractParseStatus(tree: Tree): {
         locations.push({
           line: node.startPosition.row + 1,
           column: node.startPosition.column,
+          end_line: node.endPosition.row + 1,
+          end_column: node.endPosition.column,
         });
       }
     }
@@ -323,7 +327,11 @@ export function extractParseStatus(tree: Tree): {
     }
   }
 
+  // The stack walk visits later siblings first; report spans in source order.
+  locations.sort((a, b) => a.line - b.line || a.column - b.column);
+
   return {
+    state: 'partial',
     success: false,
     has_errors: true,
     error_count: errorCount,
