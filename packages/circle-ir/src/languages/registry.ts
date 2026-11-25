@@ -97,10 +97,22 @@ export function getLanguageForFile(filePath: string): LanguagePlugin | undefined
 }
 
 /**
+ * Extensions the shared JS/TS plugin parses that are TypeScript sources.
+ * `.tsx` stays `'typescript'` too: `analyze()` picks the TSX grammar from
+ * the file path, and the `'tsx'` language value skips every TS-scoped
+ * pattern (see analyzer.ts, cognium-dev #88.2). Mirrors the CLI's LANG_MAP.
+ */
+const TYPESCRIPT_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts']);
+
+/**
  * Detect language from file path
  */
 export function detectLanguage(filePath: string): SupportedLanguage | undefined {
   const plugin = getLanguageForFile(filePath);
+  if (plugin?.id === 'javascript') {
+    const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
+    if (TYPESCRIPT_EXTENSIONS.has(ext)) return 'typescript';
+  }
   return plugin?.id;
 }
 

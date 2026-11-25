@@ -12,6 +12,7 @@ import {
   isLanguageSupported,
 } from '../../src/languages/registry.js';
 import type { LanguagePlugin, SupportedLanguage } from '../../src/languages/types.js';
+import { JavaScriptPlugin } from '../../src/languages/plugins/javascript.js';
 
 describe('Language Registry', () => {
   // Create a mock plugin for testing
@@ -170,6 +171,24 @@ describe('Language Registry', () => {
     it('should return undefined for file without extension', () => {
       const language = detectLanguage('README');
       expect(language).toBeUndefined();
+    });
+
+    // cognium-dev #1307: TS sources were reported as 'javascript', and
+    // .mts/.cts were not recognised at all.
+    it('should map .ts, .tsx, .mts and .cts to typescript', () => {
+      registerLanguage(new JavaScriptPlugin());
+
+      for (const file of ['a.ts', 'b.tsx', 'c.mts', 'd.cts', 'E.TS']) {
+        expect(detectLanguage(`/src/${file}`)).toBe('typescript');
+      }
+    });
+
+    it('should keep JavaScript extensions as javascript', () => {
+      registerLanguage(new JavaScriptPlugin());
+
+      for (const file of ['a.js', 'b.jsx', 'c.mjs', 'd.cjs']) {
+        expect(detectLanguage(`/src/${file}`)).toBe('javascript');
+      }
     });
   });
 

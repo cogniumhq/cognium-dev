@@ -26,7 +26,7 @@ import { BaseLanguagePlugin } from './base.js';
 export class JavaScriptPlugin extends BaseLanguagePlugin {
   readonly id = 'javascript' as const;
   readonly name = 'JavaScript/TypeScript';
-  readonly extensions = ['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs'];
+  readonly extensions = ['.js', '.jsx', '.ts', '.tsx', '.mts', '.cts', '.mjs', '.cjs'];
   readonly wasmPath = 'tree-sitter-typescript.wasm';
 
   readonly nodeTypes: LanguageNodeTypes = {
