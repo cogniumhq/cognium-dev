@@ -440,3 +440,31 @@ test('sbom: a --license-map that is not a JSON object of strings is refused (exi
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('sbom: a pom.xml under a config exclude adds no components; without the exclude it does (#1388)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-exclude-'));
+  try {
+    const pom = (g: string, a: string, v: string) =>
+      `<project><dependencies><dependency><groupId>${g}</groupId><artifactId>${a}</artifactId><version>${v}</version></dependency></dependencies></project>`;
+    writeFileSync(join(dir, 'pom.xml'), pom('com.google.guava', 'guava', '32.1.0-jre'));
+    mkdirSync(join(dir, 'web', 'e2e', 'fixture', 'repo'), { recursive: true });
+    writeFileSync(join(dir, 'web', 'e2e', 'fixture', 'repo', 'pom.xml'), pom('org.apache.commons', 'commons-text', '1.9'));
+    const sbom = async (config?: object): Promise<string[]> => {
+      if (config) writeFileSync(join(dir, 'cognium.config.json'), JSON.stringify(config));
+      else rmSync(join(dir, 'cognium.config.json'), { force: true });
+      // The config is read from the working directory, as for `scan`.
+      const proc = Bun.spawn(['bun', 'run', CLI, 'sbom', dir, '--deterministic'], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
+      const out = await new Response(proc.stdout).text();
+      expect(await proc.exited).toBe(0);
+      return purlsOf(out);
+    };
+    const guava = 'pkg:maven/com.google.guava/guava@32.1.0-jre';
+    const commonsText = 'pkg:maven/org.apache.commons/commons-text@1.9';
+
+    expect(await sbom({ exclude: ['web/e2e/**'] })).toEqual([guava]);
+    expect((await sbom()).sort()).toEqual([guava, commonsText].sort());
+    expect((await sbom({ exclude: ['bench/**'] })).sort()).toEqual([guava, commonsText].sort());
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 60_000);
