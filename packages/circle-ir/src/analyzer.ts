@@ -244,11 +244,10 @@ export interface AnalyzerOptions {
    * Emit the extra type information the navigation API needs: Java `record`
    * declarations, which the default extraction omits entirely,
    * `TypeInfo.enclosing_type` for a nested type, whose nesting the default
-   * extraction flattens, an enum's methods and fields, a varargs parameter's
-   * type, each call argument's static type and position
-   * (`ArgumentInfo.type` / `.location`), and explicit constructor
-   * invocations (`super(…)`, `this(…)`) as calls. See `TypeExtractionOptions`
-   * and `CallExtractionOptions`.
+   * extraction flattens, a varargs parameter's type, each call argument's
+   * static type and position (`ArgumentInfo.type` / `.location`), and
+   * explicit constructor invocations (`super(…)`, `this(…)`) as calls. See
+   * `TypeExtractionOptions` and `CallExtractionOptions`.
    *
    * **Off by default, and the default output is unchanged.** `ir.types` is
    * read by the SAST passes and by the method-scoping gate, so adding a type
