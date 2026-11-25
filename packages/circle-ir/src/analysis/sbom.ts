@@ -951,20 +951,26 @@ function stripXmlComments(xml: string, cdata: 'keep' | 'drop', warn?: ManifestWa
 /**
  * Parse a Maven `pom.xml` `<dependency>` blocks. Name is `groupId:artifactId`.
  * `<scope>test|provided</scope>` → dev, `<optional>true</optional>` → optional.
- * A `${property}` version is resolved from this pom's own `<properties>`
- * (controldeck#729); one defined in a parent pom, by another property, or not at
- * all is not visible here and is recorded as `unknown`, never guessed.
+ * A `${property}` version is resolved from this pom's own `<properties>`, then
+ * from `inherited`: the properties of its parent poms, nearest first, as the
+ * caller read them (`mavenPomProperties`, `mavenParentRef`); this pom's own
+ * value wins, as in Maven. One defined by another property, or nowhere given,
+ * is recorded as `unknown`, never guessed.
  * Comments are removed first: a declaration inside `<!-- … -->` is not a
  * dependency, and a comment that holds a `<dependency>` with no real closing tag
  * must not swallow the active one after it. A `<!--` inside a CDATA section is
  * text, not a comment. An unterminated comment runs to the end of the file and is
  * reported to `warn`.
  */
-export function parseMavenDependencies(rawPomXml: string, warn?: ManifestWarning): Dependency[] {
+export function parseMavenDependencies(
+  rawPomXml: string,
+  warn?: ManifestWarning,
+  inherited?: ReadonlyMap<string, string>,
+): Dependency[] {
   if (!rawPomXml) return [];
   const pomXml = stripXmlComments(rawPomXml, 'keep', warn);
   const out: Dependency[] = [];
-  const props = pomProperties(pomXml);
+  const props = new Map([...(inherited ?? []), ...pomProperties(pomXml)]);
   const depRe = /<dependency>([\s\S]*?)<\/dependency>/g;
   let m: RegExpExecArray | null;
   while ((m = depRe.exec(pomXml)) !== null) {
@@ -1001,6 +1007,42 @@ function pomVersion(block: string, props: Map<string, string>): string {
   const ref = /^\$\{([^}]+)\}$/.exec(version);
   if (ref) return props.get(ref[1]) ?? 'unknown';
   return version.includes('${') ? 'unknown' : version;
+}
+
+/**
+ * A pom's own `<properties>` (name → literal value), comments removed; values
+ * that reference another property are left out. For a caller that reads the
+ * parent chain and passes it to `parseMavenDependencies` as `inherited`.
+ */
+export function mavenPomProperties(rawPomXml: string): Map<string, string> {
+  return rawPomXml ? pomProperties(stripXmlComments(rawPomXml, 'keep')) : new Map();
+}
+
+/**
+ * A pom's `<parent>`: its `artifactId` (to check a candidate file is that
+ * parent, as Maven does) and where it is on disk, relative to this pom's
+ * directory: `<relativePath>`, default `../pom.xml`; `null` for an empty
+ * `<relativePath/>`, which tells Maven not to look on disk. Null with no
+ * `<parent>`.
+ */
+export function mavenParentRef(rawPomXml: string): { artifactId: string; relativePath: string | null } | null {
+  if (!rawPomXml) return null;
+  const block = stripXmlComments(rawPomXml, 'keep').match(/<parent>([\s\S]*?)<\/parent>/)?.[1];
+  if (!block) return null;
+  const artifactId = block.match(/<artifactId>\s*([^<\s]+)\s*<\/artifactId>/)?.[1];
+  if (!artifactId) return null;
+  if (/<relativePath\s*\/>|<relativePath>\s*<\/relativePath>/.test(block)) return { artifactId, relativePath: null };
+  const rel = block.match(/<relativePath>\s*([^<]+?)\s*<\/relativePath>/)?.[1] ?? '../pom.xml';
+  return { artifactId, relativePath: rel };
+}
+
+/** A pom's own `artifactId`: the first one outside `<parent>`, `<dependencies>` and `<build>`. */
+export function mavenArtifactId(rawPomXml: string): string | null {
+  if (!rawPomXml) return null;
+  const top = stripXmlComments(rawPomXml, 'keep')
+    .replace(/<parent>[\s\S]*?<\/parent>/g, '')
+    .replace(/<(dependencyManagement|dependencies|build|profiles|reporting|pluginRepositories|repositories)>[\s\S]*?<\/\1>/g, '');
+  return top.match(/<artifactId>\s*([^<\s]+)\s*<\/artifactId>/)?.[1] ?? null;
 }
 
 /** A pom's own `<properties>` (name → literal value); values that reference another property are left out. */

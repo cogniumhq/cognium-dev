@@ -22,6 +22,7 @@ import {
   parsePnpmLockDependencies, parseYarnLockDependencies, pnpmLockImporters,
   parsePypiDependencies, parsePyprojectDependencies, parsePoetryLockDependencies,
   parseMavenDependencies, parseTychoTargetDependencies, parseGradleDependencies,
+  mavenPomProperties, mavenParentRef, mavenArtifactId,
   parseMavenResolvedDependencies, parseGradleLockfile,
   parseCargoDependencies, parseCargoLockDependencies, parseGoDependencies,
   toCycloneDx, toSpdx,
@@ -2195,6 +2196,41 @@ const SBOM_MANIFESTS: Record<string, (content: string, warn?: (message: string) 
   'go.mod': parseGoDependencies,
 };
 
+/** Most parent poms followed up one chain (a guard against a malformed chain). */
+const MAX_POM_PARENTS = 10;
+
+/**
+ * The properties a `pom.xml` inherits from its parent poms on disk, nearest
+ * parent's value winning, for `parseMavenDependencies`. Each
+ * parent is found as Maven finds it locally: `<relativePath>` (default
+ * `../pom.xml`, a directory meaning its `pom.xml`), used only when that file's
+ * own artifactId is the one `<parent>` names. An empty `<relativePath/>`, a
+ * missing or different file, or a cycle ends the chain: those properties stay
+ * unknown, never guessed.
+ */
+export function inheritedPomProperties(pomPath: string, pomText: string): Map<string, string> {
+  const chain: Array<Map<string, string>> = [];
+  const seen = new Set<string>([resolve(pomPath)]);
+  let path = pomPath;
+  let text = pomText;
+  for (let i = 0; i < MAX_POM_PARENTS; i++) {
+    const ref = mavenParentRef(text);
+    if (!ref || ref.relativePath === null) break;
+    let next = resolve(dirname(path), ref.relativePath);
+    if (!next.endsWith('.xml')) next = join(next, 'pom.xml');
+    if (seen.has(next) || !existsSync(next)) break;
+    let parentText: string;
+    try { parentText = readFileSync(next, 'utf-8'); } catch { break; }
+    if (mavenArtifactId(parentText) !== ref.artifactId) break;
+    seen.add(next);
+    chain.push(mavenPomProperties(parentText));
+    path = next;
+    text = parentText;
+  }
+  // Farthest first, so a nearer parent's value overrides it.
+  return new Map(chain.reverse().flatMap(p => [...p]));
+}
+
 /** Lockfile / resolved-set basename → the manifests it supersedes (exact + transitive wins). */
 const SBOM_SUPERSEDES: Record<string, string[]> = {
   'package-lock.json': ['package.json'],
@@ -2408,7 +2444,9 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
     }
     const parse = SBOM_MANIFESTS[basename(m)] ?? (isTychoTarget(m) ? parseTychoTargetDependencies : undefined);
     const warn = (message: string): void => { console.error(colors.yellow(`Warning: ${termSafe(relative(absPath, m) || m)}: ${message}`)); };
-    deps.push(...(parse ? parse(text, warn) : parseGradleLockfile(text)));
+    // A pom's `${property}` versions may be defined in its parent poms.
+    if (basename(m) === 'pom.xml') deps.push(...parseMavenDependencies(text, warn, inheritedPomProperties(m, text)));
+    else deps.push(...(parse ? parse(text, warn) : parseGradleLockfile(text)));
   }
 
   // De-dup across manifests (same key the library uses within one).
