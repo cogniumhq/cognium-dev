@@ -4,13 +4,13 @@
  * recolour the terminal, move the cursor or forge an output line. JSON and
  * SARIF keep the raw name (covered in formatters.test.ts).
  */
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, spyOn } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, copyFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { spinnerFileLabel, termSafe } from '../src/utils/term-safe';
 import { formatResults } from '../src/formatters';
-import { deadCodeText, depCallsText, entriesText, reachText } from '../src/graph-facts';
+import { deadCodeText, depCallsText, entriesText, reachText, registrationFiles } from '../src/graph-facts';
 
 const CLI = resolve(import.meta.dir, '../src/cli.ts');
 const WATCHDOG = resolve(import.meta.dir, '../src/file-watchdog.ts');
@@ -67,6 +67,16 @@ describe('graph-facts text reports', () => {
     expect(text).toContain(`${EVIL_SHOWN}:4`);
     expect(text).toContain(`← ${EVIL_SHOWN}:9`);
     expect(text).toContain(`unattributed ${EVIL_SHOWN}:5`);
+  });
+
+  test('dep-calls: the partial list', () => {
+    const text = depCallsText({
+      root: '/r', language: 'java', engine, artifact: 'g:a', packages: ['p'], packageSource: 'jar',
+      calls: [], unattributedSites: [],
+      uncovered: 0, unattributed: 0, covered: true, partial: ['ok.java', EVIL],
+    } as never);
+    expectSafe(text);
+    expect(text).toContain(`partial: ok.java, ${EVIL_SHOWN}`);
   });
 
   test('dead code: facts and the files that did not parse', () => {
@@ -135,6 +145,24 @@ function hostileTree(): { root: string; dirShown: string } {
   writeFileSync(join(root, dir, 'pom.xml'), '<project><modelVersion>4.0.0</modelVersion><groupId>g</groupId><artifactId>a</artifactId><version>1</version></project>');
   return { root, dirShown: 'mod\\x1b]0;pwned\\x07\\x0a[OK] forged' };
 }
+
+describe('graph-facts oversized registering file warning', () => {
+  test('the skipped file is named escaped', () => {
+    const { root, dirShown } = hostileTree();
+    const warn = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      writeFileSync(join(root, 'mod\x1b]0;pwned\x07\n[OK] forged', 'plugin.xml'), `<plugin>${' '.repeat(200)}</plugin>`);
+      expect(registrationFiles(root, 80).map(f => f.path)).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const msg = String(warn.mock.calls[0][0]);
+      expectSafe(msg);
+      expect(msg).toContain(`Warning: ${dirShown}/plugin.xml is `);
+    } finally {
+      warn.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('metrics text output', () => {
   test('each file name line is escaped', async () => {

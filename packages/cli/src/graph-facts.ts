@@ -343,7 +343,7 @@ export const MAX_REGISTRATION_FILE_BYTES = 32 * 1024 * 1024;
  */
 export function registrationFiles(root: string, maxBytes = MAX_REGISTRATION_FILE_BYTES): RegistrationFile[] {
   const skip = (rel: string, bytes: number): void => {
-    console.error(`Warning: ${rel} is ${bytes} bytes, over the ${maxBytes}-byte limit for a registering file; not read`);
+    console.error(`Warning: ${termSafe(rel)} is ${bytes} bytes, over the ${maxBytes}-byte limit for a registering file; not read`);
   };
   return walk(root, (rel) => registrationFileKind(rel) !== null, Infinity, maxBytes, skip)
     .map((path) => ({ path, text: readFileSync(join(root, path), 'utf-8') }));
@@ -667,7 +667,7 @@ export function depCallsText(r: DepCallsReport): string {
   for (const u of r.unattributedSites) {
     lines.push(`  unattributed ${termSafe(u.site.file)}:${u.site.line}  ${u.receiver ? `${u.receiver}.` : ''}${u.methodName}`);
   }
-  if (r.partial.length) lines.push(`partial: ${r.partial.join(', ')}`);
+  if (r.partial.length) lines.push(`partial: ${r.partial.map(termSafe).join(', ')}`);
   return lines.join('\n');
 }
 
