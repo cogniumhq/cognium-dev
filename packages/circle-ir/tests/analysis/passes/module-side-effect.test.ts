@@ -82,6 +82,36 @@ describe('ModuleSideEffectPass', () => {
       expect(ctx.findings).toHaveLength(1);
     });
 
+    // A dynamic import leaves no import row, only a local def; the def's line
+    // shows what it loads.
+    it('still flags http.get when the local is a dynamic import of http', () => {
+      const code = "\n\n\nconst http = await import('http');\n\nhttp.get('http://x');\n";
+      const ctx = run([call('http', 'get', [['"http://x"']], 6)], 'javascript', 'index.mjs', code,
+        { dfg: dfg(def('http')) });
+      expect(ctx.findings).toHaveLength(1);
+    });
+
+    it('still flags https.request when the local is a dynamic import of node:https', () => {
+      const code = '\n\n\nconst https = await import("node:https");\n\nhttps.request(opts);\n';
+      const ctx = run([call('https', 'request', [['opts']], 6)], 'typescript', 'index.ts', code,
+        { dfg: dfg(def('https')) });
+      expect(ctx.findings).toHaveLength(1);
+    });
+
+    it('still flags http.get when a later assignment requires http', () => {
+      const code = "let http;\n\n\nhttp = require('http');\n\nhttp.get('http://x');\n";
+      const ctx = run([call('http', 'get', [['"http://x"']], 6)], 'javascript', 'index.js', code,
+        { dfg: dfg({ id: 1, variable: 'http', line: 1, kind: 'local' }, def('http')) });
+      expect(ctx.findings).toHaveLength(1);
+    });
+
+    it('does not flag get on a local named http that imports another module', () => {
+      const code = "\n\n\nconst http = await import('./http-cache.js');\n\nhttp.get('/a');\n";
+      const ctx = run([call('http', 'get', [['"/a"']], 6)], 'javascript', 'index.mjs', code,
+        { dfg: dfg(def('http')) });
+      expect(ctx.findings).toHaveLength(0);
+    });
+
     it('flags module-level fetch that references process.env', () => {
       const ctx = run([call('', 'fetch', [['"http://x/c"'], ['{ body: process.env }']])]);
       expect(ctx.findings).toHaveLength(1);

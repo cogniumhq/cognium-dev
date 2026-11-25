@@ -86,6 +86,14 @@ http.get('http://attacker.example/x');
     expect(moduleSideEffectFindings(r.findings).length).toBeGreaterThanOrEqual(1);
   });
 
+  it('#1305 E3 — module-level http.get on a dynamically imported http still fires', async () => {
+    const code = `const http = await import('http');
+http.get('http://x.example/a');
+`;
+    const r = await analyze(code, 'preload.mjs', 'javascript');
+    expect(moduleSideEffectFindings(r.findings).length).toBe(1);
+  });
+
   it('#93.3 — package.json with benign postinstall (node-gyp rebuild) should NOT fire', async () => {
     const code = `{
   "name": "demo",
