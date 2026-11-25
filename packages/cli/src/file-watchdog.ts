@@ -14,6 +14,7 @@
  */
 
 import { Worker } from 'worker_threads';
+import { termSafe } from './utils/term-safe.js';
 
 const NAME_BYTES = 4096;
 
@@ -58,7 +59,8 @@ export function startFileWatchdog(fileTimeoutMs: number): FileWatchdog | null {
   const inFlight = new Map<string, number>();
   const encoder = new TextEncoder();
   const show = (): void => {
-    const files = [...inFlight.keys()];
+    // Escaped here, on the main thread: the worker only copies the bytes to stderr (#1305 R1).
+    const files = [...inFlight.keys()].map(termSafe);
     const bytes = encoder.encode(files.length === 1 ? files[0] : `one of: ${files.join(', ')}`);
     name.fill(0);
     name.set(bytes.subarray(0, NAME_BYTES - 1));

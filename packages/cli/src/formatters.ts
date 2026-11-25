@@ -3,6 +3,7 @@
  */
 
 import { colors } from './utils/colors.js';
+import { termSafe } from './utils/term-safe.js';
 import { version } from './version.js';
 import type { TaintPath, CrossFileCall, SinkType } from 'circle-ir';
 
@@ -126,19 +127,8 @@ const INCOMPLETE_REASONS: ReadonlySet<ScanNotification['reason']> = new Set([
   'analysis-error', 'file-timeout', 'cross-file-budget', 'project-size-ceiling',
 ]);
 
-/**
- * A scanned file name made safe to write to a terminal (#1305 R1): C0 and C1
- * control characters, DEL and bidirectional overrides are written as `\xNN` or
- * `\u{NNNN}`, so a file named with an escape sequence or a newline cannot
- * recolour, move the cursor or forge an output line. Other text is unchanged.
- */
-export function termSafe(name: string): string {
-  // eslint-disable-next-line no-control-regex
-  return name.replace(/[\x00-\x1f\x7f-\x9f‪-‮⁦-⁩]/g, c => {
-    const n = c.charCodeAt(0);
-    return n <= 0xff ? `\\x${n.toString(16).padStart(2, '0')}` : `\\u{${n.toString(16)}}`;
-  });
-}
+/** Re-exported: the one helper every text path uses (`./utils/term-safe.ts`). */
+export { termSafe };
 
 export function parseErrorText(p: NonNullable<ScanResult['parseErrors']>): string {
   const at = p.lines.length > 0 ? ` (first at line ${p.lines[0]})` : '';
@@ -631,7 +621,7 @@ export function formatResults(
   if (profileSummary && profileSummary.modules.length > 0) {
     lines.push(colors.bold('Project profile'));
     for (const m of profileSummary.modules) {
-      const tag = m.root === '' || m.root === '.' ? '.' : m.root;
+      const tag = m.root === '' || m.root === '.' ? '.' : termSafe(m.root);
       lines.push(`  ${colors.cyan(tag)}  →  ${colors.bold(m.profile)}`);
       if (verbose) {
         lines.push(`     reasons: ${m.reasons.join(' → ')}`);

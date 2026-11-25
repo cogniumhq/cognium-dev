@@ -40,6 +40,7 @@ import {
   applyTagSeverityDowngrade, termSafe,
   type ScanResult, type CrossFileData, type ProjectProfileSummary,
 } from './formatters.js';
+import { spinnerFileLabel } from './utils/term-safe.js';
 import { version } from './version.js';
 import { buildInfo } from './build-info.js';
 import { parseArgs, showHelp, showVersion, unknownOptions } from './utils/args.js';
@@ -1342,8 +1343,8 @@ function printProfileExplain(
   } else {
     for (const r of detection.modules) {
       const rel = relative(scanRoot, r.module.root) || '.';
-      out.push(`  ${colors.cyan(rel || '.')}  →  ${colors.bold(r.profile)}`);
-      out.push(`     build: ${r.module.buildSystem}  (${relative(scanRoot, r.module.buildFile)})`);
+      out.push(`  ${colors.cyan(termSafe(rel || '.'))}  →  ${colors.bold(r.profile)}`);
+      out.push(`     build: ${r.module.buildSystem}  (${termSafe(relative(scanRoot, r.module.buildFile))})`);
       if (r.module.artifactId) {
         out.push(`     coords: ${r.module.groupId ?? '?'}:${r.module.artifactId}:${r.module.version ?? '?'}`);
       }
@@ -1507,9 +1508,8 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       let processed = 0;
 
       const formatCurrentFile = (file: string): string => {
-        const rel = relative(absPath, file) || file;
-        // Keep spinner line readable for deeply nested paths.
-        return rel.length > 80 ? `...${rel.slice(-77)}` : rel;
+        // Escaped, then shortened to keep the spinner line readable (#1305 R1).
+        return spinnerFileLabel(relative(absPath, file) || file);
       };
 
       // Process files with concurrency
@@ -1844,9 +1844,7 @@ async function runMetrics(targetPath: string, options: MetricsOptions): Promise<
       if (!lang) { processed++; continue; }
 
       if (spin) {
-        const rel = relative(absPath, file) || file;
-        const maxLen = 80;
-        const label = rel.length > maxLen ? `...${rel.slice(-(maxLen - 3))}` : rel;
+        const label = spinnerFileLabel(relative(absPath, file) || file);
         spin.text = `Analyzing ${label}... (${processed}/${totalFiles})`;
       }
 
@@ -1902,7 +1900,7 @@ async function runMetrics(targetPath: string, options: MetricsOptions): Promise<
       const lines: string[] = [];
       for (const fm of filtered) {
         const rel = relative(absPath, fm.file) || fm.file;
-        lines.push(rel);
+        lines.push(termSafe(rel));
 
         // Group metrics by category
         const byCategory = new Map<string, MetricValue[]>();

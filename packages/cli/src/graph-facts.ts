@@ -49,6 +49,7 @@ import {
 } from 'circle-ir';
 import { UsageError, parseFormat } from './utils/options.js';
 import { STRUCTURE_SKIPPED_DIRECTORIES } from './utils/skip-dirs.js';
+import { termSafe } from './utils/term-safe.js';
 
 // ─── Options ─────────────────────────────────────────────────────────────────
 
@@ -661,10 +662,10 @@ export function depCallsText(r: DepCallsReport): string {
   ];
   for (const c of r.calls) {
     const strong = c.tests.find(t => t.class === 'strong');
-    lines.push(`  ${strong ? 'covered  ' : 'uncovered'} ${c.site.file}:${c.site.line}  ${c.receiver}.${c.methodName}${strong ? `  ← ${strong.file}:${strong.line}` : ''}`);
+    lines.push(`  ${strong ? 'covered  ' : 'uncovered'} ${termSafe(c.site.file)}:${c.site.line}  ${c.receiver}.${c.methodName}${strong ? `  ← ${termSafe(strong.file)}:${strong.line}` : ''}`);
   }
   for (const u of r.unattributedSites) {
-    lines.push(`  unattributed ${u.site.file}:${u.site.line}  ${u.receiver ? `${u.receiver}.` : ''}${u.methodName}`);
+    lines.push(`  unattributed ${termSafe(u.site.file)}:${u.site.line}  ${u.receiver ? `${u.receiver}.` : ''}${u.methodName}`);
   }
   if (r.partial.length) lines.push(`partial: ${r.partial.join(', ')}`);
   return lines.join('\n');
@@ -674,8 +675,8 @@ export function depCallsText(r: DepCallsReport): string {
 
 /** `file:line:column  ERROR in <parent>`: where a file stopped parsing. */
 function partialFileLine(p: PartialFile): string {
-  if (p.line === undefined) return p.file;
-  return `${p.file}:${p.line}:${p.column}  ${p.nodeKind} in ${p.parent}`;
+  if (p.line === undefined) return termSafe(p.file);
+  return `${termSafe(p.file)}:${p.line}:${p.column}  ${p.nodeKind} in ${p.parent}`;
 }
 
 /** Text block naming each file that did not parse, and where. */
@@ -729,7 +730,7 @@ export function deadCodeText(r: DeadCodeReport): string {
     const line = r.locations[f.id]?.[0];
     const why = f.verdict === 'may-be-live' && f.reasons.length > 0 ? ` (${f.reasons.join(', ')})` : '';
     const test = f.reachedByTest ? ' [reached by tests]' : '';
-    lines.push(`  ${f.verdict.padEnd(11)} ${f.file}${line ? `:${line}` : ''}  ${f.qualified_name} (${f.kind})${why}${test}`);
+    lines.push(`  ${f.verdict.padEnd(11)} ${termSafe(f.file)}${line ? `:${line}` : ''}  ${f.qualified_name} (${f.kind})${why}${test}`);
   }
   if (facts.length === 0) lines.push(`  no facts with verdict ${r.verdicts.join(' or ')}`);
   lines.push('');
@@ -782,9 +783,9 @@ export function reachText(r: ReachReport): string {
       : d.weak ? `weak from ${d.weak.entry.kind}` : 'no path';
     const unresolved = d.unresolvedCount > 0 ? `, ${d.unresolvedCount} unresolved site(s)` : '';
     const moves = d.moveCandidates.length > 0 ? `, ${d.moveCandidates.length} move candidate(s)` : '';
-    lines.push(`  removed  ${d.file}  ${d.qualified_name ?? d.id} (${d.kind}) — ${reach}${unresolved}${moves}`);
+    lines.push(`  removed  ${termSafe(d.file)}  ${d.qualified_name ?? d.id} (${d.kind}) — ${reach}${unresolved}${moves}`);
   }
-  for (const m of r.moved) lines.push(`  moved    ${m.from} → ${m.to} (${m.relation})`);
+  for (const m of r.moved) lines.push(`  moved    ${termSafe(m.from)} → ${termSafe(m.to)} (${m.relation})`);
   if (r.removed.length === 0 && r.moved.length === 0) lines.push('  nothing removed');
   return lines.join('\n');
 }
@@ -850,7 +851,7 @@ export function entriesText(r: EntriesReport): string {
     (a.file < b.file ? -1 : a.file > b.file ? 1 : 0) || a.line - b.line);
   for (const e of sorted) {
     const route = e.method || e.path ? ` ${[e.method, e.path].filter(Boolean).join(' ')}` : '';
-    lines.push(`  ${e.kind.padEnd(10)} ${e.certainty.padEnd(12)} ${e.file}:${e.line}${route}`);
+    lines.push(`  ${e.kind.padEnd(10)} ${e.certainty.padEnd(12)} ${termSafe(e.file)}:${e.line}${route}`);
   }
   return lines.join('\n');
 }
