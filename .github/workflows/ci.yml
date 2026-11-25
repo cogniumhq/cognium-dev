@@ -61,6 +61,9 @@ jobs:
       - name: test — repo scripts
         run: npm run test:scripts
 
+      - name: Reviewer workflow guards
+        run: node --test scripts/reviewer-workflow.test.mjs
+
   build:
     name: build + typecheck
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "grace"]') }}

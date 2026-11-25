@@ -1,0 +1,63 @@
+# reviewer — adversary between whoever edits cognium-dev and whoever merges it.
+# Runs as `github-actions[bot]` (conformis pattern; see `.github/reviewer/README.md`).
+name: reviewer
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: reviewer-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: review
+    if: github.event.pull_request.draft == false
+    runs-on: [self-hosted, grace]
+    timeout-minutes: 30
+
+    steps:
+      - name: Clear a sparse checkout left on this runner
+        run: if [ -f .git/config ]; then git config --file .git/config --unset-all core.sparseCheckout || true; fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Is the reviewer configured?
+        env:
+          KEY: ${{ secrets.META_KEY }}
+        run: |
+          if [ -z "${KEY:-}" ]; then
+            {
+              echo "### reviewer not configured"
+              echo
+              echo "\`META_KEY\` is not set on this repository, so no review could be posted and this"
+              echo "check is red. Set the secret (same Muse API key as cogniumhq/conformis), or remove"
+              echo "this workflow until you are ready."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::META_KEY is not set, so no review was posted"
+            exit 1
+          fi
+
+      - name: Review
+        env:
+          META_KEY: ${{ secrets.META_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -o pipefail
+          node .github/reviewer/review.mjs 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
