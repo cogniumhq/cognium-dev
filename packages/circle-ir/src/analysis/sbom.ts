@@ -934,17 +934,23 @@ export type ManifestWarning = (message: string) => void;
  * removed (`'drop'`).
  *
  * A conforming XML parser rejects an unterminated comment or CDATA section. Here it
- * runs to the end of the text instead, and `warn` is told, so the dependencies it
- * hides are not lost silently.
+ * runs to the end of the text instead and is removed in both modes (an unterminated
+ * CDATA section is never kept: what follows its opener is text, so it must not be
+ * read as markup), and `warn` is told which of the two it was, so the dependencies
+ * it hides are not lost silently.
+ *
+ * Shared within the package (the declared-version index reads poms the same way);
+ * not part of the public API.
  */
-function stripXmlComments(xml: string, cdata: 'keep' | 'drop', warn?: ManifestWarning): string {
+export function stripXmlComments(xml: string, cdata: 'keep' | 'drop', warn?: ManifestWarning): string {
   return xml.replace(/<!\[CDATA\[[\s\S]*?(\]\]>|$)|<!--[\s\S]*?(-->|$)/g, (m, cdataEnd?: string, commentEnd?: string, offset?: number) => {
     const isCdata = cdataEnd !== undefined;
-    if (!(isCdata ? cdataEnd : commentEnd)) {
+    const terminated = !!(isCdata ? cdataEnd : commentEnd);
+    if (!terminated) {
       const line = xml.slice(0, offset).split('\n').length;
       warn?.(`unterminated ${isCdata ? 'CDATA section' : 'XML comment'} at line ${line} runs to the end of the file; nothing after it is read`);
     }
-    return isCdata && cdata === 'keep' ? m : '';
+    return isCdata && terminated && cdata === 'keep' ? m : '';
   });
 }
 
@@ -957,8 +963,8 @@ function stripXmlComments(xml: string, cdata: 'keep' | 'drop', warn?: ManifestWa
  * Comments are removed first: a declaration inside `<!-- … -->` is not a
  * dependency, and a comment that holds a `<dependency>` with no real closing tag
  * must not swallow the active one after it. A `<!--` inside a CDATA section is
- * text, not a comment. An unterminated comment runs to the end of the file and is
- * reported to `warn`.
+ * text, not a comment. An unterminated comment or CDATA section runs to the end of
+ * the file, is not read, and is reported to `warn`, naming which of the two it was.
  */
 export function parseMavenDependencies(rawPomXml: string, warn?: ManifestWarning): Dependency[] {
   if (!rawPomXml) return [];
