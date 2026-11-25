@@ -3,7 +3,7 @@
  * cognium CLI - AI-powered static analysis for security vulnerabilities
  */
 
-import { readFileSync, existsSync, writeFileSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, realpathSync } from 'fs';
 import { stat, readdir, realpath } from 'fs/promises';
 import { join, dirname, extname, resolve, relative, basename, sep } from 'path';
 import { createRequire } from 'module';
@@ -2204,13 +2204,17 @@ const MAX_POM_PARENTS = 10;
  * parent's value winning, for `parseMavenDependencies`. Each
  * parent is found as Maven finds it locally: `<relativePath>` (default
  * `../pom.xml`, a directory meaning its `pom.xml`), used only when that file's
- * own artifactId is the one `<parent>` names. An empty `<relativePath/>`, a
- * missing or different file, or a cycle ends the chain: those properties stay
- * unknown, never guessed.
+ * own artifactId is the one `<parent>` names. Unlike Maven, a parent is read
+ * only inside `rootReal` (the scan root's real path): a `<relativePath>` that
+ * is absolute, climbs above the root or reaches out through a symlink is not
+ * followed, so scanning a checkout reads nothing outside it. An empty
+ * `<relativePath/>`, a missing, different or outside file, or a cycle ends the
+ * chain: those properties stay unknown, never guessed.
  */
-export function inheritedPomProperties(pomPath: string, pomText: string): Map<string, string> {
+export function inheritedPomProperties(pomPath: string, pomText: string, rootReal: string): Map<string, string> {
   const chain: Array<Map<string, string>> = [];
-  const seen = new Set<string>([resolve(pomPath)]);
+  const rootPrefix = rootReal.endsWith(sep) ? rootReal : rootReal + sep;
+  const seen = new Set<string>([existsSync(pomPath) ? realpathSync(pomPath) : resolve(pomPath)]);
   let path = pomPath;
   let text = pomText;
   for (let i = 0; i < MAX_POM_PARENTS; i++) {
@@ -2218,7 +2222,9 @@ export function inheritedPomProperties(pomPath: string, pomText: string): Map<st
     if (!ref || ref.relativePath === null) break;
     let next = resolve(dirname(path), ref.relativePath);
     if (!next.endsWith('.xml')) next = join(next, 'pom.xml');
-    if (seen.has(next) || !existsSync(next)) break;
+    if (!existsSync(next)) break;
+    try { next = realpathSync(next); } catch { break; }
+    if (seen.has(next) || !next.startsWith(rootPrefix)) break;
     let parentText: string;
     try { parentText = readFileSync(next, 'utf-8'); } catch { break; }
     if (mavenArtifactId(parentText) !== ref.artifactId) break;
@@ -2380,6 +2386,8 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   // A malformed config throws, and the top-level handler exits 2.
   const config = loadConfig(options.profile);
   const manifests = await collectManifestFiles(absPath, { excludePatterns: config?.exclude });
+  // Parent poms are read only inside this directory (a file target: its directory).
+  const scanRootReal = await realpath((await stat(absPath)).isDirectory() ? absPath : dirname(absPath));
   if (manifests.length === 0) {
     console.error(colors.red('Error: no supported manifests found (package.json/-lock, requirements.txt, pyproject.toml, poetry.lock, pom.xml with dependency-tree.txt/-list.txt, build.gradle, gradle.lockfile, Cargo.toml/.lock, go.mod, *.target)'));
     process.exit(EXIT_ERROR);
@@ -2445,7 +2453,7 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
     const parse = SBOM_MANIFESTS[basename(m)] ?? (isTychoTarget(m) ? parseTychoTargetDependencies : undefined);
     const warn = (message: string): void => { console.error(colors.yellow(`Warning: ${termSafe(relative(absPath, m) || m)}: ${message}`)); };
     // A pom's `${property}` versions may be defined in its parent poms.
-    if (basename(m) === 'pom.xml') deps.push(...parseMavenDependencies(text, warn, inheritedPomProperties(m, text)));
+    if (basename(m) === 'pom.xml') deps.push(...parseMavenDependencies(text, warn, inheritedPomProperties(m, text, scanRootReal)));
     else deps.push(...(parse ? parse(text, warn) : parseGradleLockfile(text)));
   }
 

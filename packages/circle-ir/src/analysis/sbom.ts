@@ -952,10 +952,13 @@ function stripXmlComments(xml: string, cdata: 'keep' | 'drop', warn?: ManifestWa
  * Parse a Maven `pom.xml` `<dependency>` blocks. Name is `groupId:artifactId`.
  * `<scope>test|provided</scope>` → dev, `<optional>true</optional>` → optional.
  * A `${property}` version is resolved from this pom's own `<properties>`, then
- * from `inherited`: the properties of its parent poms, nearest first, as the
- * caller read them (`mavenPomProperties`, `mavenParentRef`); this pom's own
- * value wins, as in Maven. One defined by another property, or nowhere given,
- * is recorded as `unknown`, never guessed.
+ * from `inherited`: the properties of its parent poms, merged so that a nearer
+ * parent's value wins, as the caller read them (`mavenPomProperties`,
+ * `mavenParentRef`); this pom's own value wins, as in Maven. A property defined
+ * by other properties (`<a>${b}</a>`, `<v>${major}.${minor}</v>`) is resolved
+ * through them, after the merge, so a value the pom overrides is used there too.
+ * One that refers to a property defined nowhere given, or to itself, is recorded
+ * as `unknown`, never guessed.
  * Comments are removed first: a declaration inside `<!-- … -->` is not a
  * dependency, and a comment that holds a `<dependency>` with no real closing tag
  * must not swallow the active one after it. A `<!--` inside a CDATA section is
@@ -970,7 +973,7 @@ export function parseMavenDependencies(
   if (!rawPomXml) return [];
   const pomXml = stripXmlComments(rawPomXml, 'keep', warn);
   const out: Dependency[] = [];
-  const props = new Map([...(inherited ?? []), ...pomProperties(pomXml)]);
+  const props = resolvePomProperties(new Map([...(inherited ?? []), ...pomProperties(pomXml)]));
   const depRe = /<dependency>([\s\S]*?)<\/dependency>/g;
   let m: RegExpExecArray | null;
   while ((m = depRe.exec(pomXml)) !== null) {
@@ -1010,9 +1013,10 @@ function pomVersion(block: string, props: Map<string, string>): string {
 }
 
 /**
- * A pom's own `<properties>` (name → literal value), comments removed; values
- * that reference another property are left out. For a caller that reads the
- * parent chain and passes it to `parseMavenDependencies` as `inherited`.
+ * A pom's own `<properties>` (name → value as written), comments removed; a
+ * value may refer to other properties, which `parseMavenDependencies` resolves.
+ * For a caller that reads the parent chain and passes it to
+ * `parseMavenDependencies` as `inherited`.
  */
 export function mavenPomProperties(rawPomXml: string): Map<string, string> {
   return rawPomXml ? pomProperties(stripXmlComments(rawPomXml, 'keep')) : new Map();
@@ -1032,7 +1036,7 @@ export function mavenParentRef(rawPomXml: string): { artifactId: string; relativ
   const artifactId = block.match(/<artifactId>\s*([^<\s]+)\s*<\/artifactId>/)?.[1];
   if (!artifactId) return null;
   if (/<relativePath\s*\/>|<relativePath>\s*<\/relativePath>/.test(block)) return { artifactId, relativePath: null };
-  const rel = block.match(/<relativePath>\s*([^<]+?)\s*<\/relativePath>/)?.[1] ?? '../pom.xml';
+  const rel = block.match(/<relativePath>([^<]*)<\/relativePath>/)?.[1]?.trim() || '../pom.xml';
   return { artifactId, relativePath: rel };
 }
 
@@ -1045,15 +1049,48 @@ export function mavenArtifactId(rawPomXml: string): string | null {
   return top.match(/<artifactId>\s*([^<\s]+)\s*<\/artifactId>/)?.[1] ?? null;
 }
 
-/** A pom's own `<properties>` (name → literal value); values that reference another property are left out. */
+/** A pom's own `<properties>` (name → value as written, possibly referring to other properties). */
 function pomProperties(pomXml: string): Map<string, string> {
   const out = new Map<string, string>();
   for (const block of pomXml.match(/<properties>[\s\S]*?<\/properties>/g) ?? []) {
     for (const p of block.matchAll(/<([A-Za-z_][\w.-]*)>\s*([^<]*?)\s*<\/\1>/g)) {
-      if (p[2] && !p[2].includes('${')) out.set(p[1], p[2]);
+      if (p[2]) out.set(p[1], p[2]);
     }
   }
   return out;
+}
+
+/**
+ * Properties with every `${name}` in their values replaced by that property's
+ * resolved value. A value that refers, directly or through others, to a name
+ * not in `raw` (e.g. `${project.version}`) or to itself is left out.
+ */
+function resolvePomProperties(raw: ReadonlyMap<string, string>): Map<string, string> {
+  const done = new Map<string, string | null>();
+  const resolving = new Set<string>();
+  const resolveName = (name: string): string | null => {
+    const known = done.get(name);
+    if (known !== undefined) return known;
+    const value = raw.get(name);
+    if (value === undefined || resolving.has(name)) return null;
+    resolving.add(name);
+    let ok = true;
+    const out = value.replace(/\$\{([^}]*)\}/g, (_, ref: string) => {
+      const v = resolveName(ref);
+      if (v === null) ok = false;
+      return v ?? '';
+    });
+    resolving.delete(name);
+    const result = ok && !out.includes('${') ? out : null;
+    done.set(name, result);
+    return result;
+  };
+  const props = new Map<string, string>();
+  for (const name of raw.keys()) {
+    const v = resolveName(name);
+    if (v !== null) props.set(name, v);
+  }
+  return props;
 }
 
 /**

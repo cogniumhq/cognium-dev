@@ -45,9 +45,9 @@ describe('#1077 artifactItems in poms', () => {
     const ds = keys(parseMavenDependencies(pom));
     expect(ds).toContain('com.nimbusds:nimbus-jose-jwt@9.37.3/required');
     expect(ds).toContain('org.zkoss.theme:breeze@10.3.0.1/required');
-    // a property from a parent pom, or one defined by another property, is not resolved here
+    // a property defined by another property resolves through it; one from a parent pom is not given here
+    expect(ds).toContain('org.x:chained@10.3.0.1/required');
     expect(ds).toContain('org.x:from-parent@unknown/required');
-    expect(ds).toContain('org.x:chained@unknown/required');
     // the ordinary <dependency> row is unchanged
     expect(ds).toContain('org.idempiere:org.adempiere.base@unknown/required');
   });

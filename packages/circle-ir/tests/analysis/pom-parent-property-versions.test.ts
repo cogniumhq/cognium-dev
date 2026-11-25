@@ -55,6 +55,37 @@ describe('pom ${property} versions from the parent pom', () => {
     expect(mavenParentRef(root)).toBeNull();
   });
 
+  it('resolves properties defined by other properties, after the parent chain is merged', () => {
+    const parent = `<project><artifactId>p</artifactId><properties>
+      <major>2</major><minor>21</minor>
+      <jackson.version>\${major}.\${minor}.2</jackson.version>
+      <jackson.databind.version>\${jackson.version}</jackson.databind.version>
+      <from.project>\${project.version}</from.project>
+      <loop.a>\${loop.b}</loop.a><loop.b>\${loop.a}</loop.b><self>\${self}</self>
+    </properties></project>`;
+    const child = (props: string) => `<project><artifactId>c</artifactId><properties>${props}</properties><dependencies>
+      <dependency><groupId>g</groupId><artifactId>databind</artifactId><version>\${jackson.databind.version}</version></dependency>
+      <dependency><groupId>g</groupId><artifactId>project</artifactId><version>\${from.project}</version></dependency>
+      <dependency><groupId>g</groupId><artifactId>loop</artifactId><version>\${loop.a}</version></dependency>
+      <dependency><groupId>g</groupId><artifactId>self</artifactId><version>\${self}</version></dependency>
+    </dependencies></project>`;
+    const v = versions(parseMavenDependencies(child(''), undefined, mavenPomProperties(parent)));
+    expect(v['g:databind']).toBe('2.21.2');
+    // a reference to a property defined nowhere given, or a cycle, stays unknown
+    expect(v['g:project']).toBe('unknown');
+    expect(v['g:loop']).toBe('unknown');
+    expect(v['g:self']).toBe('unknown');
+    // the child's own value is used inside the parent's derived properties, as in Maven
+    expect(versions(parseMavenDependencies(child('<minor>22</minor>'), undefined, mavenPomProperties(parent)))['g:databind']).toBe('2.22.2');
+  });
+
+  it('mavenParentRef: a relativePath padded with whitespace is trimmed; whitespace only means the default', () => {
+    expect(mavenParentRef(mod.replace('</parent>', '<relativePath>\n  ../build/parent  \n</relativePath></parent>')))
+      .toEqual({ artifactId: 'shop-parent', relativePath: '../build/parent' });
+    expect(mavenParentRef(mod.replace('</parent>', '<relativePath>   </relativePath></parent>')))
+      .toEqual({ artifactId: 'shop-parent', relativePath: null });
+  });
+
   it('mavenArtifactId: the pom\'s own, not its parent\'s or a dependency\'s', () => {
     expect(mavenArtifactId(mod)).toBe('shop-core');
     expect(mavenArtifactId(root)).toBe('shop-parent');

@@ -1,6 +1,6 @@
 /** `cognium-dev sbom` resolves a module pom's `${property}` versions from its parent poms on disk. */
 import { test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -52,5 +52,45 @@ test('sbom: module poms take ${property} versions from the parent chain; what it
     expect(v['org.x:detached-dep']).toBe('unknown');
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test('sbom: a parent pom outside the scan root is not read', async () => {
+  const outer = mkdtempSync(join(tmpdir(), 'sbom-pom-root-'));
+  try {
+    // outer/pom.xml is the parent of outer/scan/mod; only outer/scan is scanned.
+    writeFileSync(join(outer, 'pom.xml'), `<project><groupId>org.example</groupId><artifactId>outer-root</artifactId><version>1.0</version>
+      <properties><jackson.version>2.21.2</jackson.version></properties></project>`);
+    const scan = join(outer, 'scan');
+    mkdirSync(join(scan, 'mod'), { recursive: true });
+    mkdirSync(join(scan, 'abs'));
+    writeFileSync(join(scan, 'mod', 'pom.xml'), `<project>${parent('outer-root', '<relativePath>../../pom.xml</relativePath>')}<artifactId>mod</artifactId><dependencies>
+      ${dep('org.x', 'climbs-out', '${jackson.version}')}
+      </dependencies></project>`);
+    writeFileSync(join(scan, 'abs', 'pom.xml'), `<project>${parent('outer-root', `<relativePath>${join(outer, 'pom.xml')}</relativePath>`)}<artifactId>abs</artifactId><dependencies>
+      ${dep('org.x', 'absolute', '${jackson.version}')}
+      </dependencies></project>`);
+    // A symlink inside the root that points at the outside parent is not followed either.
+    mkdirSync(join(scan, 'linked'));
+    symlinkSync(join(outer, 'pom.xml'), join(scan, 'parent-link.xml'));
+    writeFileSync(join(scan, 'linked', 'pom.xml'), `<project>${parent('outer-root', '<relativePath>../parent-link.xml</relativePath>')}<artifactId>linked</artifactId><dependencies>
+      ${dep('org.x', 'through-link', '${jackson.version}')}
+      </dependencies></project>`);
+
+    const run = async (target: string) => {
+      const proc = Bun.spawn(['bun', 'run', CLI, 'sbom', target, '--deterministic'], { cwd: outer, stdout: 'pipe', stderr: 'pipe' });
+      const out = await new Response(proc.stdout).text();
+      expect(await proc.exited).toBe(0);
+      return Object.fromEntries((JSON.parse(out).components as Array<{ group?: string; name: string; version: string }>)
+        .map(c => [`${c.group ? c.group + ':' : ''}${c.name}`, c.version]));
+    };
+    const inner = await run(scan);
+    expect(inner['org.x:climbs-out']).toBe('unknown');
+    expect(inner['org.x:absolute']).toBe('unknown');
+    expect(inner['org.x:through-link']).toBe('unknown');
+    // Scanning from the outer directory, the same parent is inside the root and is used.
+    expect((await run(outer))['org.x:climbs-out']).toBe('2.21.2');
+  } finally {
+    rmSync(outer, { recursive: true, force: true });
   }
 }, 60_000);
