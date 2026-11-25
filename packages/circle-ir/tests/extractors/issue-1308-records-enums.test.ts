@@ -9,11 +9,25 @@
  *
  * Records themselves stay behind `navigationTypes` until the resolver's
  * name-only fallback is fixed (see the hold on #1308).
+ *
+ * Fixtures in `tests/fixtures/java-enum-body/`, read through `analyze()` with
+ * default options:
+ *   - Op.java    — constants with their own bodies, a static map and
+ *                  initializer, a constructor, an abstract method, a static
+ *                  factory
+ *   - Shape.java — a class with a nested enum that declares members
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { initParser, parse } from '../../src/core/parser.js';
 import { extractTypes } from '../../src/core/extractors/types.js';
+import { analyze, initAnalyzer } from '../../src/analyzer.js';
+
+const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '../fixtures/java-enum-body');
+const fixture = (name: string) => readFileSync(resolve(FIXTURES, name), 'utf8');
 
 const ENUM = `
 package app;
@@ -96,5 +110,43 @@ describe('#1308 Java enum members and record constructors', () => {
   it('still leaves records out of the default output', async () => {
     const types = extractTypes(await parse(RECORD, 'java'), undefined, 'java');
     expect(types.find(t => t.name === 'Endpoint')).toBeUndefined();
+  });
+});
+
+describe('#1308 enum-body fixtures through analyze()', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  it('declares the members after the constants, and none from a constant\'s own body', async () => {
+    const ir = await analyze(fixture('Op.java'), 'Op.java', 'java');
+    const op = ir.types.find(t => t.name === 'Op');
+    expect(op?.kind).toBe('enum');
+
+    const sig = (m: { name: string; parameters: { type: string | null }[] }) =>
+      `${m.name}(${m.parameters.map(p => p.type).join(',')})`;
+    // `apply` is declared once, by the abstract method; the two overrides
+    // inside ADD { … } and SUB { … } belong to the constants, not to Op.
+    expect(op!.methods.map(sig).sort()).toEqual(['Op(String)', 'apply(int,int)', 'of(String)', 'symbol()']);
+
+    const ctor = op!.methods.find(m => m.name === 'Op')!;
+    expect(ctor).toMatchObject({ return_type: null, start_line: 31, end_line: 33 });
+    expect(op!.methods.find(m => m.name === 'apply')!.modifiers).toContain('abstract');
+    expect(op!.methods.find(m => m.name === 'of')).toMatchObject({ return_type: 'Op', start_line: 41, end_line: 47 });
+
+    expect(op!.fields.map(f => [f.name, f.type])).toEqual([['BY_SYMBOL', 'Map<String, Op>'], ['symbol', 'String']]);
+  });
+
+  it('declares a nested enum\'s members on the enum, not on the enclosing class', async () => {
+    const ir = await analyze(fixture('Shape.java'), 'Shape.java', 'java');
+    const kind = ir.types.find(t => t.name === 'Kind');
+    const shape = ir.types.find(t => t.name === 'Shape');
+    expect(kind?.kind).toBe('enum');
+
+    expect(kind!.methods.map(m => [m.name, m.start_line]).sort()).toEqual([['Kind', 10], ['sides', 14]]);
+    expect(kind!.fields.map(f => f.name)).toEqual(['sides']);
+
+    expect(shape!.methods.map(m => [m.name, m.start_line]).sort()).toEqual([['Shape', 21], ['sides', 25]]);
+    expect(shape!.fields.map(f => f.name)).toEqual(['kind']);
   });
 });
