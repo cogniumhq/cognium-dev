@@ -165,6 +165,28 @@ describe('files not fully analysed', () => {
   }, 30_000);
 });
 
+// ─── #1311: React Native / Expo .plist files are scanned for secrets ─────────
+
+describe('scan reads .plist property lists for secrets (#1311)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cognium-plist-'));
+  mkdirSync(join(dir, 'ios/ExpoDemo'), { recursive: true });
+  writeFileSync(join(dir, 'App.tsx'), 'export default function App() { return null; }\n');
+  // Fabricated value, exercising the named-credential matcher.
+  writeFileSync(join(dir, 'ios/ExpoDemo/Info.plist'),
+    '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n  <key>CFBundleIdentifier</key>\n  <string>com.example.expodemo</string>\n  <key>PaymentsApiKey</key>\n  <string>Xk9#mQ2vLp7Rt4Wz</string>\n</dict>\n</plist>\n');
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('JSON reports the Info.plist credential; --disable-pass scan-secrets turns it off', async () => {
+    const on = await run('scan', dir, '-f', 'json', '-q');
+    const plist = (j: { results: Array<{ file: string; vulnerabilities: Array<{ type: string; line: number; cwe?: string }> }> }) =>
+      j.results.find(r => r.file.endsWith('ios/ExpoDemo/Info.plist'))?.vulnerabilities ?? [];
+    expect(plist(JSON.parse(on.stdout)).map(v => [v.type, v.line, v.cwe])).toEqual([['hardcoded-credential', 7, 'CWE-798']]);
+    expect(on.exitCode).toBe(1);
+    const off = await run('scan', dir, '-f', 'json', '-q', '--disable-pass', 'scan-secrets');
+    expect(plist(JSON.parse(off.stdout))).toEqual([]);
+  }, 60_000);
+});
+
 // ─── The entry-path gate's drops are counted, with the flag that keeps them ─
 
 describe('require-entry-path drops are reported', () => {
@@ -600,6 +622,28 @@ describe('#424 project size ceiling', () => {
     expect(r.stdout).toContain('Project size ceiling reached');
     expect(r.stdout).not.toMatch(/analysed 0 of/);
   });
+
+  // #1306: in SARIF the files past the ceiling were named nowhere, so each read as clean.
+  test('SARIF names every file the ceiling left unread, each at its own location', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cognium-1306-'));
+    try {
+      for (const name of ['A', 'B', 'C']) {
+        writeFileSync(join(dir, `${name}.java`), `public class ${name} {\n  int x() { return 1; }\n}\n`.padEnd(100, ' '));
+      }
+      const r = await run('scan', dir, '-f', 'sarif', '--max-project-source-chars', '150');
+      const invocation = JSON.parse(r.stdout).runs[0].invocations[0];
+      expect(invocation.executionSuccessful).toBe(false);
+      const unread = invocation.toolExecutionNotifications
+        .filter((n: { properties?: { reason?: string }; locations?: unknown }) => n.properties?.reason === 'project-size-ceiling' && n.locations)
+        .map((n: { locations: Array<{ physicalLocation: { artifactLocation: { uri: string } } }> }) => n.locations[0].physicalLocation.artifactLocation.uri);
+      // One file fits under the cap; the other two were never read, and each is named.
+      expect(unread).toHaveLength(2);
+      expect(new Set(unread).size).toBe(2);
+      for (const uri of unread) expect(uri).toMatch(/[ABC]\.java$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   test('0 disables the cap and restores the plain summary', async () => {
     const r = await run('scan', '.', '--max-project-source-chars', '0');

@@ -19,6 +19,7 @@ export {
   getNodesFromCache,
   isInitialized,
   isLanguageLoaded,
+  hasGrammar,
   resetParser,
   type SupportedLanguage,
   type SyntaxNode,

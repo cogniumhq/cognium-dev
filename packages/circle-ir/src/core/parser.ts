@@ -516,6 +516,23 @@ export function isInitialized(): boolean {
 }
 
 /**
+ * `SupportedLanguage` values with no grammar in `wasm/` (#1307). They parse
+ * only when the caller supplies one through `languagePaths` or
+ * `languageModules`.
+ */
+const LANGUAGES_WITHOUT_BUNDLED_GRAMMAR: ReadonlySet<SupportedLanguage> = new Set<SupportedLanguage>(['c', 'cpp']);
+
+/**
+ * Whether `parse()` has a grammar for `language`: one ships in `wasm/`, or the
+ * caller configured one in `initParser()`.
+ */
+export function hasGrammar(language: SupportedLanguage): boolean {
+  return !LANGUAGES_WITHOUT_BUNDLED_GRAMMAR.has(language)
+    || configuredLanguageModules[language] !== undefined
+    || configuredLanguagePaths[language] !== undefined;
+}
+
+/**
  * Check if a language has been loaded.
  */
 export function isLanguageLoaded(language: SupportedLanguage): boolean {
