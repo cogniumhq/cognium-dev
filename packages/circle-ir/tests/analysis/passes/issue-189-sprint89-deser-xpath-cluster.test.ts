@@ -184,6 +184,41 @@ describe('#189 Sprint 89 — deserialization + xpath cluster', () => {
     expect(countRule(r, 'insecure_deserialization')).toBe(1);
   });
 
+  // #1332: a parse whose result is thrown away leaves no object for a
+  // `__proto__` key to reach, so there is nothing to report.
+  it('B-TN-discarded: JSON.parse(body-derived) as a bare statement does NOT fire', async () => {
+    const code = [
+      "import { Request, Response } from 'express';",
+      'export const checkPayload = async (req: Request, res: Response): Promise<void> => {',
+      '  const incoming = (req.body.payload as string) || "";',
+      '  const trimmed = String(incoming).slice(0, 100);',
+      '  JSON.parse(trimmed);',
+      '  try { JSON.parse(req.body); } catch { res.status(400).end(); return; }',
+      '  res.json({ accepted: true });',
+      '};',
+    ].join('\n');
+    const r = await analyze(code, '/x/discard.ts', 'typescript');
+    expect(countRule(r, 'insecure_deserialization')).toBe(0);
+  });
+
+  it('B-TP-kept: a body parse whose value is kept, returned or passed on still fires', async () => {
+    const code = [
+      "app.post('/p', (req, res) => {",
+      '  let obj;',
+      '  obj = JSON.parse(req.body);',
+      '  merge(state, JSON.parse(req.body));',
+      '  return JSON.parse(req.body);',
+      '});',
+      "app.post('/q', (req, res) => {",
+      '  const wrapped =',
+      '    JSON.parse(req.body);',
+      '  JSON.parse(req.body).items.forEach(use);',
+      '});',
+    ].join('\n');
+    const r = await analyze(code, '/x/kept.js', 'javascript');
+    expect(countRule(r, 'insecure_deserialization')).toBe(5);
+  });
+
   // -- C. JS DOM document.evaluate -------------------------------------
 
   it('C-TP: document.evaluate(taint, ...) fires xpath_injection', async () => {

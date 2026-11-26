@@ -747,8 +747,8 @@ export async function collectFiles(targetPath: string, options: CollectFilesOpti
 }
 
 /**
- * #591: project resource files that analysis passes may read (`*.properties`).
- * Collected from a directory scan with the same skip rules as `collectFiles`
+ * #591: project resource files that analysis passes may read (`*.properties`),
+ * and `*.plist` property lists, scanned for credentials (#1311). Collected from a directory scan with the same skip rules as `collectFiles`
  * (dot-directories, `SCAN_SKIPPED_DIRECTORIES`, `--exclude-tests`, config
  * `exclude`). Keys
  * are the file paths as found; a file over 1 MB is ignored.
@@ -761,7 +761,7 @@ export async function collectResourceFiles(
   const out = new Map<string, string>();
   const pathStat = await stat(targetPath);
   if (pathStat.isFile()) {
-    if (!/\.properties$/i.test(targetPath) || pathStat.size > 1_000_000) return out;
+    if (!/\.(?:properties|plist)$/i.test(targetPath) || pathStat.size > 1_000_000) return out;
     if (excludeTests && isTestFile(targetPath)) return out;
     const relativePath = basePath ? relative(basePath, targetPath) : targetPath;
     if (excludePatterns && matchesAnyPattern(relativePath, excludePatterns)) return out;
@@ -803,8 +803,8 @@ interface AnalyzeOptions {
    */
   projectProfile?: ProjectProfile | Map<string, ProjectProfile>;
   /**
-   * `*.properties` files from the scan set, forwarded to circle-ir
-   * `AnalyzerOptions.resources` (#591). Directory scans only.
+   * `*.properties` and `*.plist` files from the scan set, forwarded to
+   * circle-ir `AnalyzerOptions.resources` (#591, #1311). Directory scans only.
    */
   resources?: ReadonlyMap<string, string>;
   /**
@@ -1057,8 +1057,18 @@ async function scanProject(
   const filesWithCode: Array<{ code: string; filePath: string; language: SupportedLanguage }> = [];
   let sourceChars = 0;
   let readTruncated = false;
+  // #1306: a file that cannot be read (EACCES, removed since the walk) is
+  // reported as not analysed; it no longer ends the scan with no report.
+  const unreadable: ScanResult[] = [];
   for (const f of files) {
-    const code = readFileSync(f, 'utf-8');
+    let code: string;
+    try {
+      code = readFileSync(f, 'utf-8');
+    } catch (e) {
+      const why = (e as NodeJS.ErrnoException).code ?? (e instanceof Error ? e.message : String(e));
+      unreadable.push({ file: f, vulnerabilities: [], error: `could not read the file (${why}); file skipped` });
+      continue;
+    }
     // A first file that alone exceeds the cap is KEPT, so a scan is never
     // silently empty. `maxProjectSourceChars` is therefore not passed to
     // `analyzeProject` below: its own check has no such exemption and would
@@ -1085,7 +1095,8 @@ async function scanProject(
     ...(crossFileBudgetMs !== undefined ? { crossFileBudgetMs } : {}),
     // 3.106.0 (#169): per-file project-profile map (from detector or forced).
     ...(analyzeOpts?.projectProfile !== undefined ? { projectProfile: analyzeOpts.projectProfile } : {}),
-    // #591: `*.properties` from the scan set, for passes that resolve config-held values.
+    // #591: `*.properties` from the scan set, for passes that resolve config-held values;
+    // #1311: `*.plist`, scanned for credentials.
     ...(analyzeOpts?.resources !== undefined && analyzeOpts.resources.size > 0 ? { resources: analyzeOpts.resources } : {}),
     ...(analyzeOpts?.fileTimeoutMs ? { fileTimeoutMs: analyzeOpts.fileTimeoutMs } : {}),
     ...(analyzeOpts?.watchdog ? { onFileStart: analyzeOpts.watchdog.onFileStart, onFileEnd: analyzeOpts.watchdog.onFileEnd } : {}),
@@ -1126,6 +1137,26 @@ async function scanProject(
     const parseErrors = parseErrorsOf(analysis);
     return { file, vulnerabilities: dedupeVulnerabilities(vulnerabilities), ...(parseErrors ? { parseErrors } : {}) };
   });
+  results.push(...unreadable);
+  // #1311: findings in resource files (`*.plist`), which have no per-file analysis.
+  const resourceResults = new Map<string, ScanResult>();
+  for (const finding of projectResult.resource_findings ?? []) {
+    let r = resourceResults.get(finding.file);
+    if (r === undefined) {
+      r = { file: finding.file, vulnerabilities: [] };
+      resourceResults.set(finding.file, r);
+      results.push(r);
+    }
+    r.vulnerabilities.push({
+      type: finding.rule_id,
+      severity: finding.severity,
+      message: finding.message,
+      line: finding.line,
+      cwe: finding.cwe,
+      fix: finding.fix,
+      category: finding.category,
+    });
+  }
   // #1007: a file skipped by --file-timeout-ms is reported as an error, never as clean.
   for (const t of projectResult.timed_out_files ?? []) {
     results.push({
