@@ -957,20 +957,29 @@ export function stripXmlComments(xml: string, cdata: 'keep' | 'drop', warn?: Man
 /**
  * Parse a Maven `pom.xml` `<dependency>` blocks. Name is `groupId:artifactId`.
  * `<scope>test|provided</scope>` → dev, `<optional>true</optional>` → optional.
- * A `${property}` version is resolved from this pom's own `<properties>`
- * (controldeck#729); one defined in a parent pom, by another property, or not at
- * all is not visible here and is recorded as `unknown`, never guessed.
+ * A `${property}` version is resolved from this pom's own `<properties>`, then
+ * from `inherited`: the properties of its parent poms, merged so that a nearer
+ * parent's value wins, as the caller read them (`mavenPomProperties`,
+ * `mavenParentRef`); this pom's own value wins, as in Maven. A property defined
+ * by other properties (`<a>${b}</a>`, `<v>${major}.${minor}</v>`) is resolved
+ * through them, after the merge, so a value the pom overrides is used there too.
+ * One that refers to a property defined nowhere given, or to itself, is recorded
+ * as `unknown`, never guessed.
  * Comments are removed first: a declaration inside `<!-- … -->` is not a
  * dependency, and a comment that holds a `<dependency>` with no real closing tag
  * must not swallow the active one after it. A `<!--` inside a CDATA section is
  * text, not a comment. An unterminated comment or CDATA section runs to the end of
  * the file, is not read, and is reported to `warn`, naming which of the two it was.
  */
-export function parseMavenDependencies(rawPomXml: string, warn?: ManifestWarning): Dependency[] {
+export function parseMavenDependencies(
+  rawPomXml: string,
+  warn?: ManifestWarning,
+  inherited?: ReadonlyMap<string, string>,
+): Dependency[] {
   if (!rawPomXml) return [];
   const pomXml = stripXmlComments(rawPomXml, 'keep', warn);
   const out: Dependency[] = [];
-  const props = pomProperties(pomXml);
+  const props = resolvePomProperties(new Map([...(inherited ?? []), ...pomProperties(pomXml)]));
   const depRe = /<dependency>([\s\S]*?)<\/dependency>/g;
   let m: RegExpExecArray | null;
   while ((m = depRe.exec(pomXml)) !== null) {
@@ -1009,15 +1018,90 @@ function pomVersion(block: string, props: Map<string, string>): string {
   return version.includes('${') ? 'unknown' : version;
 }
 
-/** A pom's own `<properties>` (name → literal value); values that reference another property are left out. */
+/**
+ * A pom's own `<properties>` (name → value as written), comments removed; a
+ * value may refer to other properties, which `parseMavenDependencies` resolves.
+ * For a caller that reads the parent chain and passes it to
+ * `parseMavenDependencies` as `inherited`.
+ */
+export function mavenPomProperties(rawPomXml: string): Map<string, string> {
+  return rawPomXml ? pomProperties(stripXmlComments(rawPomXml, 'keep')) : new Map();
+}
+
+/**
+ * A pom's `<parent>`: its `artifactId` (to check a candidate file is that
+ * parent, as Maven does) and where it is on disk, relative to this pom's
+ * directory: `<relativePath>`, default `../pom.xml`; `null` for an empty
+ * `<relativePath/>`, which tells Maven not to look on disk. Null with no
+ * `<parent>`.
+ */
+export function mavenParentRef(rawPomXml: string): { artifactId: string; relativePath: string | null } | null {
+  if (!rawPomXml) return null;
+  const block = stripXmlComments(rawPomXml, 'keep').match(/<parent>([\s\S]*?)<\/parent>/)?.[1];
+  if (!block) return null;
+  const artifactId = block.match(/<artifactId>\s*([^<\s]+)\s*<\/artifactId>/)?.[1];
+  if (!artifactId) return null;
+  if (/<relativePath\s*\/>|<relativePath>\s*<\/relativePath>/.test(block)) return { artifactId, relativePath: null };
+  const rel = block.match(/<relativePath>([^<]*)<\/relativePath>/)?.[1]?.trim() || '../pom.xml';
+  return { artifactId, relativePath: rel };
+}
+
+/** A pom's own `artifactId`: the first one outside `<parent>`, `<dependencies>` and `<build>`. */
+export function mavenArtifactId(rawPomXml: string): string | null {
+  if (!rawPomXml) return null;
+  const top = stripXmlComments(rawPomXml, 'keep')
+    .replace(/<parent>[\s\S]*?<\/parent>/g, '')
+    .replace(/<(dependencyManagement|dependencies|build|profiles|reporting|pluginRepositories|repositories)>[\s\S]*?<\/\1>/g, '');
+  return top.match(/<artifactId>\s*([^<\s]+)\s*<\/artifactId>/)?.[1] ?? null;
+}
+
+/** A pom's own `<properties>` (name → value as written, possibly referring to other properties). */
 function pomProperties(pomXml: string): Map<string, string> {
   const out = new Map<string, string>();
   for (const block of pomXml.match(/<properties>[\s\S]*?<\/properties>/g) ?? []) {
     for (const p of block.matchAll(/<([A-Za-z_][\w.-]*)>\s*([^<]*?)\s*<\/\1>/g)) {
-      if (p[2] && !p[2].includes('${')) out.set(p[1], p[2]);
+      if (p[2]) out.set(p[1], p[2]);
     }
   }
   return out;
+}
+
+/** A resolved property value longer than this is left out, so values built from doubling references stay bounded. */
+const MAX_PROPERTY_VALUE = 256;
+
+/**
+ * Properties with every `${name}` in their values replaced by that property's
+ * resolved value. A value that refers, directly or through others, to a name
+ * not in `raw` (e.g. `${project.version}`) or to itself, or that resolves to
+ * more than `MAX_PROPERTY_VALUE` characters, is left out.
+ */
+function resolvePomProperties(raw: ReadonlyMap<string, string>): Map<string, string> {
+  // A name is set to null before its value is expanded, so a name met again on its own path reads as
+  // null: the cycle's result. Every stored value is at most MAX_PROPERTY_VALUE long, so one expansion
+  // is bounded by the raw value's length times that.
+  const done = new Map<string, string | null>();
+  const resolveName = (name: string): string | null => {
+    const known = done.get(name);
+    if (known !== undefined) return known;
+    const value = raw.get(name);
+    if (value === undefined) return null;
+    done.set(name, null);
+    let ok = true;
+    const out = value.replace(/\$\{([^}]*)\}/g, (_, ref: string) => {
+      const v = resolveName(ref);
+      if (v === null) ok = false;
+      return v ?? '';
+    });
+    const result = ok && out.length <= MAX_PROPERTY_VALUE && !out.includes('${') ? out : null;
+    done.set(name, result);
+    return result;
+  };
+  const props = new Map<string, string>();
+  for (const name of raw.keys()) {
+    const v = resolveName(name);
+    if (v !== null) props.set(name, v);
+  }
+  return props;
 }
 
 /**

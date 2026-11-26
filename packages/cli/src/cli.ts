@@ -3,7 +3,7 @@
  * cognium CLI - AI-powered static analysis for security vulnerabilities
  */
 
-import { readFileSync, existsSync, writeFileSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, realpathSync } from 'fs';
 import { stat, readdir, realpath } from 'fs/promises';
 import { join, dirname, extname, resolve, relative, basename, sep } from 'path';
 import { createRequire } from 'module';
@@ -22,6 +22,7 @@ import {
   parsePnpmLockDependencies, parseYarnLockDependencies, pnpmLockImporters,
   parsePypiDependencies, parsePyprojectDependencies, parsePoetryLockDependencies,
   parseMavenDependencies, parseTychoTargetDependencies, parseGradleDependencies,
+  mavenPomProperties, mavenParentRef, mavenArtifactId,
   parseMavenResolvedDependencies, parseGradleLockfile,
   parseCargoDependencies, parseCargoLockDependencies, parseGoDependencies,
   toCycloneDx, toSpdx,
@@ -2239,6 +2240,47 @@ const SBOM_MANIFESTS: Record<string, (content: string, warn?: (message: string) 
   'go.mod': parseGoDependencies,
 };
 
+/** Most parent poms followed up one chain (a guard against a malformed chain). */
+const MAX_POM_PARENTS = 10;
+
+/**
+ * The properties a `pom.xml` inherits from its parent poms on disk, nearest
+ * parent's value winning, for `parseMavenDependencies`. Each
+ * parent is found as Maven finds it locally: `<relativePath>` (default
+ * `../pom.xml`, a directory meaning its `pom.xml`), used only when that file's
+ * own artifactId is the one `<parent>` names. Unlike Maven, a parent is read
+ * only inside `rootReal` (the scan root's real path): a `<relativePath>` that
+ * is absolute, climbs above the root or reaches out through a symlink is not
+ * followed, so scanning a checkout reads nothing outside it. An empty
+ * `<relativePath/>`, a missing, different or outside file, or a cycle ends the
+ * chain: those properties stay unknown, never guessed.
+ */
+export function inheritedPomProperties(pomPath: string, pomText: string, rootReal: string): Map<string, string> {
+  const chain: Array<Map<string, string>> = [];
+  const rootPrefix = rootReal.endsWith(sep) ? rootReal : rootReal + sep;
+  const seen = new Set<string>([existsSync(pomPath) ? realpathSync(pomPath) : resolve(pomPath)]);
+  let path = pomPath;
+  let text = pomText;
+  for (let i = 0; i < MAX_POM_PARENTS; i++) {
+    const ref = mavenParentRef(text);
+    if (!ref || ref.relativePath === null) break;
+    let next = resolve(dirname(path), ref.relativePath);
+    if (!next.endsWith('.xml')) next = join(next, 'pom.xml');
+    if (!existsSync(next)) break;
+    try { next = realpathSync(next); } catch { break; }
+    if (seen.has(next) || !next.startsWith(rootPrefix)) break;
+    let parentText: string;
+    try { parentText = readFileSync(next, 'utf-8'); } catch { break; }
+    if (mavenArtifactId(parentText) !== ref.artifactId) break;
+    seen.add(next);
+    chain.push(mavenPomProperties(parentText));
+    path = next;
+    text = parentText;
+  }
+  // Farthest first, so a nearer parent's value overrides it.
+  return new Map(chain.reverse().flatMap(p => [...p]));
+}
+
 /** Lockfile / resolved-set basename → the manifests it supersedes (exact + transitive wins). */
 const SBOM_SUPERSEDES: Record<string, string[]> = {
   'package-lock.json': ['package.json'],
@@ -2388,6 +2430,8 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   // A malformed config throws, and the top-level handler exits 2.
   const config = loadConfig(options.profile);
   const manifests = await collectManifestFiles(absPath, { excludePatterns: config?.exclude });
+  // Parent poms are read only inside this directory (a file target: its directory).
+  const scanRootReal = await realpath((await stat(absPath)).isDirectory() ? absPath : dirname(absPath));
   if (manifests.length === 0) {
     console.error(colors.red('Error: no supported manifests found (package.json/-lock, requirements.txt, pyproject.toml, poetry.lock, pom.xml with dependency-tree.txt/-list.txt, build.gradle, gradle.lockfile, Cargo.toml/.lock, go.mod, *.target)'));
     process.exit(EXIT_ERROR);
@@ -2452,7 +2496,9 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
     }
     const parse = SBOM_MANIFESTS[basename(m)] ?? (isTychoTarget(m) ? parseTychoTargetDependencies : undefined);
     const warn = (message: string): void => { console.error(colors.yellow(`Warning: ${termSafe(relative(absPath, m) || m)}: ${message}`)); };
-    deps.push(...(parse ? parse(text, warn) : parseGradleLockfile(text)));
+    // A pom's `${property}` versions may be defined in its parent poms.
+    if (basename(m) === 'pom.xml') deps.push(...parseMavenDependencies(text, warn, inheritedPomProperties(m, text, scanRootReal)));
+    else deps.push(...(parse ? parse(text, warn) : parseGradleLockfile(text)));
   }
 
   // De-dup across manifests (same key the library uses within one).

@@ -38,13 +38,14 @@ describe('controldeck#729 pom property versions', () => {
     expect(ds).toContain('com.fasterxml.jackson.core:jackson-core@2.21.2/dev');
     expect(ds).toContain('com.fasterxml.jackson:jackson-bom@2.21.2/required');
     expect(ds).toContain('org.x:literal@3.4.5/required');
+    // a property defined by another property resolves through it
+    expect(ds).toContain('org.x:chained@2.21.2/required');
   });
 
   it('leaves what it cannot resolve as unknown, never guessed', () => {
     const ds = keys(parseMavenDependencies(pom));
-    // defined in a parent pom, defined by another property, embedded in other text, absent
+    // defined in a parent pom, embedded in other text, absent
     expect(ds).toContain('org.x:from-parent@unknown/required');
-    expect(ds).toContain('org.x:chained@unknown/required');
     expect(ds).toContain('org.x:partial@unknown/required');
     expect(ds).toContain('org.x:none@unknown/required');
   });
