@@ -91,6 +91,7 @@ function descendantIds(root: string, children: Map<string, string[]>): string[] 
 /**
  * A module or type cannot be `dead` when a member is `may-be-live` or `live` (#1288).
  * Fields on a type with a `may-be-live` method follow the type when dynamic `this` may touch them.
+ * A module-level field follows its module: `may-be-live` when the module is (#1311).
  */
 function promoteMemberConsistentVerdicts(facts: DeadCodeFact[], input: ReachInput): void {
   const byId = new Map(facts.map(f => [f.id, f]));
@@ -115,7 +116,18 @@ function promoteMemberConsistentVerdicts(facts: DeadCodeFact[], input: ReachInpu
     const parentId = parent.get(fact.id);
     if (!parentId) continue;
     const typeFact = byId.get(parentId);
-    if (!typeFact || typeFact.kind !== 'type') continue;
+    if (!typeFact) continue;
+    // #1311 part 1: a module-level field is the module's initializer and runs when the module is
+    // loaded, so it follows the module (lifted above when a member may run). A live module's
+    // fields are already live; a dead module's stay dead.
+    if (typeFact.kind === 'module') {
+      if (typeFact.verdict === 'may-be-live') {
+        fact.verdict = 'may-be-live';
+        for (const r of typeFact.reasons) if (!fact.reasons.includes(r)) fact.reasons.push(r);
+      }
+      continue;
+    }
+    if (typeFact.kind !== 'type') continue;
     const hasMayBeLiveMethod = (children.get(parentId) ?? []).some(sid => {
       const s = byId.get(sid);
       return (
