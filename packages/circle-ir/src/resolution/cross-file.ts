@@ -259,6 +259,18 @@ export class CrossFileResolver {
     { file: string; line: number; type: string; methodName: string }
   > = new Map();
 
+  /** cognium-dev#1455 — Java static field set from a cross-file param (`remember(v)`). */
+  private javaStaticFieldWriters: Map<
+    string,
+    { file: string; line: number; type: string; methodName: string }
+  > = new Map();
+
+  /** `${typeFqn}.${fieldName}` → static getter method FQN (`…​.last`). */
+  private javaStaticFieldGetters: Map<string, string> = new Map();
+
+  /** Wrapper static getter FQN → canonical getter FQN it delegates to. */
+  private javaStaticGetterDelegates: Map<string, string> = new Map();
+
   // Resolved calls cache
   private resolvedCalls: Map<string, ResolvedCall> = new Map();
 
@@ -280,6 +292,9 @@ export class CrossFileResolver {
    */
   setSourceLines(lines: Map<string, string[]>): void {
     this.sourceLines = lines;
+    for (const [path, ir] of this.fileIRs) {
+      this.analyzeJavaStaticFieldPairs(ir, path);
+    }
   }
 
   addFile(filePath: string, ir: CircleIR): void {
@@ -820,6 +835,17 @@ export class CrossFileResolver {
       if (name) paramNameToIndex.set(name, i);
     }
 
+    // Java: methods with `interprocedural_param` sources propagate that parameter
+    // cross-file (e.g. `remember(String v)` storing into a static field).
+    if (ir.meta.language === 'java') {
+      for (const src of ir.taint.sources) {
+        if (src.type !== 'interprocedural_param' || !src.variable) continue;
+        if (src.line < method.start_line || src.line > method.end_line) continue;
+        const idx = method.parameters.findIndex(p => p.name === src.variable);
+        if (idx >= 0) taintedParams.add(idx);
+      }
+    }
+
     const isJs = ir.meta.language === 'javascript' || ir.meta.language === 'typescript';
     for (const sink of ir.taint.sinks) {
       if (sink.line < method.start_line || sink.line > method.end_line) continue;
@@ -1249,6 +1275,8 @@ export class CrossFileResolver {
     // Cache: method FQN → { ir, method }
     const methodIndex = this.buildMethodIndex();
 
+    this.primeJavaStaticFieldWriters(methodIndex, deadline);
+
     for (const [callerFile, callerIR] of this.fileIRs) {
       if (deadline?.()) break;   // cognium-dev#366 — bound the O(F·T·M) walk
       const callerIdx = this.getFileIndex(callerIR);
@@ -1257,9 +1285,9 @@ export class CrossFileResolver {
           // 1. Seed tainted vars with real sources inside this method.
           const tainted = new Map<string, Origin>();
           for (const src of callerIR.taint.sources) {
-            if (src.type === 'interprocedural_param') continue;
             if (src.line < method.start_line || src.line > method.end_line) continue;
             if (!src.variable) continue;
+            if (src.type === 'interprocedural_param') continue;
             tainted.set(src.variable, {
               file: callerFile,
               line: src.line,
@@ -1331,6 +1359,13 @@ export class CrossFileResolver {
 
               const calleeNode = methodIndex.get(resolved.targetMethod);
               if (!calleeNode) continue;
+
+              this.noteJavaStaticFieldWriteFromParam(
+                resolved.targetMethod,
+                calleeNode,
+                matched,
+                argIdx,
+              );
 
               const calleeIdx = this.getFileIndex(calleeNode.ir);
               const sinksInCallee = calleeIdx.sinksByMethod.get(calleeNode.method) ?? [];
@@ -1779,6 +1814,288 @@ export class CrossFileResolver {
     }
 
     return paths;
+  }
+
+  private primeJavaStaticFieldWriters(
+    methodIndex: Map<string, { ir: CircleIR; method: MethodInfo }>,
+    deadline?: () => boolean,
+  ): void {
+    type Origin = {
+      file: string;
+      line: number;
+      type: string;
+      hopChain: InterproceduralTaintPath['hops'];
+      defIds?: Set<number>;
+    };
+
+    for (const [callerFile, callerIR] of this.fileIRs) {
+      if (deadline?.()) break;
+      const callerIdx = this.getFileIndex(callerIR);
+      for (const type of callerIR.types) {
+        for (const method of type.methods) {
+          const tainted = new Map<string, Origin>();
+          for (const src of callerIR.taint.sources) {
+            if (src.line < method.start_line || src.line > method.end_line) continue;
+            if (!src.variable) continue;
+            tainted.set(src.variable, {
+              file: callerFile,
+              line: src.line,
+              type: src.type,
+              hopChain: [{ file: callerFile, line: src.line, method: method.name, kind: 'source' }],
+              defIds: this.collectTaintReachable(callerIR, src.variable, src.line, callerFile).defIds,
+            });
+          }
+          for (const call of callerIdx.callsByMethod.get(method) ?? []) {
+            const resolved = this.resolveCall(call, callerFile);
+            if (!resolved) continue;
+            const callee = this.methodTaintInfo.get(resolved.targetMethod);
+            if (!callee || callee.taintedParams.length === 0 || callee.sanitizes) continue;
+            const calleeNode = methodIndex.get(resolved.targetMethod);
+            if (!calleeNode) continue;
+
+            for (let argIdx = 0; argIdx < call.arguments.length; argIdx++) {
+              if (!callee.taintedParams.includes(argIdx)) continue;
+              const matched = this.matchTaintedArg(call.arguments[argIdx], tainted);
+              if (!matched) continue;
+              if (this.taintClobbered(callerIR, call.location.line, matched.var, matched.origin.defIds)) {
+                continue;
+              }
+              this.noteJavaStaticFieldWriteFromParam(
+                resolved.targetMethod,
+                calleeNode,
+                matched,
+                argIdx,
+              );
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private analyzeJavaStaticFieldPairs(ir: CircleIR, filePath: string): void {
+    if (ir.meta.language !== 'java') return;
+    const lines = this.sourceLines?.get(filePath);
+  if (!lines) return;
+    const pkg = ir.meta.package || '';
+    const staticSetterRe = /^([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;?\s*$/;
+    const getterRe = /return\s+(?:this\.)?([A-Za-z_]\w*)\s*;?/;
+
+    for (const type of ir.types) {
+      const typeFqn = pkg ? `${pkg}.${type.name}` : type.name;
+      const pairs = new Map<string, { setter?: string; getter?: string }>();
+
+      for (const m of type.methods) {
+        if (!m.modifiers.includes('static')) continue;
+        const body = lines.slice(m.start_line - 1, m.end_line).join('\n');
+        const open = body.indexOf('{');
+        const close = body.lastIndexOf('}');
+        if (open < 0 || close <= open) continue;
+        const inner = body.slice(open + 1, close).replace(/\/\/[^\n]*/g, '').trim();
+
+        if (m.parameters.length === 1 && staticSetterRe.test(inner)) {
+          const stm = staticSetterRe.exec(inner);
+          if (stm && stm[2] === m.parameters[0].name) {
+            const entry = pairs.get(stm[1]) ?? {};
+            entry.setter = m.name;
+            pairs.set(stm[1], entry);
+            continue;
+          }
+        }
+        if (m.parameters.length === 0) {
+          const gm = inner.match(getterRe);
+          if (gm && inner.replace(gm[0], '').trim() === '') {
+            const entry = pairs.get(gm[1]) ?? {};
+            entry.getter = m.name;
+            pairs.set(gm[1], entry);
+          }
+        }
+      }
+
+      for (const [fieldName, { getter }] of pairs) {
+        if (!getter) continue;
+        const getterFqn = `${typeFqn}.${getter}`;
+        this.javaStaticFieldGetters.set(`${typeFqn}.${fieldName}`, getterFqn);
+      }
+
+      const delegateReturnRe =
+        /^return\s+([A-Za-z_]\w+)\.([A-Za-z_]\w+)\s*\(\s*\)\s*;?\s*$/;
+      for (const m of type.methods) {
+        if (!m.modifiers.includes('static') || m.parameters.length !== 0) continue;
+        const body = lines.slice(m.start_line - 1, m.end_line).join('\n');
+        const open = body.indexOf('{');
+        const close = body.lastIndexOf('}');
+        if (open < 0 || close <= open) continue;
+        const inner = body.slice(open + 1, close).replace(/\/\/[^\n]*/g, '').trim();
+        const dm = delegateReturnRe.exec(inner);
+        if (!dm) continue;
+        const delegateTypeFqn = pkg ? `${pkg}.${dm[1]}` : dm[1];
+        const delegateFqn = `${delegateTypeFqn}.${dm[2]}`;
+        this.javaStaticGetterDelegates.set(`${typeFqn}.${m.name}`, delegateFqn);
+      }
+    }
+  }
+
+  private noteJavaStaticFieldWriteFromParam(
+    targetMethod: string,
+    calleeNode: { ir: CircleIR; method: MethodInfo },
+    matched: { var: string; origin: { file: string; line: number; type: string } },
+    argIdx: number,
+  ): void {
+    if (calleeNode.ir.meta.language !== 'java') return;
+    const m = calleeNode.method;
+    if (!m.modifiers.includes('static') || m.parameters.length !== 1) return;
+    if (argIdx !== 0) return;
+
+    const filePath = this.filePathForIr(calleeNode.ir);
+    const lines = filePath ? (this.sourceLines?.get(filePath) ?? []) : [];
+    const body = lines.slice(m.start_line - 1, m.end_line).join('\n');
+    const open = body.indexOf('{');
+    const close = body.lastIndexOf('}');
+    if (open < 0 || close <= open) return;
+    const inner = body.slice(open + 1, close).replace(/\/\/[^\n]*/g, '').trim();
+    const staticSetterRe = /^([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;?\s*$/;
+    const stm = staticSetterRe.exec(inner);
+    if (!stm || stm[2] !== m.parameters[0].name) return;
+
+    const typeFqn = targetMethod.replace(/\.[^.]+$/, '');
+    const fieldKey = `${typeFqn}.${stm[1]}`;
+    const getterFqn = this.javaStaticFieldGetters.get(fieldKey);
+    if (!getterFqn) return;
+
+    this.javaStaticFieldWriters.set(fieldKey, {
+      file: matched.origin.file,
+      line: matched.origin.line,
+      type: matched.origin.type,
+      methodName: m.name,
+    });
+
+    const promoteReturnsSource = (fqn: string) => {
+      const info = this.methodTaintInfo.get(fqn);
+      if (info) {
+        info.returnsSource = true;
+        info.sourceType = matched.origin.type;
+      }
+    };
+    promoteReturnsSource(getterFqn);
+    for (const [wrapper, target] of this.javaStaticGetterDelegates) {
+      if (target === getterFqn) promoteReturnsSource(wrapper);
+    }
+  }
+
+  findJavaStaticFieldTaintPaths(deadline?: () => boolean): InterproceduralTaintPath[] {
+    const paths: InterproceduralTaintPath[] = [];
+    const seen = new Set<string>();
+    if (this.javaStaticFieldWriters.size === 0) return paths;
+
+    for (const [readerFile, callerIR] of this.fileIRs) {
+      if (deadline?.()) break;
+      if (callerIR.meta.language !== 'java') continue;
+      const callerIdx = this.getFileIndex(callerIR);
+
+      for (const type of callerIR.types) {
+        for (const method of type.methods) {
+          type Origin = {
+            file: string;
+            line: number;
+            type: string;
+            hopChain: InterproceduralTaintPath['hops'];
+          };
+          const tainted = new Map<string, Origin>();
+
+          const defsInMethod = (callerIdx.defsByMethod.get(method) ?? []).filter(
+            d => d.kind === 'local' && !!d.variable,
+          );
+
+          for (const def of defsInMethod) {
+            const usesAtLine = callerIdx.usesByLine.get(def.line) ?? [];
+            const fieldKey = this.resolveJavaStaticFieldReadKey(callerIR, type, usesAtLine);
+            if (!fieldKey) continue;
+            const writer = this.javaStaticFieldWriters.get(fieldKey);
+            if (!writer) continue;
+
+            const hopChain: InterproceduralTaintPath['hops'] = [
+              { file: writer.file, line: writer.line, method: writer.methodName, kind: 'source' },
+              { file: writer.file, line: writer.line, method: writer.methodName, kind: 'field_write' },
+              { file: readerFile, line: def.line, method: method.name, kind: 'field_read' },
+            ];
+            tainted.set(def.variable!, {
+              file: writer.file,
+              line: writer.line,
+              type: writer.type,
+              hopChain,
+            });
+          }
+
+          if (tainted.size === 0) continue;
+
+          const sinksInCaller = callerIdx.sinksByMethod.get(method) ?? [];
+          for (const sink of sinksInCaller) {
+            const callsAtSink = callerIdx.callsByLine.get(sink.line) ?? [];
+            for (const sinkCall of callsAtSink) {
+              for (const arg of sinkCall.arguments ?? []) {
+                const matched = this.matchTaintedArg(arg, tainted);
+                if (!matched) continue;
+                const key = `jsf:${matched.origin.file}:${matched.origin.line}→${readerFile}:${sink.line}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                paths.push({
+                  source: {
+                    file: matched.origin.file,
+                    line: matched.origin.line,
+                    type: matched.origin.type,
+                  },
+                  sink: {
+                    file: readerFile,
+                    line: sink.line,
+                    type: sink.type,
+                    cwe: sink.cwe,
+                  },
+                  hops: [
+                    ...matched.origin.hopChain,
+                    { file: readerFile, line: sink.line, method: method.name, kind: 'sink' },
+                  ],
+                  confidence: 0.7,
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return paths;
+  }
+
+  private resolveJavaStaticFieldReadKey(
+    callerIR: CircleIR,
+    containingType: { name: string; fields?: Array<{ name: string; modifiers?: string[] }> },
+    usesAtLine: DFGUse[],
+  ): string | null {
+    const names = usesAtLine.filter(u => u.def_id === null && u.variable).map(u => u.variable!);
+    const pkg = callerIR.meta.package || '';
+    const typeFqn = pkg ? `${pkg}.${containingType.name}` : containingType.name;
+    for (const name of names) {
+      const field = containingType.fields?.find(f => f.name === name);
+      if (!field?.modifiers?.includes('static')) continue;
+      const key = `${typeFqn}.${name}`;
+      if (this.javaStaticFieldWriters.has(key)) return key;
+    }
+    for (let i = 0; i < names.length; i++) {
+      for (let j = 0; j < names.length; j++) {
+        if (i === j) continue;
+        const key = `${names[i]}.${names[j]}`;
+        if (this.javaStaticFieldWriters.has(key)) return key;
+      }
+    }
+    return null;
+  }
+
+  private filePathForIr(ir: CircleIR): string | undefined {
+    for (const [path, candidate] of this.fileIRs) {
+      if (candidate === ir) return path;
+    }
+    return ir.meta.file || undefined;
   }
 
   private analyzeCSharpStaticFieldWriters(ir: CircleIR, filePath: string): void {

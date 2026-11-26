@@ -81,6 +81,7 @@ function makeProjectGraph(opts: {
         findInterproceduralTaintPaths: () => [],
         findFieldBindingTaintPaths: () => [],
         findCSharpStaticFieldTaintPaths: () => [],
+        findJavaStaticFieldTaintPaths: () => [],
         getResolvedCallsFromFile: (path: string) => opts.resolvedCallsMap?.get(path) ?? [],
         getMethodTaintInfo: () => undefined,
       };
@@ -400,6 +401,7 @@ describe('CrossFilePass — dedup by type (PR A)', () => {
           findInterproceduralTaintPaths: () => [],
           findFieldBindingTaintPaths: () => ipPaths,
           findCSharpStaticFieldTaintPaths: () => [],
+        findJavaStaticFieldTaintPaths: () => [],
           getResolvedCallsFromFile: () => [],
           getMethodTaintInfo: () => undefined,
         };

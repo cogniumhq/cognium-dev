@@ -89,6 +89,7 @@ function makeProjectGraph(hooks: ResolverHooks, irMap?: Map<string, CircleIR>): 
           return [];
         },
         findCSharpStaticFieldTaintPaths: () => [],
+        findJavaStaticFieldTaintPaths: () => [],
         getResolvedCallsFromFile: () => [],
         getMethodTaintInfo: () => undefined,
       };
