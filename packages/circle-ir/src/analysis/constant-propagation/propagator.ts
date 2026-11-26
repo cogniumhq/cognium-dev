@@ -2743,6 +2743,37 @@ export class ConstantPropagator {
    *   Go/JS  `call_expression`          — function field (identifier or selector/member)
    *   Python `call`                     — function field (identifier or attribute)
    */
+  /** Write-style prepared-statement calls do not echo bound args in the return (#1442). */
+  private preparedStatementWriteResultIsClean(node: Node, methodName: string): boolean {
+    if (methodName !== 'run' && methodName !== 'exec' && methodName !== 'execute') {
+      return false;
+    }
+    let fn: Node | null =
+      node.type === 'call_expression' || node.type === 'call'
+        ? node.childForFieldName('function')
+        : null;
+    while (fn) {
+      if (fn.type === 'member_expression') {
+        const prop = fn.childForFieldName('property');
+        if (prop && getNodeText(prop, this.source) === 'prepare') {
+          return true;
+        }
+        fn = fn.childForFieldName('object');
+        continue;
+      }
+      if (fn.type === 'call_expression' || fn.type === 'call') {
+        fn = fn.childForFieldName('function');
+        continue;
+      }
+      if (fn.type === 'await_expression') {
+        fn = fn.childForFieldName('argument');
+        continue;
+      }
+      break;
+    }
+    return false;
+  }
+
   private extractCallName(node: Node): string | null {
     if (node.type === 'method_invocation') {
       return this.extractJavaCalleeSimpleName(node);
@@ -3256,6 +3287,12 @@ export class ConstantPropagator {
               return true;
             }
           }
+        }
+
+        // #1442 — prepared-statement writes (run/exec/execute) return driver metadata,
+        // not bound-parameter bytes; D1 `.prepare(...).bind(v).run()` and sqlite peers.
+        if (this.preparedStatementWriteResultIsClean(node, methodName)) {
+          return false;
         }
 
         // JSON.parse — propagate taint from input only (#1149 IL-22).
