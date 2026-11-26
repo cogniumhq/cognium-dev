@@ -4353,6 +4353,7 @@ function findSanitizers(
           : language === 'javascript' || language === 'typescript' || language === 'tsx'
             ? findJsNoopHelpers(types, sourceLines)
             : new Set<string>();
+  const jsLikeLanguage = language === 'javascript' || language === 'typescript' || language === 'tsx';
 
   // Check method calls for sanitizer methods
   for (const call of calls) {
@@ -4384,6 +4385,9 @@ function findSanitizers(
       if (matchesSanitizerPattern(call, pattern)) {
         if (!pattern.class && noopLocalHelpers.has(call.method_name) && (!call.receiver || call.receiver === 'this' || call.receiver === 'self')) {
           continue; // same-file helper that does no escaping: not credited by name (#581)
+        }
+        if (!pattern.class && jsLikeLanguage && call.receiver === 'JSON') {
+          continue; // the JS `JSON` built-in has its own class rows; a class-less `parse` coercion row is not one (#1372)
         }
         sanitizers.push({
           type: determineSanitizerType(pattern),

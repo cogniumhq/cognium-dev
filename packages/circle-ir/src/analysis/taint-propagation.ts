@@ -715,6 +715,28 @@ function yieldsToRealSource(existing: TaintedVariable | undefined, next: Tainted
 }
 
 /**
+ * #1372: `JSON.stringify` / `JSON.parse` return the same strings they were
+ * given, cleaned only for the sink types their rows name. A definition hop
+ * through one keeps the taint; the sink check credits them per sink type.
+ */
+function isJsonValueTransform(san: TaintSanitizer): boolean {
+  return /^JSON\.(?:parse|stringify)\b/.test(san.method ?? '');
+}
+
+function withoutJsonValueTransforms(
+  sanitizersByLine: Map<number, TaintSanitizer[]>,
+): Map<number, TaintSanitizer[]> {
+  const hasJson = [...sanitizersByLine.values()].some(sans => sans.some(isJsonValueTransform));
+  if (!hasJson) return sanitizersByLine;
+  const out = new Map<number, TaintSanitizer[]>();
+  for (const [line, sans] of sanitizersByLine) {
+    const kept = sans.filter(s => !isJsonValueTransform(s));
+    if (kept.length > 0) out.set(line, kept);
+  }
+  return out;
+}
+
+/**
  * Propagate taint through def-use chains.
  * Accepts a pre-computed chainsByFromDef index (from CodeGraph) — no internal
  * adjacency list building needed.
@@ -728,6 +750,7 @@ function propagateThroughChains(
   lineText?: (line: number) => string | undefined,
 ): TaintedVariable[] {
   const propagated: TaintedVariable[] = [];
+  const hopSanitizersByLine = withoutJsonValueTransforms(sanitizersByLine);
   const taintedDefIds = new Set<number>(initialTaint.map(t => t.defId));
   const taintInfoByDefId = new Map<number, TaintedVariable>();
 
@@ -766,10 +789,10 @@ function propagateThroughChains(
         currentTaint.sourceLine,
         targetDef.line,
         currentTaint.sourceType,
-        sanitizersByLine
+        hopSanitizersByLine
       );
 
-      const sansAtTarget = sanitizersByLine.get(targetDef.line);
+      const sansAtTarget = hopSanitizersByLine.get(targetDef.line);
       // #589: decide encoder-only per operand, not per line. A raw sibling on
       // `escapeHtml(a) + b` is unrestricted even though the line has an encoder.
       const viaName = chain.via || currentTaint.variable;
