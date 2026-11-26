@@ -983,6 +983,8 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
 // Firebase writes the app's client identifiers into `GoogleService-Info.plist`
 // (`API_KEY`, `CLIENT_ID`, ...). They ship in every app bundle and are limited
 // server-side, so a finding there is reported as a note, not a credential leak.
+// The note is keyed on the name of the key whose value the finding's line now
+// holds, so a real secret written on the same source line is not downgraded.
 // ---------------------------------------------------------------------------
 
 const PLIST_KEY_STRING_RE = /<key>([^<\n]*)<\/key>\s*<string>([^<\n]*)<\/string>/g;
@@ -999,7 +1001,8 @@ export function scanPlistSecrets(file: string, text: string): SastFinding[] {
   let lineIdx = 0;
   let counted = 0;
   const firebase = FIREBASE_PLIST_RE.test(file);
-  const publicIdLines = new Map<number, string>();
+  // Key name rewritten onto each 1-based line (the last pair on that line).
+  const keyByLine = new Map<number, string>();
   PLIST_KEY_STRING_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = PLIST_KEY_STRING_RE.exec(text)) !== null) {
@@ -1008,17 +1011,18 @@ export function scanPlistSecrets(file: string, text: string): SastFinding[] {
     const name = m[1].trim();
     const indent = /^\s*/.exec(lines[lineIdx])?.[0] ?? '';
     view[lineIdx] = `${indent}${name} = "${m[2]}"`;
-    if (firebase && FIREBASE_PUBLIC_KEYS.has(name)) publicIdLines.set(lineIdx + 1, name);
+    keyByLine.set(lineIdx + 1, name);
   }
   const findings: SastFinding[] = [];
   new ScanSecretsPass().scanText(file, view.join('\n'), [], (f) => findings.push(f));
   for (const f of findings) {
     f.snippet = lines[f.line - 1].trim().substring(0, 120);
-    const name = publicIdLines.get(f.line);
-    if (name !== undefined) {
+    const name = keyByLine.get(f.line);
+    if (firebase && name !== undefined && FIREBASE_PUBLIC_KEYS.has(name)) {
       f.severity = 'low';
       f.level = 'note';
-      f.message = `Firebase client identifier \`${name}\` in GoogleService-Info.plist: it ships in the app and is not a secret; check that the API key is restricted`;
+      f.message = `Firebase client identifier \`${name}\` in GoogleService-Info.plist: it ships in the app and is not a secret`;
+      if (name === 'API_KEY') f.message += '; check that the API key is restricted';
     }
   }
   return findings;

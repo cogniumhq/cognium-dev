@@ -264,4 +264,23 @@ describe('file names in text output', () => {
       if (prev === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = prev;
     }
   });
+
+  test('formatResults escapes a finding message and an error reason, which can carry a file name', () => {
+    const evil = 'b\x1b[2J\n[OK] forged.ts';
+    const results = [
+      makeResult('src/a.ts', [{ ...sqlVuln, message: `tainted data flows from ${evil}:3 to line 20` }]),
+      makeResult('src/c.ts', [], `ENOENT: no such file or directory, open '${evil}'`),
+    ];
+    const prev = process.env.NO_COLOR;
+    process.env.NO_COLOR = '1';
+    try {
+      const output = formatResults(results, true);
+      expect(output).not.toContain('\x1b');
+      expect(output.split('\n').some(l => l.startsWith('[OK] forged.ts'))).toBe(false);
+      expect(output).toContain('Line 20: tainted data flows from b\\x1b[2J\\x0a[OK] forged.ts:3 to line 20');
+      expect(output).toContain("[ERROR] src/c.ts: ENOENT: no such file or directory, open 'b\\x1b[2J\\x0a[OK] forged.ts'");
+    } finally {
+      if (prev === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = prev;
+    }
+  });
 });
