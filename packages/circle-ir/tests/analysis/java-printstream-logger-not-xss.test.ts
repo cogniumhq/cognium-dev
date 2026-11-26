@@ -10,10 +10,12 @@
  * field in a small file logger, or the project's own `Logger out`.
  *
  * A `PrintStream` built on the servlet response's output stream does reach
- * the page, so a file that calls `getOutputStream()` keeps its sinks.
+ * the page, so a project in which any Java file calls `getOutputStream()`
+ * keeps its sinks, including those in a helper file that only receives the
+ * stream as a parameter.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
-import { analyze, initAnalyzer } from '../../src/analyzer.js';
+import { analyze, analyzeProject, initAnalyzer } from '../../src/analyzer.js';
 
 const xssAt = (r: Awaited<ReturnType<typeof analyze>>) =>
   r.taint.sinks.filter(s => s.type === 'xss').map(s => s.line);
@@ -84,5 +86,48 @@ describe('Java PrintStream and logger receivers are not xss sinks', () => {
     const r = await analyze(code, 'T.java', 'java');
     expect(xssAt(r)).toContain(7);
     expect(r.taint.flows.some(f => f.sink_type === 'xss' && f.sink_line === 7)).toBe(true);
+  });
+
+  // A servlet wraps the response in a PrintStream and passes it to a helper in
+  // another file. The helper never calls getOutputStream() itself.
+  const servletFile = servlet(['    new Report().write(new PrintStream(resp.getOutputStream()), p);']);
+  const reportFile = [
+    'import java.io.*;',
+    'public class Report {',
+    '  public void write(PrintStream ps, String v) {',
+    '    ps.println(v);',
+    '  }',
+    '}',
+  ].join('\n');
+
+  it('still reports a response-backed PrintStream passed to a helper in another file', async () => {
+    const r = await analyzeProject([
+      { code: servletFile, filePath: 'T.java', language: 'java' },
+      { code: reportFile, filePath: 'Report.java', language: 'java' },
+    ]);
+    const report = r.files.find(f => f.file === 'Report.java')!;
+    expect(xssAt(report.analysis)).toContain(4);
+    expect(r.taint_paths.some(p =>
+      p.sink.type === 'xss' && p.sink.file === 'Report.java' && p.sink.line === 4
+      && p.source.file === 'T.java' && p.source.line === 5,
+    )).toBe(true);
+  });
+
+  it('drops the helper print when no file of the project opens the response stream', async () => {
+    const cli = [
+      'import java.io.*;',
+      'public class Main {',
+      '  public static void main(String[] args) throws IOException {',
+      '    new Report().write(new PrintStream(new FileOutputStream("r.txt")), args[0]);',
+      '  }',
+      '}',
+    ].join('\n');
+    const r = await analyzeProject([
+      { code: cli, filePath: 'Main.java', language: 'java' },
+      { code: reportFile, filePath: 'Report.java', language: 'java' },
+    ]);
+    const report = r.files.find(f => f.file === 'Report.java')!;
+    expect(xssAt(report.analysis)).toEqual([]);
+    expect(r.taint_paths.filter(p => p.sink.type === 'xss')).toHaveLength(0);
   });
 });

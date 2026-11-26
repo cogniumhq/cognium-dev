@@ -15,6 +15,7 @@ export {
   resetAnalyzer,
   type AnalyzerOptions,
 } from './analyzer.js';
+export { javaProjectOpensResponseStream } from './analysis/passes/sink-filter-pass.js';
 
 // SBOM generation (deterministic — CycloneDX 1.5 / SPDX 2.3 from manifests)
 export {
