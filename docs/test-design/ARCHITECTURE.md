@@ -25,7 +25,8 @@ MCP server and editor plugin live in **cogniumhq/cognium-mcp** (out of tree); th
 - **`packages/cli/tests/e2e.test.ts`**: subprocess scan text/json/sarif, exit codes 0/1/2, profiles, cross-file suppressions, size ceiling.
 - **`graph-facts.test.ts` / `depcalls.test.ts` / `recheck.test.ts`**: full CLI loopback on temp trees (TypeScript, Java, Python, Go, OSGi).
 - **`symlink-scan.test.ts`**, **`stdout-drain.test.ts`**, **`scan-npm-manifests.test.ts`**: walk safety, pipe backpressure, lockfile context.
-- **Gaps (this run)**: end-to-end **project-profile detection → JSON/SARIF attribution** (shape/env on modules and findings).
+- **Gaps addressed**: **recheck JSON envelope → conformis RX-1/RX-2** (`tests/e2e/recheck-envelope-conformis.test.ts`).
+- **Remaining**: deeper **project-profile** edge cases beyond the first wire suite.
 
 ### L3 — Browser, container & scheduled E2E
 
@@ -54,7 +55,7 @@ MCP server and editor plugin live in **cogniumhq/cognium-mcp** (out of tree); th
 
 | Priority | Flow | Layer | Status |
 |---|---|---|---|
-| P0 | `project-profile-scan-wire` | L2 hermetic CLI | **In progress** (this PR) |
-| P1 | `recheck-envelope-conformis` | L2 + cross-repo | Partial (`recheck.test.ts`; conformis bundle schema unchecked here) |
+| P0 | `project-profile-scan-wire` | L2 hermetic CLI | Covered |
+| P1 | `recheck-envelope-conformis` | L2 + cross-repo | **Covered** (this PR) |
 | P2 | `code-facts-cli-parity` | L2 | `depcalls` covered; remedy-class CLI surface thin |
 | P3 | `sarif-github-code-scanning` | L2+L3 doc | `sarif-conformance.test.ts`; upload action wiring needs maintainer CI doc |

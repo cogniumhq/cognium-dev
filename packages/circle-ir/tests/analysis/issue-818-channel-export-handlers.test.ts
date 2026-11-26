@@ -119,6 +119,48 @@ export default { handle };
     expect(hasCmdFlow(r)).toBe(true);
   });
 
+  // The taint-coverage TS channel files are mechanical ports of the JS ones and
+  // keep a stray `=` (`export default = { handler };`), which tree-sitter
+  // recovers as an error node. The binding still names the handler.
+  it('typescript export default = { resolveUser } keeps graphql/sql flow (ch01)', async () => {
+    const code = `import sqlite3 from 'sqlite3';
+function resolveUser(_, { id }) {
+  const q = id;
+  new sqlite3.Database(':memory:').all("SELECT * FROM u WHERE id='" + q + "'");
+}
+export default = { resolveUser };
+`;
+    const r = await analyze(code, 'ch01_graphql.ts', 'typescript');
+    expect(hasSqlFlow(r)).toBe(true);
+  });
+
+  it('typescript export default = { handle } keeps grpc/cmd flow (ch03)', async () => {
+    const code = `import { exec } from 'child_process';
+function handle(req) { exec('echo ' + req.payload, () => {}); }
+export default = { handle };
+`;
+    const r = await analyze(code, 'ch03_grpc.ts', 'typescript');
+    expect(hasCmdFlow(r)).toBe(true);
+  });
+
+  it('typescript export default = { handler } keeps serverless/cmd flow (ch04)', async () => {
+    const code = `import { exec } from 'child_process';
+function handler(event) { exec('grep ' + (event.q || ''), () => {}); }
+export default = { handler };
+`;
+    const r = await analyze(code, 'ch04_serverless.ts', 'typescript');
+    expect(hasCmdFlow(r)).toBe(true);
+  });
+
+  it('negative: typescript export default = { runJob } with arbitrary params stays gated', async () => {
+    const code = `import { exec } from 'child_process';
+function runJob(a, b) { exec('ls ' + a, () => {}); }
+export default = { runJob };
+`;
+    const r = await analyze(code, 'run_job.ts', 'typescript');
+    expect(hasCmdFlow(r)).toBe(false);
+  });
+
   it('rust #[post] handler with DTO param reaches command_injection', async () => {
     const code = `use std::process::Command;
 
