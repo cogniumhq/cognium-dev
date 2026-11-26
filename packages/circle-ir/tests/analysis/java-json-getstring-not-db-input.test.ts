@@ -4,6 +4,10 @@
  * reading JSON metadata was reported as a database read. The parser also keeps
  * a sample report, with a SQL statement in it, inside a block comment; that
  * text is not a sink.
+ *
+ * The receiver-type check is scoped to the `ResultSet` rows: a Redis client
+ * typed as a `Jedis` sibling (`JedisCluster`, `UnifiedJedis`) is still a
+ * `db_input` source, and a `var` local is treated as untyped.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
@@ -46,6 +50,36 @@ public class Lookup {
 }
 `;
 
+const varResultSet = `package demo.score;
+
+import java.sql.Connection;
+import java.sql.Statement;
+
+public class VarLookup {
+    void run(Connection conn) throws Exception {
+        Statement st = conn.createStatement();
+        var rs = st.executeQuery("SELECT name FROM users");
+        String name = rs.getString("n");
+        st.execute("DELETE FROM audit WHERE who = '" + name + "'");
+    }
+}
+`;
+
+const redisRead = (clientType: string, read: string): string => `package demo.score;
+
+import java.sql.Connection;
+import java.sql.Statement;
+import redis.clients.jedis.${clientType};
+
+public class CacheLookup {
+    void run(Connection conn, ${clientType} jedis) throws Exception {
+        String name = ${read};
+        Statement st = conn.createStatement();
+        st.execute("DELETE FROM audit WHERE who = '" + name + "'");
+    }
+}
+`;
+
 describe('Java: JSON field reads are not db_input; a commented sample is not a sink', () => {
   beforeAll(async () => { await initAnalyzer(); });
 
@@ -65,6 +99,22 @@ describe('Java: JSON field reads are not db_input; a commented sample is not a s
   it('ResultSet result.getString is still a db_input source that reaches a SQL sink', async () => {
     const ir = await analyze(realDbRead, 'Lookup.java', 'java');
     expect(ir.taint.sources.some(s => s.type === 'db_input' && s.line === 11)).toBe(true);
+    expect(ir.taint.flows.some(f => f.source_type === 'db_input' && f.sink_type === 'sql_injection')).toBe(true);
+  });
+
+  it('a var ResultSet local is still a db_input source that reaches a SQL sink', async () => {
+    const ir = await analyze(varResultSet, 'VarLookup.java', 'java');
+    expect(ir.taint.sources.some(s => s.type === 'db_input' && s.line === 10)).toBe(true);
+    expect(ir.taint.flows.some(f => f.source_type === 'db_input' && f.sink_type === 'sql_injection')).toBe(true);
+  });
+
+  it.each([
+    ['JedisCluster', 'jedis.get("k")'],
+    ['JedisPooled', 'jedis.get("k")'],
+    ['UnifiedJedis', 'jedis.hget("h", "k")'],
+  ])('a %s read is still a db_input source that reaches a SQL sink', async (clientType, read) => {
+    const ir = await analyze(redisRead(clientType, read), 'CacheLookup.java', 'java');
+    expect(ir.taint.sources.some(s => s.type === 'db_input' && s.line === 9)).toBe(true);
     expect(ir.taint.flows.some(f => f.source_type === 'db_input' && f.sink_type === 'sql_injection')).toBe(true);
   });
 });

@@ -3027,12 +3027,16 @@ function matchesSourcePattern(
       } else if (
         language === 'java' &&
         pattern.type === 'db_input' &&
+        pattern.class === 'ResultSet' &&
         call.receiver_type &&
+        call.receiver_type !== 'var' &&
         !/(?:ResultSet|RowSet)$/.test(call.receiver_type)
       ) {
         // A receiver declared as another type is not a database read:
         // `JSONObject result; result.getString("path")` matched `ResultSet`
-        // by its name only and seeded JSON field reads as db_input.
+        // by its name only and seeded JSON field reads as db_input. Only the
+        // ResultSet rows: a `JedisCluster` is not a `Jedis` subtype by name.
+        // A `var` local has no written type and keeps the name match.
         return false;
       } else if (!receiverMightBeClass(call.receiver, pattern.class)) {
         // The receiver might be a variable name, not the class name
