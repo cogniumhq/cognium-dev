@@ -123,6 +123,25 @@ describe('ImportGraph', () => {
     expect(orphans).not.toContain('/src/b.ts');
   });
 
+  it('resolves extension-less imports to .mjs and .cjs modules', () => {
+    const pg = buildProject([
+      ['/src/a.ts', ['./util']],
+      ['/src/util.mjs', []],
+    ]);
+    const g = new ImportGraph(pg);
+    expect(g.edgesFrom('/src/a.ts')).toContain('/src/util.mjs');
+    expect(g.findOrphans()).not.toContain('/src/util.mjs');
+  });
+
+  it('resolves ESM .js import specifier to a .mts source file', () => {
+    const pg = buildProject([
+      ['/src/a.ts', ['./foo.js']],
+      ['/src/foo.mts', []],
+    ]);
+    const g = new ImportGraph(pg);
+    expect(g.edgesFrom('/src/a.ts')).toContain('/src/foo.mts');
+  });
+
   it('does NOT flag index/main/app/server/mod files as orphans', () => {
     const pg = buildProject([
       ['/src/index.ts', []],
