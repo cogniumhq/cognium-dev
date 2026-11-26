@@ -247,7 +247,8 @@ export function generateFindings(
       // Measured on Juliet C#, 1,658 such pairings — 1,338 of them
       // path_traversal, and every one findings-only with no flow behind it.
       //
-      // Scoped to C# and, for Java, to request-derived sources (#387).
+      // Scoped to C# and, for Java, to request-derived and line-read sources
+      // (#387).
       //
       // Java's broader form was measured and rejected: on OWASP BenchmarkJava
       // it also removed pairings whose "source" is a `file_input` / `db_input`
@@ -260,9 +261,13 @@ export function generateFindings(
       // through a loop or a field, and both of those are flow-backed or
       // exempted below, so that direction is safe to drop. Java
       // `pref.setPath(request.getRequestURI())` after `new Cookie(n, v)` is the
-      // shape this removes.
+      // shape this removes. Java `io_input` (`readLine`, `Scanner.next*`) read
+      // after the sink is the C# stream case above: on Juliet Java every such
+      // pairing reads from the stream the sink just opened, and OWASP
+      // BenchmarkJava has none.
       if (
-        (language === 'csharp' || (language === 'java' && source.type.startsWith('http_'))) &&
+        (language === 'csharp' ||
+          (language === 'java' && (source.type.startsWith('http_') || source.type === 'io_input'))) &&
         flowsKnown &&
         source.line > sink.line &&
         !isFlowBacked(sink.type, sink.line) &&

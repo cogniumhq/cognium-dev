@@ -7,9 +7,10 @@
  * field carries it, and both of those are flow-backed (or `interprocedural_param`
  * / field sources), which the gate leaves untouched.
  *
- * For Java the gate covers request-derived (`http_*`) sources only: pairings
- * whose source is a `file_input` / `db_input` read after the sink stand in for
- * flows the taint layer does not yet prove (#590) and are left alone.
+ * For Java the gate covers request-derived (`http_*`) and line-read
+ * (`io_input`) sources: pairings whose source is a `file_input` / `db_input`
+ * read after the sink stand in for flows the taint layer does not yet prove
+ * (#590) and are left alone.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
@@ -143,5 +144,52 @@ public class Reader {
     expect(legacy.findings.some(f => f.source.line > f.sink.line)).toBe(true);
     expect(findings.map(f => `${f.type}@${f.source.line}->${f.sink.line}`).sort())
       .toEqual(legacy.findings.map(f => `${f.type}@${f.source.line}->${f.sink.line}`).sort());
+  });
+});
+
+const CONFIG_READ = `import java.io.*;
+
+public class SettingsLoader {
+    public String load() throws IOException {
+        File file = new File("/etc/app/settings.txt");
+        FileInputStream in = new FileInputStream(file);
+        BufferedReader reader = new BufferedReader(new InputStreamReader(in, "UTF-8"));
+        String line = reader.readLine();
+        reader.close();
+        return line;
+    }
+}
+`;
+
+const READ_THEN_OPEN = `import java.io.*;
+
+public class ChainedLoader {
+    public String load(BufferedReader index) throws IOException {
+        String name = index.readLine();
+        FileInputStream in = new FileInputStream(new File(name));
+        BufferedReader reader = new BufferedReader(new InputStreamReader(in, "UTF-8"));
+        return reader.readLine();
+    }
+}
+`;
+
+describe('#387 Java: a line read after the stream its sink opened does not pair with that sink', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('drops the io_input readLine -> earlier FileInputStream pairing (source 8 -> sink 6)', async () => {
+    const { flows, findings } = await run(CONFIG_READ, 'SettingsLoader.java');
+    expect(flows).toHaveLength(0);
+    const backwards = findings.filter(f => f.source.line > f.sink.line);
+    expect(backwards.map(f => `${f.type}@${f.source.line}->${f.sink.line}`)).toEqual([]);
+  });
+
+  it('keeps a line read before the sink it reaches', async () => {
+    const { findings } = await run(READ_THEN_OPEN, 'ChainedLoader.java');
+    expect(findings.some(f => f.source.line === 5 && f.sink.line === 6)).toBe(true);
+  });
+
+  it('legacy 8-arg callers keep the io_input backwards pairing', async () => {
+    const legacy = await run(CONFIG_READ, 'SettingsLoader.java', false);
+    expect(legacy.findings.some(f => f.source.type === 'io_input' && f.source.line > f.sink.line)).toBe(true);
   });
 });
