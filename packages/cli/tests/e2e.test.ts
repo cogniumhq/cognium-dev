@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { resolve, join } from 'path';
-import { writeFileSync, unlinkSync, existsSync, mkdtempSync, mkdirSync, rmSync } from 'fs';
+import { writeFileSync, unlinkSync, existsSync, mkdtempSync, mkdirSync, rmSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -162,6 +162,46 @@ describe('files not fully analysed', () => {
     const { stdout } = await run('scan', join(slowDir, 'big.sh'), '-f', 'sarif', '-q', '--file-timeout-ms', '1');
     const n = JSON.parse(stdout).runs[0].invocations[0].toolExecutionNotifications[0];
     expect(n.properties.reason).toBe('file-timeout');
+  }, 30_000);
+});
+
+// ─── #1306: a file that cannot be read is reported, not fatal ───────────────
+
+describe('unreadable file in a directory scan', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cognium-unreadable-'));
+  const locked = join(dir, 'Locked.java');
+  writeFileSync(join(dir, 'Open.java'), 'public class Open {\n  int x() { return 1; }\n}\n');
+  writeFileSync(locked, 'public class Locked {\n  int y() { return 2; }\n}\n');
+  chmodSync(locked, 0o000);
+  afterAll(() => {
+    chmodSync(locked, 0o644);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  // root reads a mode-000 file anyway, so there is nothing to test.
+  const asRoot = process.getuid?.() === 0;
+
+  test.skipIf(asRoot)('SARIF names it as not analysed and the run is unsuccessful; the scan does not abort', async () => {
+    const { stdout, stderr, exitCode } = await run('scan', dir, '-f', 'sarif');
+    expect(exitCode).toBe(0);
+    const inv = JSON.parse(stdout).runs[0].invocations[0];
+    expect(inv.executionSuccessful).toBe(false);
+    expect(inv.toolExecutionNotifications).toHaveLength(1);
+    const n = inv.toolExecutionNotifications[0];
+    expect(n.level).toBe('error');
+    expect(n.properties.reason).toBe('analysis-error');
+    expect(n.message.text).toContain('could not read the file');
+    expect(n.locations[0].physicalLocation.artifactLocation.uri).toEndWith('Locked.java');
+    expect(stderr).toContain('1 not analysed');
+  }, 30_000);
+
+  test.skipIf(asRoot)('JSON keeps the readable file and counts the unreadable one as an error', async () => {
+    const { stdout } = await run('scan', dir, '-f', 'json', '-q');
+    const parsed = JSON.parse(stdout);
+    expect(parsed.summary.errors).toBe(1);
+    expect(parsed.summary.executionSuccessful).toBe(false);
+    const byName = (name: string) => parsed.results.find((r: { file: string }) => r.file.endsWith(name));
+    expect(byName('Open.java').error).toBeUndefined();
+    expect(byName('Locked.java').error).toContain('could not read the file');
   }, 30_000);
 });
 

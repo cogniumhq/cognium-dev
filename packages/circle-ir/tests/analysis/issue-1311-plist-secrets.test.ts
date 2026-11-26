@@ -105,4 +105,35 @@ describe('#1311: hardcoded credentials in .plist resources', () => {
     const other = scanPlistSecrets('ios/ExpoDemo/Config.plist', googleService);
     expect(other.map((x) => [x.line, x.severity])).toEqual([[3, 'critical']]);
   });
+
+  it('downgrades a Firebase finding by its key name, not by its line', () => {
+    const apiKey = ['AIza', 'SyD3mo0000000000000000000000000000x'].join('');
+    // A one-line plist: the AWS key shares the API_KEY line and must stay critical.
+    const oneLine = `<dict><key>API_KEY</key><string>${apiKey}</string><key>AwsAccess</key><string>${AWS}</string></dict>\n`;
+    const f = scanPlistSecrets('ios/ExpoDemo/GoogleService-Info.plist', oneLine);
+    expect(f.length).toBeGreaterThan(0);
+    for (const x of f) {
+      expect([x.line, x.severity, x.level]).toEqual([1, 'critical', 'error']);
+      expect(x.message).not.toMatch(/Firebase/);
+    }
+  });
+
+  it('names the identifier in the Firebase note and asks for key restrictions only on API_KEY', () => {
+    const apiKey = ['AIza', 'SyD3mo0000000000000000000000000000x'].join('');
+    // A real CLIENT_ID value is not reported; a provider-shaped one exercises the message.
+    const clientId = ['AIza', 'SyC1ient00000000000000000000000000y'].join('');
+    const googleService = `<dict>
+  <key>API_KEY</key>
+  <string>${apiKey}</string>
+  <key>CLIENT_ID</key>
+  <string>${clientId}</string>
+</dict>
+`;
+    const f = scanPlistSecrets('ios/ExpoDemo/GoogleService-Info.plist', googleService);
+    const byLine = new Map(f.map((x) => [x.line, x.message]));
+    expect(byLine.get(3)).toBe(
+      'Firebase client identifier `API_KEY` in GoogleService-Info.plist: it ships in the app and is not a secret; check that the API key is restricted',
+    );
+    expect(byLine.get(5)).toBe('Firebase client identifier `CLIENT_ID` in GoogleService-Info.plist: it ships in the app and is not a secret');
+  });
 });
