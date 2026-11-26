@@ -46,7 +46,7 @@
   "packages/circle-ir/src/analysis/rust-literal-guard-rebind.ts": 2,
   "packages/circle-ir/src/analysis/rust-literal-guard.ts": 10,
   "packages/circle-ir/src/analysis/sbom.ts": 15,
-  "packages/circle-ir/src/analysis/scalar-derivation.ts": 16,
+  "packages/circle-ir/src/analysis/scalar-derivation.ts": 18,
   "packages/circle-ir/src/analysis/taint-matcher.ts": 39,
   "packages/circle-ir/src/analysis/taint-propagation.ts": 5,
   "packages/circle-ir/src/core/extractors/calls.ts": 4,
