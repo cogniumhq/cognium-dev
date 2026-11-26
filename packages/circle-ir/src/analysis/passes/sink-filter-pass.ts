@@ -286,6 +286,17 @@ const OS_EXEC_RECEIVER_RE =
 const JAVA_STDOUT_PRINT_RE =
   /\bSystem\s*\.\s*(?:out|err)\s*\.\s*(?:println|print|printf|write|append)\s*\(/;
 
+// Stage 15e, second shape — the same print through a variable. A CLI tool
+// prints via a `PrintStream ps` parameter, a `PrintStream` field (a small file
+// logger) or its own `Logger out`. The receiver type resolves, so `sink.class`
+// names it. `java.io.PrintStream` writes to a console or a file, and a logger
+// to a log; neither is an HTML document. A `PrintStream` can wrap the servlet
+// response's output stream, so any `getOutputStream()` in the file keeps them.
+const JAVA_NON_HTML_PRINT_RECEIVERS: ReadonlySet<string> = new Set([
+  'PrintStream', 'Logger', 'Log',
+]);
+const JAVA_RESPONSE_OUTPUT_STREAM_RE = /\bgetOutputStream\s*\(/;
+
 // ---------------------------------------------------------------------------
 // Stage 11 — Java command_injection (CWE-78) FP reduction.
 // (cognium-dev #179 Sink 1 — Sprint 44)
@@ -4111,10 +4122,18 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     // and an unresolved real writer print would lose the latter. The sink
     // carries no column, and every other stage here judges on line text, so
     // this follows the existing convention rather than inventing a new one.
+    //
+    // A sink WITH a resolved class carries the receiver's type. It is dropped
+    // only when that type is a PrintStream or a logger and the file never
+    // opens the response's output stream (JAVA_NON_HTML_PRINT_RECEIVERS).
     if (language === 'java') {
       const sourceLines = ctx.code.split('\n');
+      const writesResponseStream = JAVA_RESPONSE_OUTPUT_STREAM_RE.test(ctx.code);
       filtered = filtered.filter(sink => {
-        if (sink.type !== 'xss' || sink.class !== undefined) return true;
+        if (sink.type !== 'xss') return true;
+        if (sink.class !== undefined) {
+          return writesResponseStream || !JAVA_NON_HTML_PRINT_RECEIVERS.has(sink.class);
+        }
         return !JAVA_STDOUT_PRINT_RE.test(sourceLines[sink.line - 1] ?? '');
       });
     }
