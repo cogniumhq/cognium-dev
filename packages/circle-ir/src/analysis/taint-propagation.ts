@@ -726,15 +726,14 @@ function isJsonValueTransform(san: TaintSanitizer): boolean {
 function withoutJsonValueTransforms(
   sanitizersByLine: Map<number, TaintSanitizer[]>,
 ): Map<number, TaintSanitizer[]> {
-  let out: Map<number, TaintSanitizer[]> | undefined;
+  const hasJson = [...sanitizersByLine.values()].some(sans => sans.some(isJsonValueTransform));
+  if (!hasJson) return sanitizersByLine;
+  const out = new Map<number, TaintSanitizer[]>();
   for (const [line, sans] of sanitizersByLine) {
-    if (!sans.some(isJsonValueTransform)) continue;
-    out ??= new Map(sanitizersByLine);
     const kept = sans.filter(s => !isJsonValueTransform(s));
-    if (kept.length === 0) out.delete(line);
-    else out.set(line, kept);
+    if (kept.length > 0) out.set(line, kept);
   }
-  return out ?? sanitizersByLine;
+  return out;
 }
 
 /**
