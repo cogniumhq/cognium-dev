@@ -426,4 +426,99 @@ describe('cognium-dev#1305 E4 — absolute-path and `..`-segment guard', () => {
       expect(await pathTraversalFlows(code), split).toHaveLength(0);
     }
   });
+  // #1416 re-review 5: TypeScript parameter lists and destructuring that the old line-by-line scan missed.
+  const tsShadows: Array<[string, string[]]> = [
+    ['a method with a return type', [
+      "import fs from 'fs';",
+      "import { isAbsolute, join } from 'path';",
+      "const ROOT = '/srv/data';",
+      'export class S {',
+      '  serve(join: (a: string, b: string) => string): Buffer {',
+      '    const name = process.argv[2];',
+      "    if (isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      '    return fs.readFileSync(join(ROOT, name));',
+      '  }',
+      '}',
+    ]],
+    ['an arrow with a return type', [
+      ...head,
+      'export const serve = (path: { join(a: string, b: string): string }): Buffer => {',
+      '  const name = process.argv[2];',
+      "  if (path.isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      '  return fs.readFileSync(path.join(ROOT, name));',
+      '};',
+    ]],
+    ['a parameter list over several lines', [
+      "import fs from 'fs';",
+      "import { isAbsolute, join } from 'path';",
+      "const ROOT = '/srv/data';",
+      'export function serve(',
+      '  join: (a: string, b: string) => string,',
+      '  extra: number,',
+      ') {',
+      '  const name = process.argv[2];',
+      "  if (isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      '  return fs.readFileSync(join(ROOT, name));',
+      '}',
+    ]],
+    ['a generic function', [
+      "import fs from 'fs';",
+      "import { isAbsolute, join } from 'path';",
+      "const ROOT = '/srv/data';",
+      'function serve<T>(join: (a: string, b: string) => string, t: T) {',
+      '  const name = process.argv[2];',
+      "  if (isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      '  return fs.readFileSync(join(ROOT, name));',
+      '}',
+    ]],
+    ['destructuring over several lines', [
+      "import fs from 'fs';",
+      "import { isAbsolute, join } from 'path';",
+      "const ROOT = '/srv/data';",
+      'function serve(h: { join: (a: string, b: string) => string }) {',
+      '  const {',
+      '    join,',
+      '  } = h;',
+      '  const name = process.argv[2];',
+      "  if (isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      '  return fs.readFileSync(join(ROOT, name));',
+      '}',
+    ]],
+    ['a parameter after a regex literal with a lone quote', [
+      "import fs from 'fs';",
+      "import { isAbsolute, join } from 'path';",
+      "const ROOT = '/srv/data';",
+      "const quote = /'/;",
+      'function serve(join: (a: string, b: string) => string) {',
+      '  const name = process.argv[2];',
+      "  if (isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      '  return fs.readFileSync(join(ROOT, name));',
+      '}',
+    ]],
+  ];
+
+  for (const [shape, lines] of tsShadows) {
+    it(`recall: ${shape} that declares a path name again still reports`, async () => {
+      expect(await pathTraversalFlows(lines.join('\n'))).toHaveLength(1);
+    });
+  }
+
+  it('the same TypeScript shapes with no shadowing are still credited', async () => {
+    for (const fn of [
+      ['export class S {', '  serve(req: { q: string }): Buffer {'],
+      ['export const serve = (req: { q: string }): Buffer => {'],
+      ['export function serve(', '  req: { q: string },', '  extra: number,', ') {'],
+      ['function serve<T>(req: { q: string }, t: T) {'],
+    ]) {
+      const code = [
+        ...head,
+        ...fn,
+        '  const name = process.argv[2];',
+        "  if (path.isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+        '  return fs.readFileSync(path.join(ROOT, name));',
+        ...(fn[0] === 'export class S {' ? ['  }', '}'] : ['}']),
+      ].join('\n');
+      expect(await pathTraversalFlows(code), fn.join(' ')).toHaveLength(0);
+    }
+  });
 });

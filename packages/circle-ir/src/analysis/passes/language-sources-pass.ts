@@ -8605,12 +8605,15 @@ function addBindingNames(target: string, out: string[], depth = 0): void {
   if (id !== undefined) out.push(id);
 }
 
-/** Adds the names a parameter list (the text inside its parentheses) binds. */
+/** Adds the names a parameter list (the text inside its parentheses) binds; TS parameter-property modifiers are skipped. */
 function addParameterNames(params: string, out: string[]): void {
-  for (const p of splitTopLevel(params, ',')) addBindingNames(splitTopLevel(p, '=')[0], out);
+  for (const p of splitTopLevel(params, ',')) {
+    const t = p.trim().replace(/^(?:(?:public|private|protected|readonly|override)\s+)+/, '');
+    addBindingNames(splitTopLevel(t, '=')[0], out);
+  }
 }
 
-/** Each `(` of a line mapped to the `)` that closes it, in one pass that skips quoted strings. */
+/** Each `(` of the text mapped to the `)` that closes it, in one pass that skips quoted strings. */
 function parenPairs(line: string): Map<number, number> {
   const pairs = new Map<number, number>();
   const open: number[] = [];
@@ -8638,17 +8641,133 @@ function endsWithFunctionKeyword(text: string): boolean {
 const JS_BLOCK_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'with', 'return', 'typeof', 'await', 'function']);
 
 /**
- * Every name a line declares (#1416 re-review 4): `const` / `let` / `var` targets, destructuring
- * included; `function` and `class` names; the parameters of functions, arrows, methods and
- * `catch`; import bindings. A plain scan: it may also list a name that is not declared (that
- * only costs a credit), but a declaration on one line is not missed.
+ * The file text the declaration scan reads (#1416 re-review 5): comments and the contents of
+ * quoted strings and template literals blanked to spaces, newlines kept, and a `\x` escape
+ * outside a string (in a regex literal) blanked, so no bracket or quote in them is counted.
+ * A `'` or `"` string ends at the end of its line, and a quote left open (`/'/`) is blanked.
  */
-function jsDeclaredNames(line: string): string[] {
+function jsDeclarationText(code: string): string {
+  const c = code.split('');
+  const blank = (from: number, to: number): void => {
+    for (let k = from; k < to && k < c.length; k++) if (c[k] !== '\n') c[k] = ' ';
+  };
+  for (let k = 0; k < c.length; k++) {
+    const ch = c[k];
+    if (ch === '\\') {
+      blank(k, k + 2);
+      k++;
+    } else if (ch === "'" || ch === '"' || ch === '`') {
+      const lineEnd = ch === '`' ? '`' : '\n';
+      let e = k + 1;
+      for (; e < c.length && c[e] !== ch && c[e] !== lineEnd; e++) if (c[e] === '\\') e++;
+      // an unclosed quote is blanked too, so every quote left in the text pairs on its line
+      blank(c[e] === ch ? k + 1 : k, e);
+      k = e;
+    } else if (ch === '/' && c[k + 1] === '/') {
+      const e = code.indexOf('\n', k);
+      blank(k, e < 0 ? c.length : e);
+      k = e < 0 ? c.length : e;
+    } else if (ch === '/' && c[k + 1] === '*') {
+      const e = code.indexOf('*/', k + 2);
+      blank(k, e < 0 ? c.length : e + 2);
+      k = e < 0 ? c.length : e + 1;
+    }
+  }
+  return c.join('');
+}
+
+/** The index of the first non-blank character at or after `k` (`text.length` if none). */
+function skipBlank(text: string, k: number): number {
+  while (k < text.length && /\s/.test(text[k])) k++;
+  return k;
+}
+
+/**
+ * The end of a `const` / `let` / `var` declarator list that starts at `from`: its first `;` or
+ * unbalanced closing bracket, or a line break outside brackets that neither follows nor precedes
+ * a `,` or `=`. Brackets may span lines, so `const {⏎ join,⏎ } = h` is read whole.
+ */
+function declarationEnd(text: string, from: number): number {
+  let depth = 0;
+  for (let k = from; k < text.length; k++) {
+    const ch = text[k];
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (--depth < 0) return k;
+    } else if (depth === 0 && ch === ';') return k;
+    else if (depth === 0 && ch === '\n') {
+      const prev = text.slice(from, k).trimEnd().slice(-1);
+      const next = text.charAt(skipBlank(text, k));
+      if (prev !== ',' && prev !== '=' && next !== ',' && next !== '=') return k;
+    }
+  }
+  return text.length;
+}
+
+/** How far past a `)` a return type is read before the scan gives up. */
+const JS_TYPE_WINDOW = 2000;
+
+/**
+ * Where the body or arrow after a parameter list's `)` at `close` starts: the `{` or `=>` that
+ * follows, after an optional TypeScript return type (`: T`, `: Promise<{ a: string }>`,
+ * `: (a: string) => string`); -1 when none follows. A type may span lines inside brackets; a
+ * line break outside them ends it unless the next line starts with `{`, `=>`, `|` or `&`.
+ */
+function parameterListBodyStart(text: string, close: number): number {
+  let k = skipBlank(text, close + 1);
+  if (text[k] === '{' || text.startsWith('=>', k)) return k;
+  if (text[k] !== ':') return -1;
+  let depth = 0;
+  const end = Math.min(text.length, k + JS_TYPE_WINDOW);
+  for (k++; k < end; k++) {
+    const ch = text[k];
+    if (ch === '=' && text[k + 1] === '>') {
+      if (depth === 0) return k;
+      k++;
+    } else if (ch === '(' || ch === '[' || ch === '<') depth++;
+    else if (ch === '{') {
+      if (depth === 0) return k;
+      depth++;
+    } else if (ch === ')' || ch === ']' || ch === '>' || ch === '}') {
+      if (--depth < 0) return -1;
+    } else if (depth === 0 && (ch === ';' || ch === ',' || ch === '=')) return -1;
+    else if (depth === 0 && ch === '\n') {
+      const next = skipBlank(text, k);
+      if (!['{', '|', '&'].includes(text.charAt(next)) && !text.startsWith('=>', next)) return -1;
+    }
+  }
+  return -1;
+}
+
+/** `head` (the text before a `(`) with a trailing `<…>` type-parameter list removed. */
+function withoutTypeParameters(head: string): string {
+  const t = head.trimEnd();
+  if (!t.endsWith('>')) return t;
+  let depth = 0;
+  for (let k = t.length - 1; k >= 0; k--) {
+    if (t[k] === '>' && t[k - 1] !== '=') depth++;
+    else if (t[k] === '<' && --depth === 0) return t.slice(0, k).trimEnd();
+  }
+  return t;
+}
+
+/** How far back from a `(` the scan looks for the function or method name before it. */
+const JS_HEAD_WINDOW = 400;
+
+/**
+ * Every name a file declares (#1416 re-review 5): `const` / `let` / `var` targets, destructuring
+ * included; `function` and `class` names; the parameters of functions, arrows, methods and
+ * `catch`; import bindings. It reads the whole file text with comments and string contents
+ * blanked, not line by line, so a parameter list or destructuring pattern over several lines,
+ * a TypeScript return type after `)` and `<…>` type parameters before `(` are all read. A plain
+ * scan: it may also list a name that is not declared (that only costs a credit).
+ */
+function jsDeclaredNames(code: string): string[] {
+  const text = jsDeclarationText(code);
   const out: string[] = [];
-  if (line.startsWith('import ')) {
-    const from = line.lastIndexOf(' from ');
-    let clause = (from < 0 ? '' : line.slice(7, from)).trim();
-    if (clause.startsWith('type ')) return out;
+  for (const m of text.matchAll(/^[ \t]*import\s([^;'"`]*?)\sfrom\s*['"]/gm)) {
+    let clause = m[1].replace(/\s+/g, ' ').trim();
+    if (clause.startsWith('type ')) continue;
     const brace = clause.indexOf('{');
     if (brace >= 0) {
       const close = clause.indexOf('}', brace);
@@ -8665,29 +8784,33 @@ function jsDeclaredNames(line: string): string[] {
       const id = leadingIdentifier(t.startsWith('*') ? t.slice(t.indexOf(' as ') + 4) : t);
       if (id !== undefined) out.push(id);
     }
-    return out;
   }
-  for (const m of line.matchAll(/\b(?:const|let|var)\s/g)) {
-    for (const declarator of splitTopLevel(line.slice(m.index + m[0].length), ',')) {
+  for (const m of text.matchAll(/\b(?:const|let|var)\s/g)) {
+    const from = m.index + m[0].length;
+    for (const declarator of splitTopLevel(text.slice(from, declarationEnd(text, from)), ',')) {
       addBindingNames(splitTopLevel(declarator, '=')[0], out);
     }
   }
-  for (const m of line.matchAll(/\b(?:function|class)\b/g)) {
-    const id = leadingIdentifier(line.slice(m.index + m[0].length).replace(/^\s*\*/, ''));
+  for (const m of text.matchAll(/\b(?:function|class)\b/g)) {
+    const id = leadingIdentifier(text.slice(m.index + m[0].length, m.index + m[0].length + JS_HEAD_WINDOW).replace(/^\s*\*/, ''));
     if (id !== undefined) out.push(id);
   }
-  const closeOf = parenPairs(line);
-  for (const [k, close] of closeOf) {
-    const after = line.slice(close + 1).trimStart();
-    const head = line.slice(0, k);
+  for (const [k, close] of parenPairs(text)) {
+    const head = withoutTypeParameters(text.slice(Math.max(0, k - JS_HEAD_WINDOW), k));
     const name = trailingIdentifier(head);
-    const isFunction = name === 'function' || endsWithFunctionKeyword(name === undefined ? head : head.trimEnd().slice(0, -name.length));
-    const method = name !== undefined && !JS_BLOCK_KEYWORDS.has(name) && after.startsWith('{');
-    if (after.startsWith('=>') || isFunction || method) addParameterNames(line.slice(k + 1, close), out);
+    const before = name === undefined ? head : head.slice(0, -name.length).trimEnd();
+    const body = parameterListBodyStart(text, close);
+    const arrow = body >= 0 && text.startsWith('=>', body);
+    const isFunction = name === 'function' || endsWithFunctionKeyword(before);
+    // a method: `name(…) {` or `name(…): T {`; not `a ? f(x) : {…}`, `case f(x): {` or `o.f(x)`
+    const method = name !== undefined && !JS_BLOCK_KEYWORDS.has(name) && body >= 0 && !arrow &&
+      !/[.?]$/.test(before) && trailingIdentifier(before) !== 'case';
+    if (arrow || isFunction || method) addParameterNames(text.slice(k + 1, close), out);
   }
-  for (let k = line.indexOf('=>'); k >= 0; k = line.indexOf('=>', k + 2)) {
-    const id = trailingIdentifier(line.slice(0, k));
-    if (id !== undefined && !line.slice(0, k).trimEnd().endsWith(')')) out.push(id);
+  for (let k = text.indexOf('=>'); k >= 0; k = text.indexOf('=>', k + 2)) {
+    const before = text.slice(Math.max(0, k - JS_HEAD_WINDOW), k);
+    const id = trailingIdentifier(before);
+    if (id !== undefined && !before.trimEnd().endsWith(')')) out.push(id);
   }
   return out;
 }
@@ -8702,12 +8825,7 @@ function jsDeclaredNames(line: string): string[] {
 function jsPathBindings(lines: string[]): JsPathBindings {
   const b: JsPathBindings = { modules: new Set(), builders: new Set(), constants: new Map() };
   const declared = new Map<string, number>();
-  for (const raw of lines) {
-    const trimmed = raw.trim();
-    if (!trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('/*')) {
-      for (const n of jsDeclaredNames(trimmed)) declared.set(n, (declared.get(n) ?? 0) + 1);
-    }
-  }
+  for (const n of jsDeclaredNames(lines.join('\n'))) declared.set(n, (declared.get(n) ?? 0) + 1);
   for (const raw of lines) {
     const line = raw.trim().replace(/;$/, '').trimEnd();
     if (line.startsWith('import ')) {
