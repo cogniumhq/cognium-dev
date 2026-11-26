@@ -265,7 +265,7 @@ export class CrossFileResolver {
     { file: string; line: number; type: string; methodName: string }
   > = new Map();
 
-  /** `${typeFqn}.${fieldName}` → static getter method FQN (`…​.last`). */
+  /** `${typeFqn}.${fieldName}` → static getter method FQN (e.g. `ShadowState.last`). */
   private javaStaticFieldGetters: Map<string, string> = new Map();
 
   /** Wrapper static getter FQN → canonical getter FQN it delegates to. */
