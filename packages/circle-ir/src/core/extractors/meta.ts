@@ -8,17 +8,18 @@ import type { SupportedLanguage } from '../parser.js';
 import { findNodes } from '../parser.js';
 
 /**
- * Extract metadata from source code.
+ * Extract metadata from source code. `tree` is `null` when the language has
+ * no grammar (#1307); the package name then stays unset.
  */
 export function extractMeta(
   code: string,
-  tree: Tree,
+  tree: Tree | null,
   filePath: string,
   language: SupportedLanguage
 ): Meta {
   const loc = countLinesOfCode(code);
   const hash = computeHash(code);
-  const pkg = extractPackage(tree, language);
+  const pkg = tree ? extractPackage(tree, language) : null;
 
   return {
     circle_ir: '3.0',

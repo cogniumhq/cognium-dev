@@ -5,7 +5,7 @@
  */
 
 import { Parser, Language, Tree, Node } from 'web-tree-sitter';
-import type { SupportedLanguage } from '../types/index.js';
+import type { ParseErrorLocation, SupportedLanguage } from '../types/index.js';
 import { stabilizeTypeScriptConditionalDefaults } from './ts-grammar-workarounds.js';
 
 // Lazy-loaded Node.js modules for WASM path resolution
@@ -281,26 +281,31 @@ export async function parse(
  * top-level `analyze()` can attach to the IR so consumers can distinguish
  * "no findings" from "no findings because half the file didn't parse".
  *
- * Locations are capped at 50 entries to bound memory on pathological inputs.
+ * Locations are capped at the first 50 in source order to bound memory on
+ * pathological inputs.
+ * Each location carries the ERROR / MISSING node's span (cognium-dev#1307).
  */
 export function extractParseStatus(tree: Tree): {
+  state: 'complete' | 'partial';
   success: boolean;
   has_errors: boolean;
   error_count: number;
-  error_locations: Array<{ line: number; column: number }>;
+  error_locations: ParseErrorLocation[];
 } {
   const root = tree.rootNode;
   // Fast path: no errors anywhere in the tree — skip the full walk.
   if (!root.hasError) {
-    return { success: true, has_errors: false, error_count: 0, error_locations: [] };
+    return { state: 'complete', success: true, has_errors: false, error_count: 0, error_locations: [] };
   }
 
   const MAX_LOCATIONS = 50;
-  const locations: Array<{ line: number; column: number }> = [];
+  const locations: ParseErrorLocation[] = [];
   let errorCount = 0;
 
-  // Iterative DFS using a stack — avoids recursion limits on deeply nested
-  // trees that already failed parsing.
+  // Iterative pre-order DFS using a stack — avoids recursion limits on deeply
+  // nested trees that already failed parsing. Children are pushed last-first
+  // so they are popped in source order, and the 50-entry cap keeps the first
+  // 50 errors of the file rather than an arbitrary 50.
   const stack: Node[] = [root];
   while (stack.length > 0) {
     const node = stack.pop()!;
@@ -310,12 +315,14 @@ export function extractParseStatus(tree: Tree): {
         locations.push({
           line: node.startPosition.row + 1,
           column: node.startPosition.column,
+          end_line: node.endPosition.row + 1,
+          end_column: node.endPosition.column,
         });
       }
     }
     // Only descend into subtrees that themselves carry errors — saves a
     // huge amount of walking on otherwise-clean files with one bad region.
-    for (let i = 0; i < node.childCount; i++) {
+    for (let i = node.childCount - 1; i >= 0; i--) {
       const child = node.child(i);
       if (child && (child.hasError || child.isMissing)) {
         stack.push(child);
@@ -323,7 +330,11 @@ export function extractParseStatus(tree: Tree): {
     }
   }
 
+  // Pre-order already yields source order; the sort is a cheap guard.
+  locations.sort((a, b) => a.line - b.line || a.column - b.column);
+
   return {
+    state: 'partial',
     success: false,
     has_errors: true,
     error_count: errorCount,
@@ -505,6 +516,23 @@ async function getDefaultLanguagePath(language: SupportedLanguage): Promise<stri
  */
 export function isInitialized(): boolean {
   return parserInitialized;
+}
+
+/**
+ * `SupportedLanguage` values with no grammar in `wasm/` (#1307). They parse
+ * only when the caller supplies one through `languagePaths` or
+ * `languageModules`.
+ */
+const LANGUAGES_WITHOUT_BUNDLED_GRAMMAR: ReadonlySet<SupportedLanguage> = new Set<SupportedLanguage>(['c', 'cpp']);
+
+/**
+ * Whether `parse()` has a grammar for `language`: one ships in `wasm/`, or the
+ * caller configured one in `initParser()`.
+ */
+export function hasGrammar(language: SupportedLanguage): boolean {
+  return !LANGUAGES_WITHOUT_BUNDLED_GRAMMAR.has(language)
+    || configuredLanguageModules[language] !== undefined
+    || configuredLanguagePaths[language] !== undefined;
 }
 
 /**

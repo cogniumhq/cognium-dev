@@ -61,6 +61,7 @@ import {
   parse,
   disposeTree,
   extractParseStatus,
+  hasGrammar,
   extractMeta,
   extractTypes,
   extractCalls,
@@ -1127,6 +1128,12 @@ async function analyzeFile(
     }
   };
 
+  // #1307: C and C++ are `SupportedLanguage` values with no bundled grammar.
+  // Report the file as unsupported instead of throwing ENOENT on the wasm.
+  if (!hasGrammar(parseGrammar)) {
+    return unsupportedLanguageIR(code, filePath, language);
+  }
+
   const tParse = phaseStart();
   const tree = await parse(code, parseGrammar);
   phaseEnd('parse', tParse);
@@ -1204,6 +1211,14 @@ async function analyzeFile(
     }
   } else {
     types = extractTypes(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
+  }
+  // cognium-dev#1307 — keep the declarations a partial parse folded into an
+  // ERROR node (JS / TS) or into an unclosed method body (Java).
+  if (parseStatus.has_errors) {
+    const { recoverPartialParseTypes } = await import('./core/partial-parse-recovery.js');
+    types = await recoverPartialParseTypes(tree, code, language, parseGrammar, types, {
+      navigationTypes: options.navigationTypes,
+    });
   }
   phaseEnd('extractTypes', tTypes);
   checkDeadline('extractTypes');
@@ -1616,6 +1631,34 @@ async function analyzeFile(
   } finally {
     disposeTree(tree);
   }
+}
+
+/**
+ * Empty IR for a file whose language has no grammar (#1307), with
+ * `parse_status.state: 'unsupported'` so callers can tell it apart from a
+ * clean file with no findings.
+ */
+function unsupportedLanguageIR(code: string, filePath: string, language: SupportedLanguage): CircleIR {
+  return {
+    meta: extractMeta(code, null, filePath, language),
+    types: [],
+    calls: [],
+    cfg: { blocks: [], edges: [] },
+    dfg: { defs: [], uses: [] },
+    taint: { sources: [], sinks: [] },
+    imports: [],
+    exports: [],
+    unresolved: [],
+    enriched: {},
+    parse_status: {
+      state: 'unsupported',
+      reason: `no ${language} grammar is available`,
+      success: false,
+      has_errors: false,
+      error_count: 0,
+      error_locations: [],
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

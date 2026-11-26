@@ -1295,6 +1295,16 @@ export interface CircleIR {
  */
 export interface ParseStatus {
   /**
+   * `complete`: parsed without ERROR or MISSING nodes. `partial`: parsed with
+   * recovered errors, so IR may be incomplete. `unsupported`: not parsed at
+   * all because no grammar is available for the language (#1307); every IR
+   * field is empty and `reason` says why. Set on every `analyze()` result;
+   * optional only so hand-built statuses stay valid.
+   */
+  state?: 'complete' | 'partial' | 'unsupported';
+  /** Why the file was not fully parsed. Set when `state` is `unsupported`. */
+  reason?: string;
+  /**
    * `true` when tree-sitter parsed the file without any ERROR or MISSING
    * nodes. Equivalent to `!tree.rootNode.hasError`.
    */
@@ -1313,10 +1323,25 @@ export interface ParseStatus {
   error_count: number;
   /**
    * 1-based line / 0-based column of each ERROR or MISSING node, in
-   * tree-walk order, capped at 50 entries to bound memory. Lets consumers
+   * source order, capped at the first 50 to bound memory. Lets consumers
    * highlight specific lines without re-walking the tree.
    */
-  error_locations: Array<{ line: number; column: number }>;
+  error_locations: ParseErrorLocation[];
+}
+
+/**
+ * Where one ERROR or MISSING node sits. `end_line` / `end_column` give the
+ * node's span (cognium-dev#1307); a MISSING node has an empty span.
+ */
+export interface ParseErrorLocation {
+  /** 1-based start line. */
+  line: number;
+  /** 0-based start column. */
+  column: number;
+  /** 1-based end line. */
+  end_line?: number;
+  /** 0-based end column (exclusive). */
+  end_column?: number;
 }
 
 /**
