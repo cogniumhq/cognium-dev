@@ -2,3 +2,4 @@
 # linguist-vendored only: no eol, binary, diff or filter change.
 bench/** linguist-vendored
 .claude/** linguist-vendored
+packages/circle-ir/wasm/** linguist-vendored
