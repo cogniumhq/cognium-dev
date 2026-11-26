@@ -1060,9 +1060,25 @@ function resolveJavaCallTargets(
   const name = call.method_name;
   const declares = (t: TypeInfo): boolean => t.methods.some(m => m.name === name);
   let owners: TypeInfo[] = [];
-  if (call.receiver_type) {
-    const rt = call.receiver_type;
+  // `receiver_type` is the declared type text as written, so it is not always
+  // a type: `var`, or a type variable (`R runner`). `var` says nothing, and a
+  // type variable stands for its bound when the bound is known.
+  const declared = call.receiver_type === 'var' ? null : call.receiver_type;
+  const bound = declared ? javaTypeVariableBound(declared, call.location.line, types) : undefined;
+  const rt = bound === undefined ? declared : bound && javaErasure(bound).base;
+  if (rt) {
     owners = types.filter(t => declares(t) && (t.name === rt || (t.package !== null && `${t.package}.${t.name}` === rt)));
+    // A receiver declared as a type that no type of this file is, extends or
+    // implements (`DocumentBuilder docBuilder; docBuilder.parse(is)`) cannot
+    // dispatch to a method of this file, whatever its name. Here a dropped
+    // edge is preferred over a wrong one, but only for a type resolved through
+    // an import or `java.lang` (`receiver_type_fqn`): a same-package type of
+    // another file, or a type variable whose bound is unknown, may still be a
+    // supertype of a class here, so it binds by name as before. Supertypes are
+    // read one level deep, from the `extends` / `implements` of this file's
+    // own classes.
+    if (owners.length === 0 && bound === undefined && call.receiver_type_fqn
+      && !types.some(t => javaTypeIsOrInherits(t, rt))) return [];
   }
   if (owners.length === 0 && call.receiver) {
     const first = types.find(declares);
@@ -1084,6 +1100,32 @@ function resolveJavaCallTargets(
     if (node && !out.includes(node)) out.push(node);
   }
   return out;
+}
+
+/**
+ * The bound of `name` when it is a type variable of a method or type around
+ * `line` (innermost first): its leftmost bound as written, `null` when it has
+ * none, `undefined` when `name` is not a type variable there. Type variables
+ * are known only under `navigationTypes`.
+ */
+function javaTypeVariableBound(name: string, line: number, types: TypeInfo[]): string | null | undefined {
+  const within = (x: { start_line: number; end_line: number }) => line >= x.start_line && line <= x.end_line;
+  const scopes: Array<{ start_line: number; end_line: number; type_parameters?: string[]; type_parameter_bounds?: Record<string, string> }> = [];
+  for (const t of types) {
+    if (!within(t)) continue;
+    scopes.push(t);
+    for (const m of t.methods) if (within(m)) scopes.push(m);
+  }
+  scopes.sort((a, b) => (a.end_line - a.start_line) - (b.end_line - b.start_line));
+  const scope = scopes.find(x => x.type_parameters?.includes(name));
+  return scope ? scope.type_parameter_bounds?.[name] ?? null : undefined;
+}
+
+/** Is `t` the type named `typeName`, or does it name it in `extends` / `implements`? Generic arguments and package qualifiers are ignored. */
+function javaTypeIsOrInherits(t: TypeInfo, typeName: string): boolean {
+  const want = javaErasure(typeName).base;
+  if (t.name === want) return true;
+  return [t.extends, ...t.implements].some(n => !!n && javaErasure(n).base === want);
 }
 
 function selectJavaOverloads(candidates: MethodInfo[], call: CallInfo, types: TypeInfo[]): MethodInfo[] {
