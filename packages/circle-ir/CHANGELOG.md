@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **JS/TS: logging a D1 / prepared-statement write metadata object is no longer `log_injection` (Fixes #1442).** `env.DB.prepare(…).bind(v).run()` (and peers) return driver metadata, not the bound parameter bytes; taint no longer flows through that assignment into a log sink.
 - **JS/TS: React Native / Expo platform test files are test files for the test→production taint gate (Refs #1311).** `*.test.ios.ts`, `*.spec.android.js`, `*.test.native.tsx`, `*.test.web.tsx` (also `windows`, `macos`) are now recognised like `*.test.ts`, so a source in one of them no longer taints a production sink in another file (#1187). Production platform files (`app.ios.ts`) are unchanged.
 - **JS/TS: a request value made a number before it is logged (`parseInt`, `parseFloat`, `Number`, `BigInt`) is no longer `log_injection` (Refs #1305, class E2).** A number has no CR/LF, so it cannot split or forge a log entry; the four coercions now also remove `log_injection`. Everything else they removed or kept is unchanged (a parsed number stays tainted for size-sensitive consumers and, for `parseFloat`, xss). The request's own string logged beside its number is still flagged. Not yet covered: an inline `.length` inside the log call, and a caught error's own message.
 
