@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { analyze, initAnalyzer } from '../../src/analyzer.js';
-import { jsPositiveMembershipTest, jsSameLineIfCondition, jsUrlHostOf } from '../../src/analysis/passes/sink-filter-pass.js';
+import { jsPositiveMembershipTest, jsReassigns, jsSameLineIfCondition, jsUrlHostOf } from '../../src/analysis/passes/sink-filter-pass.js';
 
 const flows = (r: Awaited<ReturnType<typeof analyze>>, t: string) =>
   (r.taint.flows ?? []).filter(f => f.sink_type === t);
@@ -40,6 +40,16 @@ describe('stage 8a: a guard on the sink line, or on a host read from the value',
     ]],
     ['a one-line guard with a brace', [
       'if (ALLOWED_PREFIXES.includes(nxt)) { res.redirect(nxt); }',
+    ]],
+    ['a one-line exact-match callback', [
+      'if (ALLOWED_PREFIXES.some(p => nxt === p)) res.redirect(nxt);',
+    ]],
+    ['a one-line indexOf allow-list', [
+      'if (ALLOWED_PREFIXES.indexOf(nxt) !== -1) res.redirect(nxt);',
+    ]],
+    ['a one-line host allow-list on a let alias that is not reassigned', [
+      'let host = new URL(nxt, "https://x").hostname;',
+      'if (ALLOWED_HOSTS.has(host)) res.redirect(nxt);',
     ]],
     ['a host allow-list on new URL(value).hostname', [
       'const host = new URL(nxt, "https://x").hostname;',
@@ -89,6 +99,55 @@ describe('stage 8a: a guard on the sink line, or on a host read from the value',
     ['a one-line guard that || can bypass', [
       'if (req.query.force || ALLOWED_PREFIXES.includes(nxt)) res.redirect(nxt);',
     ]],
+    ['a callback negated by startsWith === false', [
+      'if (ALLOWED_PREFIXES.some(p => nxt.startsWith(p) === false)) res.redirect(nxt);',
+    ]],
+    ['a callback negated by startsWith == false', [
+      'if (ALLOWED_PREFIXES.some(p => nxt.startsWith(p) == false)) res.redirect(nxt);',
+    ]],
+    ['a callback negated by indexOf === -1', [
+      'if (ALLOWED_PREFIXES.some(p => nxt.indexOf(p) === -1)) res.redirect(nxt);',
+    ]],
+    ['a callback negated by indexOf < 0', [
+      'if (ALLOWED_PREFIXES.some(p => nxt.indexOf(p) < 0)) res.redirect(nxt);',
+    ]],
+    ['a callback that compares with !==', [
+      'if (ALLOWED_PREFIXES.some(p => nxt !== p)) res.redirect(nxt);',
+    ]],
+    ['a callback that is always true', [
+      'if (ALLOWED_PREFIXES.some(p => true)) res.redirect(nxt);',
+    ]],
+    ['a one-line "/" prefix test on the value', [
+      'if (nxt.startsWith("/")) res.redirect(nxt);',
+    ]],
+    ['a one-line origin prefix test on the value', [
+      'if (nxt.startsWith("https://app.example.com")) res.redirect(nxt);',
+    ]],
+    ['a one-line substring test on the value', [
+      'if (nxt.includes("example.com")) res.redirect(nxt);',
+    ]],
+    ['a one-line indexOf substring test on the value', [
+      'if (nxt.indexOf("example.com") !== -1) res.redirect(nxt);',
+    ]],
+    ['a one-line match on the value', [
+      'if (nxt.match(/example\\.com/)) res.redirect(nxt);',
+    ]],
+    ['a one-line regex test of the value', [
+      'if (/^\\//.test(nxt)) res.redirect(nxt);',
+    ]],
+    ['a host alias reassigned on its own line', [
+      'let host = new URL(nxt, "https://x").hostname;',
+      'host = "app.example.com";',
+      'if (ALLOWED_HOSTS.has(host)) res.redirect(nxt);',
+    ]],
+    ['a host alias reassigned on the let line', [
+      'let host = new URL(nxt, "https://x").hostname; host = "app.example.com";',
+      'if (ALLOWED_HOSTS.has(host)) res.redirect(nxt);',
+    ]],
+    ['a host endsWith test', [
+      'const host = new URL(nxt, "https://x").hostname;',
+      'if (host.endsWith("example.com")) res.redirect(nxt);',
+    ]],
   ];
   for (const [label, body] of unsafe) {
     for (const [file, lang] of langs) {
@@ -134,8 +193,10 @@ describe('jsPositiveMembershipTest', () => {
       'ALLOWED.includes(nxt)',
       'ALLOWED_HOSTS.has(host)',
       'A.some(p => nxt.startsWith(p))',
-      'nxt.startsWith("https://app.example.com/")',
-      '/^\\/[a-z]/.test(nxt)',
+      'A.some((p) => nxt.startsWith(p))',
+      'A.some(p => nxt === p)',
+      'A.some(p => p === nxt)',
+      'A.some(o => new URL(nxt, "https://x").origin === o)',
       'A.indexOf(nxt) !== -1',
       'A.indexOf(nxt) >= 0',
       '(A.includes(nxt))',
@@ -159,6 +220,54 @@ describe('jsPositiveMembershipTest', () => {
       'A.some(p => !nxt.startsWith(p))',
       'A.includes(nxt) ?? true',
       'ok(nxt)',
+      'A.some(p => nxt.startsWith(p) === false)',
+      'A.some(p => nxt.startsWith(p) == false)',
+      'A.some(p => nxt.indexOf(p) === -1)',
+      'A.some(p => nxt.indexOf(p) < 0)',
+      'A.some(p => nxt.indexOf(p) >= 0 || true)',
+      'A.some(p => nxt !== p)',
+      'A.some(p => nxt != p)',
+      'A.some(p => true)',
+      'A.some(p => nxt.startsWith(q))',
+      'A.some(p => nxt.endsWith(p))',
+      'A.some(isOk)',
+      'A.includes(String(nxt))',
+      'A.includes("x")',
     ]) expect(jsPositiveMembershipTest(c), c).toBe(false);
+  });
+  it('rejects a prefix, substring or regex test on the value itself', () => {
+    for (const c of [
+      'nxt.startsWith("/")',
+      'nxt.startsWith("https://app.example.com")',
+      'nxt.includes("example.com")',
+      'nxt.indexOf("example.com") !== -1',
+      'nxt.match(/example\\.com/)',
+      '/^\\//.test(nxt)',
+      '/^\\/[a-z]/.test(nxt)',
+    ]) expect(jsPositiveMembershipTest(c, ['nxt']), c).toBe(false);
+  });
+  it('rejects a test whose receiver is the value, given the values', () => {
+    expect(jsPositiveMembershipTest('nxt.includes(nxt)', ['nxt'])).toBe(false);
+    expect(jsPositiveMembershipTest('req.query.next.includes(other)', ['req.query.next'])).toBe(false);
+    expect(jsPositiveMembershipTest('A.includes(other)', ['nxt'])).toBe(false);
+    expect(jsPositiveMembershipTest('A.includes(nxt)', ['nxt'])).toBe(true);
+    expect(jsPositiveMembershipTest('A.some(p => host.startsWith(p))', ['nxt', 'host'])).toBe(true);
+  });
+});
+
+describe('jsReassigns', () => {
+  it('sees a plain or compound assignment to the name', () => {
+    expect(jsReassigns('  host = "x";', 'host')).toBe(true);
+    expect(jsReassigns('host += ".evil";', 'host')).toBe(true);
+    expect(jsReassigns('x = 1; host = y;', 'host')).toBe(true);
+    expect(jsReassigns('host++;', 'host')).toBe(true);
+    expect(jsReassigns('[host] = parts;', 'host')).toBe(true);
+  });
+  it('ignores comparisons, properties and other names', () => {
+    expect(jsReassigns('if (host === "x") ok();', 'host')).toBe(false);
+    expect(jsReassigns('url.host = "x";', 'host')).toBe(false);
+    expect(jsReassigns('hostname = "x";', 'host')).toBe(false);
+    expect(jsReassigns('const o = { host: 1 };', 'host')).toBe(false);
+    expect(jsReassigns('f(host => host);', 'host')).toBe(false);
   });
 });

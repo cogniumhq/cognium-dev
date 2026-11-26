@@ -3138,15 +3138,29 @@ export function jsSameLineIfCondition(lineText: string, method?: string): string
   return call ? lineText.slice(open[0].length, i - 1).trim() : undefined;
 }
 
+/** A name or property chain (`nxt`, `req.query.next`, `cfg?.allowed`), whole. */
+const JS_NAME_CHAIN = /^[A-Za-z_$][\w$]*(?:\s*\??\.\s*[A-Za-z_$][\w$]*)*$/;
+
+/** `cfg ?. allowed` → `cfg.allowed`, for comparing chains. */
+function jsChainKey(chain: string): string {
+  return chain.replace(/\s+/g, '').replace(/\?\./g, '.');
+}
+
 /**
- * True if an `if` condition is one positive membership test and nothing else:
- * `A.includes(v)`, `A.has(v)`, `A.some(p => v.startsWith(p))`, `/re/.test(v)`,
- * `v.match(re)`, `A.indexOf(v) !== -1` / `>= 0` / `> -1`, in any outer
- * parentheses. A negation (`!`, `=== -1`, `=== false`, `< 0`), a comparison, a
- * ternary, or `||` / `&&` / `??` anywhere in it makes the branch run for values
- * the test rejects, so it is not credited.
+ * True if an `if` condition is one positive allow-list membership test and
+ * nothing else, in any outer parentheses:
+ * `A.includes(v)`, `A.has(v)`, `A.indexOf(v) !== -1` / `>= 0` / `> -1`, and
+ * `A.some(p => …)` whose callback is exactly `v.startsWith(p)`, `v === p`,
+ * `p === v` or `new URL(v[, base]).origin|host|hostname === p`.
+ * The argument of `includes` / `has` / `indexOf` must be a bare name chain.
+ * Anything else is not credited: a negation (`!`, `=== -1`, `=== false`,
+ * `< 0`), a comparison, a ternary, or `||` / `&&` / `??` anywhere, inside the
+ * callback included, and a prefix, substring or regex test on the value itself
+ * (`v.startsWith("/")` passes `//evil.example`).
+ * With `values`, the tested name must be one of them and the receiver must not
+ * be one of them.
  */
-export function jsPositiveMembershipTest(condition: string): boolean {
+export function jsPositiveMembershipTest(condition: string, values?: string[]): boolean {
   let s = condition.trim();
   while (s.startsWith('(') && s.endsWith(')')) {
     let depth = 0, closes = -1;
@@ -3157,19 +3171,22 @@ export function jsPositiveMembershipTest(condition: string): boolean {
     if (closes !== s.length - 1) break;
     s = s.slice(1, -1).trim();
   }
-  // The receiver: a regex literal or a name chain.
-  const receiver = /^\/(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n[])+\/[a-z]*/.exec(s)?.[0]
-    ?? /^[A-Za-z_$][\w$]*(?:\s*\??\.\s*[A-Za-z_$][\w$]*)*/.exec(s)?.[0];
-  if (!receiver) return false;
-  let rest = s.slice(receiver.length);
-  if (!receiver.startsWith('/')) {
-    // The last name in the chain is the method.
-    const lastDot = receiver.lastIndexOf('.');
-    if (lastDot < 0) return false;
-    rest = receiver.slice(lastDot) + rest;
-  }
-  const call = /^\s*\.\s*(includes|has|some|startsWith|test|match|indexOf)\s*\(/.exec(rest);
+  // The receiver is a name chain; the last name in it is the method.
+  const chain = /^[A-Za-z_$][\w$]*(?:\s*\??\.\s*[A-Za-z_$][\w$]*)*/.exec(s)?.[0];
+  if (!chain) return false;
+  const lastDot = chain.lastIndexOf('.');
+  if (lastDot < 0) return false;
+  let receiver = chain.slice(0, lastDot).trim();
+  if (receiver.endsWith('?')) receiver = receiver.slice(0, -1).trim();
+  const rest = chain.slice(lastDot) + s.slice(chain.length);
+  const call = /^\.\s*(includes|has|some|indexOf)\s*\(/.exec(rest);
   if (!call) return false;
+  const keys = values?.map(jsChainKey);
+  const isValue = (c: string): boolean => {
+    const k = jsChainKey(c);
+    return keys?.some(v => k === v || k.startsWith(v + '.')) ?? false;
+  };
+  if (isValue(receiver)) return false;
   // Strings cannot hide an operator; blank them before reading the arguments.
   const tail = rest.slice(call[0].length).replace(/(['"`])(?:\\.|(?!\1)[^\\])*\1/g, '""');
   let depth = 1, i = 0;
@@ -3178,11 +3195,44 @@ export function jsPositiveMembershipTest(condition: string): boolean {
     else if (tail[i] === ')') depth--;
   }
   if (depth !== 0) return false;
-  const args = tail.slice(0, i - 1);
-  if (/!|\|\||&&|\?(?!\.)|\?\?/.test(args)) return false;
+  const args = tail.slice(0, i - 1).trim();
   const suffix = tail.slice(i).trim();
+  const tested = (c: string): boolean => JS_NAME_CHAIN.test(c) && (keys === undefined || isValue(c));
+  if (call[1] === 'some') {
+    const arrow = args.indexOf('=>');
+    if (arrow < 0 || suffix !== '') return false;
+    const p = args.slice(0, arrow).trim().replace(/^\(([^()]*)\)$/, '$1').trim();
+    if (!/^[A-Za-z_$][\w$]*$/.test(p)) return false;
+    // Spaces around punctuation go, so the shapes below can be read exactly.
+    const body = args.slice(arrow + 2).replace(/\s+/g, ' ').replace(/ ?([().,=]) ?/g, '$1').trim();
+    const sw = body.lastIndexOf('.startsWith(');
+    if (sw > 0 && body.endsWith(')')) {
+      return body.slice(sw + '.startsWith('.length, -1) === p && tested(body.slice(0, sw));
+    }
+    const sides = body.split('===');
+    if (sides.length !== 2) return false;
+    const other = sides[0] === p ? sides[1] : sides[1] === p ? sides[0] : undefined;
+    if (other === undefined) return false;
+    if (tested(other)) return true;
+    const url = /^new URL\(([A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*)(?:,(?:""|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*))?\)\.(?:origin|host|hostname)$/.exec(other);
+    return url !== null && tested(url[1]);
+  }
+  if (!tested(args)) return false;
   if (call[1] === 'indexOf') return /^(?:!==?\s*-\s*1|>=\s*0|>\s*-\s*1)$/.test(suffix);
   return suffix === '';
+}
+
+/**
+ * True if a line assigns to `name` as a whole name: `name = …`, `name += …`,
+ * `name++`, `--name`, or a destructuring target (`[name] = …`, `({ name } = o)`).
+ * Not `name === …`, `obj.name = …`, `name => …` or `{ name: 1 }`.
+ */
+export function jsReassigns(line: string, name: string): boolean {
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const whole = `(?<![\\w$.])${n}(?![\\w$])`;
+  return new RegExp(`${whole}\\s*(?:\\*\\*|<<|>>>?|\\?\\?|&&|\\|\\||[-+*/%&|^])?=(?![=>])`).test(line)
+    || new RegExp(`${whole}\\s*(?:\\+\\+|--)|(?:\\+\\+|--)\\s*${whole}`).test(line)
+    || new RegExp(`[[{][^=;]*${whole}[^=;]*[\\]}]\\s*=(?![=>])`).test(line);
 }
 
 /** True if a guard line mentions one of the sink's values as a whole name. */
@@ -3510,9 +3560,15 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         // A host read from a sink value (`const host = new URL(nxt, base).hostname`)
         // is tested in its place: an allow-list on it checks where `nxt` goes.
         const guardValues = [...sinkValues];
+        // A later assignment to the alias (`host = "app.example.com";`) drops it.
         for (let i = startLine; i < sink.line - 1 && sinkValues.length > 0; i++) {
           const host = jsUrlHostOf(sourceLines[i] ?? '');
-          if (host && sinkValues.includes(host.of)) guardValues.push(host.name);
+          if (!host || !sinkValues.includes(host.of)) continue;
+          let reassigned = false;
+          for (let j = i + 1; j < sink.line && !reassigned; j++) {
+            reassigned = jsReassigns(sourceLines[j] ?? '', host.name);
+          }
+          if (!reassigned) guardValues.push(host.name);
         }
         for (let i = startLine; i < sink.line - 1; i++) {
           const line = sourceLines[i] ?? '';
@@ -3523,11 +3579,10 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         }
         // The one-line form, `if (ALLOWED.some(p => nxt.startsWith(p))) res.redirect(nxt);`:
         // the condition must open the line's statement, lead straight into the
-        // sink call, and be one positive membership test on the value.
+        // sink call, and be one positive allow-list membership test on the value.
         const sameLineGuard = jsSameLineIfCondition(sinkLineText, sink.method);
         if (sameLineGuard !== undefined && sinkValues.length > 0
-            && jsPositiveMembershipTest(sameLineGuard)
-            && guardTestsValue(sameLineGuard, guardValues)) {
+            && jsPositiveMembershipTest(sameLineGuard, guardValues)) {
           return false;
         }
         // 8b. Sanitized via encodeURIComponent/encodeURI on the sink line.
