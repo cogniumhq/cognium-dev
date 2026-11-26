@@ -211,4 +211,71 @@ describe('#915 overwritten map read in the project phase', () => {
         String bar = c;
         return bar;`)).toBeGreaterThan(0);
   });
+
+  // A source stored into an object inside an assignment statement: the
+  // assigned local is clean, but the object now carries the source.
+  it('helper swaps the request source into an AtomicReference: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `        java.util.concurrent.atomic.AtomicReference<String> ref = new java.util.concurrent.atomic.AtomicReference<String>("");
+        String c = request.getHeader("X");
+        String old = ref.getAndSet(c);
+        String bar = ref.get();
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper swaps the map read into an AtomicReference: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        java.util.concurrent.atomic.AtomicReference<String> ref = new java.util.concurrent.atomic.AtomicReference<String>("");
+        String old = ref.getAndSet(c);
+        String bar = ref.get();
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper replaces a map entry with the map read: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        Object old = map.replace("keyA", c);
+        String bar = (String) map.get("keyA");
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper stores the map read in an array through a chained assignment: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        String[] arr = new String[1];
+        String p = arr[0] = c;
+        String bar = arr[0];
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper stores the map read in a field through a chained assignment: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        Holder h = new Holder();
+        String r = h.v = c;
+        String bar = h.v;
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper adds the map read to a list through a static call: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        java.util.List<String> l = new java.util.ArrayList<String>();
+        boolean added = java.util.Collections.addAll(l, c);
+        String bar = l.get(0);
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper passes the map read through a static call and a constructor, then returns an unrelated value: clean', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        String d = String.valueOf(c);
+        String e = new String(d.getBytes());
+        String f = java.net.URLDecoder.decode(e, "UTF-8");
+        String g = "barbarians_at_the_gate";
+        String bar = Other.wrap(g);
+        return bar;`)).toBe(0);
+  });
+
+  it('helper has "->" inside a string literal, then returns an unrelated value: clean', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        String d = c.substring(0, c.length() - 1);
+        String g = "a -> b";
+        String bar = Other.wrap(g);
+        return bar;`)).toBe(0);
+  });
 });
