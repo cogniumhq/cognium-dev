@@ -36,14 +36,38 @@ ${helperBody}
     static class Holder {
         String v;
     }
+
+    static class Store {
+        private String kept = "";
+        String remember(String s) {
+            kept = s;
+            return "ok";
+        }
+        String last() {
+            return kept;
+        }
+    }
+
+    private static final Store STORE = new Store();
 }
 `;
 
 const OTHER = `package org.example.testcode;
 
 public class Other {
+    private static String saved = "";
+
     public static String wrap(String s) {
         return s.trim();
+    }
+
+    public static String remember(String s) {
+        saved = s;
+        return "ok";
+    }
+
+    public static String last() {
+        return saved;
     }
 }
 `;
@@ -258,6 +282,39 @@ describe('#915 overwritten map read in the project phase', () => {
         java.util.List<String> l = new java.util.ArrayList<String>();
         boolean added = java.util.Collections.addAll(l, c);
         String bar = l.get(0);
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  // A static call outside a few known pure JDK methods may keep its argument
+  // in static state (`Other.remember(c)`), and an upper-case receiver may be
+  // an instance constant (`STORE`), not a class.
+  it('helper keeps the request source in a project class\'s static state: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `        String c = request.getHeader("X");
+        String k = Other.remember(c);
+        String bar = Other.last();
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper keeps the map read in a project class\'s static state: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        String k = Other.remember(c);
+        String bar = Other.last();
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper keeps the map read in an upper-case instance constant: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        String k = STORE.remember(c);
+        String bar = STORE.last();
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper swaps the map read into an AtomicReference after a char literal holding a double quote: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        java.util.concurrent.atomic.AtomicReference<String> ref = new java.util.concurrent.atomic.AtomicReference<String>("");
+        String old = '"' + ref.getAndSet(c)
+                + "y";
+        String bar = ref.get();
         return bar;`)).toBeGreaterThan(0);
   });
 

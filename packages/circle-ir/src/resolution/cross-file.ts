@@ -2247,20 +2247,54 @@ export class CrossFileResolver {
     return returns > 0;
   }
 
-  /** Java string and char literals replaced by empty ones (`"a=b"` → `""`). */
+  /**
+   * Java string and char literals replaced by empty ones (`"a=b"` → `""`), in
+   * one left-to-right pass so a quote inside the other kind (`'"'`) does not
+   * open a literal.
+   */
   private static blankJavaLiterals(text: string): string {
-    return text.replace(/"(?:[^"\\]|\\.)*"/g, '""').replace(/'(?:[^'\\]|\\.)*'/g, "''");
+    return text.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, m => m[0] + m[0]);
+  }
+
+  /**
+   * Static JDK and library methods known not to keep their arguments (#915),
+   * as `Class.method` → the class's package. A static call outside this list
+   * may store its argument in static state (`Other.remember(c)`), and an
+   * upper-case receiver may be an instance constant (`STORE.remember(c)`).
+   */
+  private static readonly PURE_STATICS: ReadonlyMap<string, string> = new Map([
+    ...['valueOf', 'format', 'join', 'copyValueOf'].map(m => [`String.${m}`, 'java.lang'] as const),
+    ...['Integer', 'Long', 'Short', 'Byte', 'Double', 'Float', 'Boolean'].flatMap(c =>
+      ['valueOf', 'toString', `parse${c === 'Integer' ? 'Int' : c}`].map(m => [`${c}.${m}`, 'java.lang'] as const)),
+    ['Objects.toString', 'java.util'],
+    ['Arrays.copyOf', 'java.util'],
+    ['Arrays.copyOfRange', 'java.util'],
+    ['Arrays.toString', 'java.util'],
+    ['URLDecoder.decode', 'java.net'],
+    ['URLEncoder.encode', 'java.net'],
+    ['Base64.encodeBase64', 'org.apache.commons.codec.binary'],
+    ['Base64.decodeBase64', 'org.apache.commons.codec.binary'],
+    ['StringEscapeUtils.escapeHtml', 'org.apache.commons.lang'],
+    ['HtmlUtils.htmlEscape', 'org.springframework.web.util'],
+  ]);
+
+  /** True when `segments.callee(…)` names a method in `PURE_STATICS`. */
+  private static isPureStatic(segments: string[], callee: string): boolean {
+    const cls = segments[segments.length - 1];
+    const pkg = CrossFileResolver.PURE_STATICS.get(`${cls}.${callee}`);
+    return pkg !== undefined && (segments.length === 1 || segments.slice(0, -1).join('.') === pkg);
   }
 
   /**
    * True when `text` (one Java statement, literals blanked) passes one of
    * `names` as an argument to a call that may keep it (#915). Accepted calls:
    * a method on one of `names` (`c.substring(1)`), and a constructor
-   * (`new String(d)`) or a static call (`String.valueOf(c)`,
-   * `java.net.URLDecoder.decode(c, "UTF-8")`) whose other arguments are not
-   * plain locals that could be written to. Any other call that takes one of
-   * `names` (`ref.getAndSet(c)`, `map.replace(k, c)`, `this.keep(c)`,
-   * `keep(c)`) counts.
+   * (`new String(d)`) or a known pure static call (`String.valueOf(c)`,
+   * `java.net.URLDecoder.decode(c, "UTF-8")`, see `PURE_STATICS`) whose other
+   * arguments are not plain locals that could be written to. Any other call
+   * that takes one of `names` (`ref.getAndSet(c)`, `map.replace(k, c)`,
+   * `this.keep(c)`, `keep(c)`, `Other.remember(c)`, `STORE.remember(c)`)
+   * counts.
    */
   private static passesToForeignCall(text: string, names: Set<string>): boolean {
     if (names.size === 0) return false;
@@ -2338,7 +2372,8 @@ export class CrossFileResolver {
       const head = text.slice(0, p);
       const isNew = head.endsWith('new') && !isId(head[head.length - 4]);
       if (!isNew && segments.length > 0 && names.has(segments[0])) continue; // a method on the value itself
-      const isStatic = !isNew && plain && segments.length > 0 && /^[A-Z]/.test(segments[segments.length - 1]);
+      const isStatic = !isNew && plain && segments.length > 0 &&
+        CrossFileResolver.isPureStatic(segments, text.slice(cs, ce));
       if (!isNew && !isStatic) return true;
       // A constructor or static call may still write into another argument
       // (`Collections.addAll(list, c)`): any other plain-local argument counts.
