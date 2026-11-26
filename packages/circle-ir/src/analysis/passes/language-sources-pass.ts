@@ -14341,6 +14341,27 @@ function maskJsLiteralsAndComments(code: string): string {
 }
 
 /**
+ * True when the call spanning `[start, end)` of masked line `i` is a whole
+ * expression statement whose value is dropped: a statement starts right
+ * before it (start of code, or after `;`, `{` or `}`) and `;` follows it.
+ * Anything else (assignment, argument, `return`, chained access, a call
+ * the line regex cut short at an inner `)`) is not treated as discarded.
+ */
+function isDiscardedJsCallStatement(
+  codeLines: string[],
+  i: number,
+  start: number,
+  end: number,
+): boolean {
+  if (!codeLines[i].slice(end).trimStart().startsWith(';')) return false;
+  let before = codeLines[i].slice(0, start).trimEnd();
+  for (let k = i - 1; before === '' && k >= 0; k--) {
+    before = codeLines[k].trimEnd();
+  }
+  return before === '' || /[;{}]$/.test(before);
+}
+
+/**
  * Sprint 89 detector B (#189) — JS insecure deserialization via
  * `JSON.parse(req.body)`.
  *
@@ -14412,6 +14433,9 @@ export function findJsJsonParseBodyFindings(
         }
       }
       if (!tainted) continue;
+      // #1332: `JSON.parse(x);` on its own only checks the syntax; with
+      // the result thrown away no parsed object reaches a property lookup.
+      if (isDiscardedJsCallStatement(codeLines, i, m.index, m.index + m[0].length)) continue;
       if (seen.has(i + 1)) continue;
       seen.add(i + 1);
       findings.push({
