@@ -28,6 +28,8 @@
  * supplies file text and repository-relative paths.
  */
 
+import { stripXmlComments } from './sbom.js';
+
 export type DeclaredOrigin =
   | 'direct'
   | 'property'
@@ -95,7 +97,10 @@ function readDeps(block: string): PomDep[] {
 }
 
 function parsePom(file: PomFile): ParsedPom {
-  let xml = file.content.replace(/<!--[\s\S]*?-->/g, '');
+  // The SBOM parser's one-pass strip: a `<!--` inside CDATA (an antrun script under
+  // <build>, which is set aside below) is text, not a comment opener that eats the
+  // declarations after it up to the next `-->`.
+  let xml = stripXmlComments(file.content, 'keep');
   for (const s of ['build', 'profiles', 'reporting']) xml = stripSection(xml, s);
 
   const managedBlock = /<dependencyManagement>([\s\S]*?)<\/dependencyManagement>/.exec(xml)?.[1] ?? '';

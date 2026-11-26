@@ -172,6 +172,12 @@ export function extractCalls(
     }
   }
 
+  // Method references (`Foo::bar`, `this::f`, `Box::new`) are call sites too.
+  for (const ref of getNodesFromCache(tree.rootNode, 'method_reference', cache)) {
+    const callInfo = extractMethodReference(ref, context);
+    if (callInfo) calls.push(callInfo);
+  }
+
   // Explicit constructor invocations (`super(…)`, `this(…)`): navigation
   // only, so the default IR the SAST passes read is unchanged.
   if (typed) {
@@ -1802,6 +1808,55 @@ function extractObjectCreation(node: Node, context: ResolutionContext, typed = f
     },
     in_method: enclosingMethod,
     resolved: true,
+    resolution,
+  };
+}
+
+/**
+ * A method reference as a call site, with its form (`CallInfo.reference_form`).
+ * `X::m` and `super::m` are named and resolved like `X.m()` and `super.m()`;
+ * `T::new` like `new T()`. Null for `T[]::new`, which creates an array.
+ */
+function extractMethodReference(node: Node, context: ResolutionContext): CallInfo | null {
+  const target = node.namedChildren[0];
+  if (!target) return null;
+  const isNew = node.children.some(c => c?.type === 'new');
+  if (isNew && target.type === 'array_type') return null;
+  const location = { line: node.startPosition.row + 1, column: node.startPosition.column };
+  const inMethod = findEnclosingMethod(node);
+  const written = getNodeText(target);
+
+  if (isNew) {
+    const { simpleName, fqn } = resolveFqn(stripGenerics(written), context);
+    return {
+      method_name: written,
+      receiver: null,
+      receiver_type: simpleName,
+      receiver_type_fqn: fqn,
+      arguments: [],
+      location,
+      in_method: inMethod,
+      reference_form: 'constructor',
+      resolved: true,
+      resolution: { status: 'resolved', target: `${written}.<init>` },
+    };
+  }
+
+  const nameNode = node.namedChildren[node.namedChildCount - 1];
+  if (!nameNode || nameNode.type !== 'identifier' || nameNode === target) return null;
+  const methodName = getNodeText(nameNode);
+  const { resolved, resolution } = resolveMethodCall(methodName, written, context);
+  const { simpleName, fqn } = resolveReceiverType(stripGenerics(written), context);
+  return {
+    method_name: methodName,
+    receiver: written,
+    receiver_type: simpleName,
+    receiver_type_fqn: fqn,
+    arguments: [],
+    location,
+    in_method: inMethod,
+    reference_form: target.type === 'super' ? 'super' : 'method',
+    resolved,
     resolution,
   };
 }

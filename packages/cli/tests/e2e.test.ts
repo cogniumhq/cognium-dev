@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { resolve, join } from 'path';
-import { writeFileSync, unlinkSync, existsSync, mkdtempSync, mkdirSync, rmSync } from 'fs';
+import { writeFileSync, unlinkSync, existsSync, mkdtempSync, mkdirSync, rmSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -163,6 +163,68 @@ describe('files not fully analysed', () => {
     const n = JSON.parse(stdout).runs[0].invocations[0].toolExecutionNotifications[0];
     expect(n.properties.reason).toBe('file-timeout');
   }, 30_000);
+});
+
+// ─── #1306: a file that cannot be read is reported, not fatal ───────────────
+
+describe('unreadable file in a directory scan', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cognium-unreadable-'));
+  const locked = join(dir, 'Locked.java');
+  writeFileSync(join(dir, 'Open.java'), 'public class Open {\n  int x() { return 1; }\n}\n');
+  writeFileSync(locked, 'public class Locked {\n  int y() { return 2; }\n}\n');
+  chmodSync(locked, 0o000);
+  afterAll(() => {
+    chmodSync(locked, 0o644);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  // root reads a mode-000 file anyway, so there is nothing to test.
+  const asRoot = process.getuid?.() === 0;
+
+  test.skipIf(asRoot)('SARIF names it as not analysed and the run is unsuccessful; the scan does not abort', async () => {
+    const { stdout, stderr, exitCode } = await run('scan', dir, '-f', 'sarif');
+    expect(exitCode).toBe(0);
+    const inv = JSON.parse(stdout).runs[0].invocations[0];
+    expect(inv.executionSuccessful).toBe(false);
+    expect(inv.toolExecutionNotifications).toHaveLength(1);
+    const n = inv.toolExecutionNotifications[0];
+    expect(n.level).toBe('error');
+    expect(n.properties.reason).toBe('analysis-error');
+    expect(n.message.text).toContain('could not read the file');
+    expect(n.locations[0].physicalLocation.artifactLocation.uri).toEndWith('Locked.java');
+    expect(stderr).toContain('1 not analysed');
+  }, 30_000);
+
+  test.skipIf(asRoot)('JSON keeps the readable file and counts the unreadable one as an error', async () => {
+    const { stdout } = await run('scan', dir, '-f', 'json', '-q');
+    const parsed = JSON.parse(stdout);
+    expect(parsed.summary.errors).toBe(1);
+    expect(parsed.summary.executionSuccessful).toBe(false);
+    const byName = (name: string) => parsed.results.find((r: { file: string }) => r.file.endsWith(name));
+    expect(byName('Open.java').error).toBeUndefined();
+    expect(byName('Locked.java').error).toContain('could not read the file');
+  }, 30_000);
+});
+
+// ─── #1311: React Native / Expo .plist files are scanned for secrets ─────────
+
+describe('scan reads .plist property lists for secrets (#1311)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cognium-plist-'));
+  mkdirSync(join(dir, 'ios/ExpoDemo'), { recursive: true });
+  writeFileSync(join(dir, 'App.tsx'), 'export default function App() { return null; }\n');
+  // Fabricated value, exercising the named-credential matcher.
+  writeFileSync(join(dir, 'ios/ExpoDemo/Info.plist'),
+    '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n  <key>CFBundleIdentifier</key>\n  <string>com.example.expodemo</string>\n  <key>PaymentsApiKey</key>\n  <string>Xk9#mQ2vLp7Rt4Wz</string>\n</dict>\n</plist>\n');
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('JSON reports the Info.plist credential; --disable-pass scan-secrets turns it off', async () => {
+    const on = await run('scan', dir, '-f', 'json', '-q');
+    const plist = (j: { results: Array<{ file: string; vulnerabilities: Array<{ type: string; line: number; cwe?: string }> }> }) =>
+      j.results.find(r => r.file.endsWith('ios/ExpoDemo/Info.plist'))?.vulnerabilities ?? [];
+    expect(plist(JSON.parse(on.stdout)).map(v => [v.type, v.line, v.cwe])).toEqual([['hardcoded-credential', 7, 'CWE-798']]);
+    expect(on.exitCode).toBe(1);
+    const off = await run('scan', dir, '-f', 'json', '-q', '--disable-pass', 'scan-secrets');
+    expect(plist(JSON.parse(off.stdout))).toEqual([]);
+  }, 60_000);
 });
 
 // ─── The entry-path gate's drops are counted, with the flag that keeps them ─
@@ -600,6 +662,28 @@ describe('#424 project size ceiling', () => {
     expect(r.stdout).toContain('Project size ceiling reached');
     expect(r.stdout).not.toMatch(/analysed 0 of/);
   });
+
+  // #1306: in SARIF the files past the ceiling were named nowhere, so each read as clean.
+  test('SARIF names every file the ceiling left unread, each at its own location', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cognium-1306-'));
+    try {
+      for (const name of ['A', 'B', 'C']) {
+        writeFileSync(join(dir, `${name}.java`), `public class ${name} {\n  int x() { return 1; }\n}\n`.padEnd(100, ' '));
+      }
+      const r = await run('scan', dir, '-f', 'sarif', '--max-project-source-chars', '150');
+      const invocation = JSON.parse(r.stdout).runs[0].invocations[0];
+      expect(invocation.executionSuccessful).toBe(false);
+      const unread = invocation.toolExecutionNotifications
+        .filter((n: { properties?: { reason?: string }; locations?: unknown }) => n.properties?.reason === 'project-size-ceiling' && n.locations)
+        .map((n: { locations: Array<{ physicalLocation: { artifactLocation: { uri: string } } }> }) => n.locations[0].physicalLocation.artifactLocation.uri);
+      // One file fits under the cap; the other two were never read, and each is named.
+      expect(unread).toHaveLength(2);
+      expect(new Set(unread).size).toBe(2);
+      for (const uri of unread) expect(uri).toMatch(/[ABC]\.java$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   test('0 disables the cap and restores the plain summary', async () => {
     const r = await run('scan', '.', '--max-project-source-chars', '0');

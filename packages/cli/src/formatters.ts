@@ -183,6 +183,19 @@ export function scanNotifications(results: ScanResult[], crossFileData?: CrossFi
       });
     }
   }
+  // #1306: a file with no result is otherwise absent from the report, which reads as clean.
+  for (const u of crossFileData?.unanalysedFiles ?? []) {
+    out.push(
+      u.reason === 'project-size-ceiling'
+        ? {
+            level: 'warning',
+            reason: 'project-size-ceiling',
+            message: 'File not analysed: the project size ceiling was reached before it was read. Raise it with --max-project-source-chars <n> (0 = unlimited).',
+            file: u.file,
+          }
+        : { level: 'error', reason: 'analysis-error', message: 'File not analysed: the analyser returned no result for it.', file: u.file },
+    );
+  }
   return out;
 }
 
@@ -221,6 +234,13 @@ export interface CrossFileData {
    * format.
    */
   skippedPaths?: Array<{ path: string; reason: string }>;
+  /**
+   * #1306 — files the scan was asked to cover that have no result at all, so
+   * nothing else in a report names them: past the project size ceiling (never
+   * read), or read but returned by `analyzeProject` in none of its lists
+   * (`no-result`). Each becomes its own notification, never a clean file.
+   */
+  unanalysedFiles?: Array<{ file: string; reason: 'project-size-ceiling' | 'no-result' }>;
   /**
    * High/critical security findings and taint flows the `require-entry-path`
    * gate removed (circle-ir `entry_path_dropped`). Reported, never silent.
@@ -635,7 +655,7 @@ export function formatResults(
 
   for (const result of results) {
     if (result.error) {
-      lines.push(colors.red(`[ERROR] ${termSafe(result.file)}: ${result.error}`));
+      lines.push(colors.red(`[ERROR] ${termSafe(result.file)}: ${termSafe(result.error)}`));
       continue;
     }
 
@@ -671,8 +691,8 @@ export function formatResults(
         `  ${colorFn(`[${icon}]`)} ${colorFn(vuln.type)} (${severityUpper})${cweTag}${categoryTag}${libraryApiTag}`
       );
 
-      // Line number and taint flow message
-      lines.push(`      Line ${vuln.line}: ${vuln.message}`);
+      // Line number and taint flow message (escaped: it can quote a file name or scanned text)
+      lines.push(`      Line ${vuln.line}: ${termSafe(vuln.message)}`);
 
       // Add help text for the vulnerability
       const help = VULNERABILITY_HELP[vuln.type];
