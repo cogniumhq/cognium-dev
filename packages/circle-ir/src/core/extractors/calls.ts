@@ -1396,7 +1396,13 @@ function buildResolutionContext(tree: Tree, cache?: NodeCache): ResolutionContex
       for (const declarator of declarators) {
         const nameNode = declarator.childForFieldName('name');
         if (nameNode) {
-          context.localVarTypes.set(getNodeText(nameNode), typeName);
+          let stored = typeName;
+          if (typeName === 'var') {
+            const valueNode = declarator.childForFieldName('value');
+            const inferred = valueNode ? javaStaticType(valueNode) : null;
+            if (inferred) stored = stripGenerics(inferred);
+          }
+          context.localVarTypes.set(getNodeText(nameNode), stored);
         }
       }
     }
