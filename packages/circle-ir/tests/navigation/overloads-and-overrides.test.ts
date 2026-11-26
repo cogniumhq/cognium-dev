@@ -388,7 +388,11 @@ public class Use {
 public enum Kind { A; static Kind of(String... xs) { return A; } }
 class U { void u(String s) { Kind.of(s); } }`;
     const ir = await analyze(src, 'Kind.java', 'java');
-    expect(ir.types.find(t => t.name === 'Kind')!.methods).toEqual([]);
+    // An enum's members are on the default path since #1308; the varargs
+    // parameter's type is still navigation-only.
+    const methods = ir.types.find(t => t.name === 'Kind')!.methods;
+    expect(methods.map(m => m.name)).toEqual(['of']);
+    expect(methods[0].parameters[0].type).toBeNull();
     expect(ir.calls[0].arguments[0]).not.toHaveProperty('type');
     expect(ir.calls[0].arguments[0]).not.toHaveProperty('location');
   });
