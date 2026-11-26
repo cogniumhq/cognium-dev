@@ -3024,6 +3024,16 @@ function matchesSourcePattern(
         javaWikiTagInheritedContextReceiver(call.receiver, pattern.class, call, types, imports)
       ) {
         // JSPWiki tag handler inherited m_wikiContext (cognium-dev#624)
+      } else if (
+        language === 'java' &&
+        pattern.type === 'db_input' &&
+        call.receiver_type &&
+        !/(?:ResultSet|RowSet)$/.test(call.receiver_type)
+      ) {
+        // A receiver declared as another type is not a database read:
+        // `JSONObject result; result.getString("path")` matched `ResultSet`
+        // by its name only and seeded JSON field reads as db_input.
+        return false;
       } else if (!receiverMightBeClass(call.receiver, pattern.class)) {
         // The receiver might be a variable name, not the class name
         // For now, we do a simple match - in a full implementation,
