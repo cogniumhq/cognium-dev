@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { analyze, initAnalyzer } from '../../src/analyzer.js';
-import { jsSameLineIfCondition, jsUrlHostOf } from '../../src/analysis/passes/sink-filter-pass.js';
+import { jsPositiveMembershipTest, jsSameLineIfCondition, jsUrlHostOf } from '../../src/analysis/passes/sink-filter-pass.js';
 
 const flows = (r: Awaited<ReturnType<typeof analyze>>, t: string) =>
   (r.taint.flows ?? []).filter(f => f.sink_type === t);
@@ -77,12 +77,25 @@ describe('stage 8a: a guard on the sink line, or on a host read from the value',
       'const host = new URL(String(req.query.other), "https://x").hostname;',
       'if (ALLOWED_HOSTS.has(host)) res.redirect(nxt);',
     ]],
+    ['a one-line guard negated by indexOf === -1', [
+      'if (ALLOWED_PREFIXES.indexOf(nxt) === -1) res.redirect(nxt);',
+    ]],
+    ['a one-line guard negated by === false', [
+      'if (ALLOWED_PREFIXES.includes(nxt) === false) res.redirect(nxt);',
+    ]],
+    ['a parenthesised negated one-line guard', [
+      'if ((!ALLOWED_PREFIXES.includes(nxt))) res.redirect(nxt);',
+    ]],
+    ['a one-line guard that || can bypass', [
+      'if (req.query.force || ALLOWED_PREFIXES.includes(nxt)) res.redirect(nxt);',
+    ]],
   ];
   for (const [label, body] of unsafe) {
     for (const [file, lang] of langs) {
-      it(`${label} still reports open_redirect (${lang})`, async () => {
+      it(`${label} still reports open_redirect and crlf (${lang})`, async () => {
         const r = await analyze(route(...body), file, lang);
         expect(flows(r, 'open_redirect').length).toBeGreaterThan(0);
+        expect(flows(r, 'crlf').length).toBeGreaterThan(0);
       });
     }
   }
@@ -112,5 +125,40 @@ describe('jsUrlHostOf', () => {
   it('is undefined for other reads', () => {
     expect(jsUrlHostOf('const p = new URL(u).pathname;')).toBeUndefined();
     expect(jsUrlHostOf('const h = new URL(String(u)).hostname;')).toBeUndefined();
+  });
+});
+
+describe('jsPositiveMembershipTest', () => {
+  it('accepts one positive membership test', () => {
+    for (const c of [
+      'ALLOWED.includes(nxt)',
+      'ALLOWED_HOSTS.has(host)',
+      'A.some(p => nxt.startsWith(p))',
+      'nxt.startsWith("https://app.example.com/")',
+      '/^\\/[a-z]/.test(nxt)',
+      'A.indexOf(nxt) !== -1',
+      'A.indexOf(nxt) >= 0',
+      '(A.includes(nxt))',
+      'cfg?.allowed.has(nxt)',
+    ]) expect(jsPositiveMembershipTest(c), c).toBe(true);
+  });
+  it('rejects a negated, compared, or combined condition', () => {
+    for (const c of [
+      '!A.includes(nxt)',
+      '(!A.includes(nxt))',
+      'A.indexOf(nxt) === -1',
+      'A.indexOf(nxt) < 0',
+      'A.indexOf(nxt)',
+      'A.includes(nxt) === false',
+      'A.includes(nxt) == false',
+      'A.includes(nxt) !== true',
+      'force || A.includes(nxt)',
+      'A.includes(nxt) || force',
+      'A.includes(nxt) && ok',
+      'A.includes(nxt) ? 1 : 0',
+      'A.some(p => !nxt.startsWith(p))',
+      'A.includes(nxt) ?? true',
+      'ok(nxt)',
+    ]) expect(jsPositiveMembershipTest(c), c).toBe(false);
   });
 });

@@ -3138,6 +3138,53 @@ export function jsSameLineIfCondition(lineText: string, method?: string): string
   return call ? lineText.slice(open[0].length, i - 1).trim() : undefined;
 }
 
+/**
+ * True if an `if` condition is one positive membership test and nothing else:
+ * `A.includes(v)`, `A.has(v)`, `A.some(p => v.startsWith(p))`, `/re/.test(v)`,
+ * `v.match(re)`, `A.indexOf(v) !== -1` / `>= 0` / `> -1`, in any outer
+ * parentheses. A negation (`!`, `=== -1`, `=== false`, `< 0`), a comparison, a
+ * ternary, or `||` / `&&` / `??` anywhere in it makes the branch run for values
+ * the test rejects, so it is not credited.
+ */
+export function jsPositiveMembershipTest(condition: string): boolean {
+  let s = condition.trim();
+  while (s.startsWith('(') && s.endsWith(')')) {
+    let depth = 0, closes = -1;
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === '(') depth++;
+      else if (s[i] === ')' && --depth === 0) { closes = i; break; }
+    }
+    if (closes !== s.length - 1) break;
+    s = s.slice(1, -1).trim();
+  }
+  // The receiver: a regex literal or a name chain.
+  const receiver = /^\/(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n[])+\/[a-z]*/.exec(s)?.[0]
+    ?? /^[A-Za-z_$][\w$]*(?:\s*\??\.\s*[A-Za-z_$][\w$]*)*/.exec(s)?.[0];
+  if (!receiver) return false;
+  let rest = s.slice(receiver.length);
+  if (!receiver.startsWith('/')) {
+    // The last name in the chain is the method.
+    const lastDot = receiver.lastIndexOf('.');
+    if (lastDot < 0) return false;
+    rest = receiver.slice(lastDot) + rest;
+  }
+  const call = /^\s*\.\s*(includes|has|some|startsWith|test|match|indexOf)\s*\(/.exec(rest);
+  if (!call) return false;
+  // Strings cannot hide an operator; blank them before reading the arguments.
+  const tail = rest.slice(call[0].length).replace(/(['"`])(?:\\.|(?!\1)[^\\])*\1/g, '""');
+  let depth = 1, i = 0;
+  for (; i < tail.length && depth > 0; i++) {
+    if (tail[i] === '(') depth++;
+    else if (tail[i] === ')') depth--;
+  }
+  if (depth !== 0) return false;
+  const args = tail.slice(0, i - 1);
+  if (/!|\|\||&&|\?(?!\.)|\?\?/.test(args)) return false;
+  const suffix = tail.slice(i).trim();
+  if (call[1] === 'indexOf') return /^(?:!==?\s*-\s*1|>=\s*0|>\s*-\s*1)$/.test(suffix);
+  return suffix === '';
+}
+
 /** True if a guard line mentions one of the sink's values as a whole name. */
 function guardTestsValue(line: string, values: string[]): boolean {
   return values.some(v => new RegExp(
@@ -3476,10 +3523,10 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         }
         // The one-line form, `if (ALLOWED.some(p => nxt.startsWith(p))) res.redirect(nxt);`:
         // the condition must open the line's statement, lead straight into the
-        // sink call, and not be negated.
+        // sink call, and be one positive membership test on the value.
         const sameLineGuard = jsSameLineIfCondition(sinkLineText, sink.method);
         if (sameLineGuard !== undefined && sinkValues.length > 0
-            && !sameLineGuard.startsWith('!') && guardPatterns.test(sameLineGuard)
+            && jsPositiveMembershipTest(sameLineGuard)
             && guardTestsValue(sameLineGuard, guardValues)) {
           return false;
         }
