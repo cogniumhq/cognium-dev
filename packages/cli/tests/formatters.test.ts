@@ -41,6 +41,19 @@ describe('formatResults', () => {
     expect(output).toContain('[reliability]');
   });
 
+  test('a quality finding leads with its rule title and keeps the rule id', () => {
+    const results = [makeResult('src/App.ts', [deadCodeVuln, { ...deadCodeVuln, type: 'missing-public-doc', category: 'maintainability' }])];
+    const prev = process.env.NO_COLOR;
+    process.env.NO_COLOR = '1';
+    try {
+      const output = formatResults(results);
+      expect(output).toContain('Dead code [dead-code] (Low)');
+      expect(output).toContain('Missing doc comment [missing-public-doc] (Low)');
+    } finally {
+      if (prev === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = prev;
+    }
+  });
+
   test('does not show category tag for security findings', () => {
     const results = [makeResult('src/Foo.java', [sqlVuln])];
     const output = formatResults(results);

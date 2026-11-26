@@ -687,8 +687,13 @@ export function formatResults(
       const libraryApiTag = vuln.tags?.includes(LIBRARY_API_SURFACE_TAG)
         ? ` ${colors.cyan('[library-api-surface]')}`
         : '';
+      // A quality finding leads with its rule's title in plain words; the rule
+      // id stays beside it, as JSON and SARIF give it.
+      const label = vuln.category && vuln.category !== 'security'
+        ? `${ruleTitle(vuln.type)} [${ruleIdOf(vuln.type)}]`
+        : vuln.type;
       lines.push(
-        `  ${colorFn(`[${icon}]`)} ${colorFn(vuln.type)} (${severityUpper})${cweTag}${categoryTag}${libraryApiTag}`
+        `  ${colorFn(`[${icon}]`)} ${colorFn(label)} (${severityUpper})${cweTag}${categoryTag}${libraryApiTag}`
       );
 
       // Line number and taint flow message (escaped: it can quote a file name or scanned text)

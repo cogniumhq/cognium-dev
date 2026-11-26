@@ -369,9 +369,9 @@ export function getRuleInfo(sinkType: SinkType | string): RuleInfo {
 /** Words kept in capitals (or a set form) when a rule id is turned into a title. */
 const TITLE_WORDS: Record<string, string> = {
   api: 'API', cors: 'CORS', crlf: 'CRLF', csp: 'CSP', csrf: 'CSRF', cwe22: 'CWE-22',
-  dom: 'DOM', html: 'HTML', io: 'I/O', jsx: 'JSX', jwt: 'JWT', ldap: 'LDAP',
-  nosql: 'NoSQL', redos: 'ReDoS', sql: 'SQL', sri: 'SRI', ssrf: 'SSRF', tls: 'TLS',
-  xml: 'XML', xpath: 'XPath', xss: 'XSS',
+  dom: 'DOM', html: 'HTML', http: 'HTTP', io: 'I/O', javascript: 'JavaScript', jsx: 'JSX',
+  jwt: 'JWT', ldap: 'LDAP', mybatis: 'MyBatis', nosql: 'NoSQL', redos: 'ReDoS', sql: 'SQL',
+  sri: 'SRI', ssrf: 'SSRF', tls: 'TLS', uri: 'URI', xml: 'XML', xpath: 'XPath', xss: 'XSS',
 };
 
 /** Rule ids whose words alone read badly. */
@@ -382,6 +382,29 @@ const RULE_TITLES: Record<string, string> = {
   'x-frame-options-allow-from': 'X-Frame-Options ALLOW-FROM',
   'xfo-csp-mismatch': 'X-Frame-Options and CSP disagree',
   'spring4shell': 'Spring4Shell',
+  // quality rules: say what is wrong, not the pass's short name
+  'missing-public-doc': 'Missing doc comment',
+  'null-deref': 'Null dereference',
+  'unchecked-return': 'Unchecked return value',
+  'sync-io-async': 'Blocking I/O in async code',
+  'string-concat-loop': 'String concatenation in a loop',
+  'dependency-fan-out': 'Too many imports',
+  'stale-doc-ref': 'Broken doc link',
+  'broad-catch': 'Overly broad catch',
+  'redundant-loop-computation': 'Repeated work in a loop',
+  'unbounded-collection': 'Collection grows without bound',
+  'serial-await': 'Awaits that could run together',
+  'react-inline-jsx': 'New object in a JSX prop',
+  'deep-inheritance': 'Deep inheritance chain',
+  'cleanup-verify': 'Cleanup missed on some paths',
+  'missing-override': 'Missing @Override',
+  'blocking-main-thread': 'Blocking call in a request handler',
+  'excessive-allocation': 'Allocation in a loop',
+  'missing-stream': 'Whole file read into memory',
+  'god-class': 'Class does too much',
+  'leaked-global': 'Accidental global',
+  'missing-guard-dom': 'Sensitive call without an auth check',
+  'saturated-file': 'Too many findings in one file',
 };
 
 /**
