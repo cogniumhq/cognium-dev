@@ -290,12 +290,34 @@ const JAVA_STDOUT_PRINT_RE =
 // prints via a `PrintStream ps` parameter, a `PrintStream` field (a small file
 // logger) or its own `Logger out`. The receiver type resolves, so `sink.class`
 // names it. `java.io.PrintStream` writes to a console or a file, and a logger
-// to a log; neither is an HTML document. A `PrintStream` can wrap the servlet
-// response's output stream, so any `getOutputStream()` in the file keeps them.
+// to a log; neither is an HTML document. The set is matched by simple type
+// name only: a project's own class named `Logger` or `Log` is trusted to be a
+// logger whatever it writes to.
+//
+// A `PrintStream` can wrap the servlet response's output stream, and a servlet
+// can hand that stream to a helper in another file. So the sinks are kept when
+// the file itself calls `getOutputStream()`, or when any Java file of the
+// project does (`javaOpensResponseStream`, passed in by `analyzeProject`).
 const JAVA_NON_HTML_PRINT_RECEIVERS: ReadonlySet<string> = new Set([
   'PrintStream', 'Logger', 'Log',
 ]);
 const JAVA_RESPONSE_OUTPUT_STREAM_RE = /\bgetOutputStream\s*\(/;
+
+/**
+ * True when any Java file in `files` calls `getOutputStream()`, so a
+ * `PrintStream` anywhere in the project may write to a servlet response.
+ * `analyzeProject` computes this before its per-file loop and passes it to
+ * each file as `AnalyzerOptions.javaOpensResponseStream`; a caller that
+ * analyses files itself (`AnalyzerOptions.analyzeFile`) sets it the same way.
+ */
+export function javaProjectOpensResponseStream(
+  files: Iterable<{ code: string; language: string }>,
+): boolean {
+  for (const f of files) {
+    if (f.language === 'java' && JAVA_RESPONSE_OUTPUT_STREAM_RE.test(f.code)) return true;
+  }
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // Stage 11 — Java command_injection (CWE-78) FP reduction.
@@ -3128,6 +3150,12 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
   readonly name = 'sink-filter';
   readonly category = 'security' as const;
 
+  /**
+   * @param javaOpensResponseStream another Java file of the project calls
+   *   `getOutputStream()` (Stage 15e); see `javaProjectOpensResponseStream`.
+   */
+  constructor(private readonly javaOpensResponseStream = false) {}
+
   run(ctx: PassContext): SinkFilterResult {
     const { graph, language } = ctx;
     const { calls, dfg } = graph.ir;
@@ -4124,11 +4152,13 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     // this follows the existing convention rather than inventing a new one.
     //
     // A sink WITH a resolved class carries the receiver's type. It is dropped
-    // only when that type is a PrintStream or a logger and the file never
-    // opens the response's output stream (JAVA_NON_HTML_PRINT_RECEIVERS).
+    // only when that type is a PrintStream or a logger and neither the file
+    // nor any other Java file of the project opens the response's output
+    // stream (JAVA_NON_HTML_PRINT_RECEIVERS).
     if (language === 'java') {
       const sourceLines = ctx.code.split('\n');
-      const writesResponseStream = JAVA_RESPONSE_OUTPUT_STREAM_RE.test(ctx.code);
+      const writesResponseStream = this.javaOpensResponseStream
+        || JAVA_RESPONSE_OUTPUT_STREAM_RE.test(ctx.code);
       filtered = filtered.filter(sink => {
         if (sink.type !== 'xss') return true;
         if (sink.class !== undefined) {

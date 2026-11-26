@@ -18,6 +18,7 @@ import {
   type ProjectProfile,
   type AnalyzerOptions as CircleAnalyzerOptions,
   type CircleIR,
+  javaProjectOpensResponseStream,
   parseNpmDependencies, parseNpmLockDependencies,
   parsePnpmLockDependencies, parseYarnLockDependencies, pnpmLockImporters,
   parsePypiDependencies, parsePyprojectDependencies, parsePoetryLockDependencies,
@@ -1100,6 +1101,10 @@ async function scanProject(
     ...(analyzeOpts?.fileTimeoutMs ? { fileTimeoutMs: analyzeOpts.fileTimeoutMs } : {}),
     ...(analyzeOpts?.watchdog ? { onFileStart: analyzeOpts.watchdog.onFileStart, onFileEnd: analyzeOpts.watchdog.onFileEnd } : {}),
     ...(analyzeOpts?.dependencyContext ? { dependencyContext: analyzeOpts.dependencyContext } : {}),
+    // A Java helper can print to a response-backed PrintStream opened in
+    // another file. `analyzeProject` decides this for its own per-file loop;
+    // the worker pool below analyses each file without it, so pass it here.
+    ...(javaProjectOpensResponseStream(filesWithCode) ? { javaOpensResponseStream: true } : {}),
   };
   // #1324: with more than one thread, the per-file phase runs on a worker pool.
   // At one thread this is the in-process loop, unchanged.

@@ -116,6 +116,7 @@ import { LibraryProfileSourceGatePass } from './analysis/passes/library-profile-
 import { MyBatisAnnotationSqlSinkPass } from './analysis/passes/mybatis-annotation-sql-sink-pass.js';
 import {
   SinkFilterPass,
+  javaProjectOpensResponseStream,
   filterCleanVariableSinks,
   filterSanitizedSinks,
   filterJavaArgvWrapperFlowsWithoutShellCaller,
@@ -489,6 +490,18 @@ export interface AnalyzerOptions {
    * removed — only flows.
    */
   speculativeParamSources?: boolean;
+
+  /**
+   * Java: some file of the project calls `getOutputStream()`, so a
+   * `PrintStream` in this file may be the servlet response handed in from
+   * another file. A print to a `PrintStream` or a logger is then kept as an
+   * xss sink, as it is in a file that calls `getOutputStream()` itself.
+   * `analyzeProject` sets it from its files when the caller leaves it unset;
+   * a caller that passes `analyzeFile` sets it itself, with
+   * `javaProjectOpensResponseStream(files)`. Omitted: only the file's own
+   * code decides.
+   */
+  javaOpensResponseStream?: boolean;
 
   /**
    * Enable the Tier 1/2/3 entry-point classifier gate that suppresses
@@ -1299,7 +1312,7 @@ async function analyzeFile(
   // filter sees the added sinks. Java-only; no-op on other languages.
   if (!disabledPasses.has('mybatis-annotation-sql-sink'))
     pipeline.add(new MyBatisAnnotationSqlSinkPass());
-  pipeline.add(new SinkFilterPass());
+  pipeline.add(new SinkFilterPass(options.javaOpensResponseStream === true));
   // cognium-dev #139 Tier A: drops sinks whose SinkType label disagrees
   // with the curated <Class>#<method> registry (configs/sink-semantics.json).
   // Runs after SinkFilterPass so upstream FP suppressions have already fired,
@@ -2086,6 +2099,13 @@ export async function analyzeProject(
   const maxProjectFiles = options.maxProjectFiles ?? 0;
   let projectSourceChars = 0;
   let projectSizeBudgetExceeded = false;
+  // A servlet can wrap the response in a `PrintStream` and pass it to a helper
+  // in another file, so whether a Java print to a `PrintStream` is xss is
+  // decided for the whole project, not per file (sink filter Stage 15e).
+  const fileOptions: AnalyzerOptions =
+    options.javaOpensResponseStream === undefined && javaProjectOpensResponseStream(files)
+      ? { ...options, javaOpensResponseStream: true }
+      : options;
   for (const { code, filePath, language } of files) {
     if (maxProjectFiles > 0 && fileAnalyses.length >= maxProjectFiles) {
       projectSizeBudgetExceeded = true;
@@ -2119,7 +2139,7 @@ export async function analyzeProject(
     try {
       ir = options.analyzeFile
         ? await options.analyzeFile(code, filePath, language)
-        : await analyze(code, filePath, language, options);
+        : await analyze(code, filePath, language, fileOptions);
     } catch (err) {
       if (err instanceof AnalysisTimeoutError) {
         timedOutFiles.push({ file: filePath, elapsed_ms: err.elapsedMs, phase: err.phase });

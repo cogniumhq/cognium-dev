@@ -50,6 +50,27 @@ beforeAll(() => {
     '  }',
     '}',
   ].join('\n'));
+  // A servlet hands a response-backed PrintStream to a helper in another file.
+  const stream = join(root, 'stream');
+  mkdirSync(stream);
+  writeFileSync(join(stream, 'S.java'), [
+    'import javax.servlet.http.*;',
+    'import java.io.*;',
+    'public class S extends HttpServlet {',
+    '  protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {',
+    '    String p = req.getParameter("p");',
+    '    new Report().write(new PrintStream(resp.getOutputStream()), p);',
+    '  }',
+    '}',
+  ].join('\n'));
+  writeFileSync(join(stream, 'Report.java'), [
+    'import java.io.*;',
+    'public class Report {',
+    '  public void write(PrintStream ps, String v) {',
+    '    ps.println(v);',
+    '  }',
+    '}',
+  ].join('\n'));
   const slow = join(root, 'slow');
   mkdirSync(slow);
   writeFileSync(join(slow, 'big.sh'), Array.from({ length: 4000 }, (_, i) => `v${i}=$(echo "$x${i}" | grep foo)`).join('\n'));
@@ -75,6 +96,19 @@ describe('directory scan threads', () => {
     ]);
     expect(strip(j3.stdout)).toBe(strip(j1.stdout));
   }, 120_000);
+
+  test("a helper's print to a response-backed PrintStream is xss at --threads 1 and 2", async () => {
+    const xssIn = (t: string): string[] => JSON.parse(t).runs[0].results
+      .filter((r: { ruleId: string }) => r.ruleId === 'xss')
+      .map((r: { locations: Array<{ physicalLocation: { artifactLocation: { uri: string }; region: { startLine: number } } }> }) =>
+        `${r.locations[0].physicalLocation.artifactLocation.uri.split('/').pop()}:${r.locations[0].physicalLocation.region.startLine}`);
+    const [s1, s2] = await Promise.all([
+      scan('stream', '-f', 'sarif', '-q', '--threads', '1'),
+      scan('stream', '-f', 'sarif', '-q', '--threads', '2'),
+    ]);
+    expect(xssIn(s1.stdout)).toContain('Report.java:4');
+    expect(xssIn(s2.stdout)).toContain('Report.java:4');
+  }, 60_000);
 
   test('a timed-out file is still reported at --threads 3', async () => {
     const { stdout, stderr } = await scan('slow', '-f', 'sarif', '--threads', '3', '--file-timeout-ms', '1');
