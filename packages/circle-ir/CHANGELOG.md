@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.24.0] - 2026-11-26
+
 ### Added
 
 - **Every quality rule has a plain-words title.** `ruleTitle` gives a set title to the quality rules whose id words read badly (`missing-public-doc` → `Missing doc comment`, `null-deref` → `Null dereference`, `sync-io-async` → `Blocking I/O in async code`, `stale-doc-ref` → `Broken doc link`, `saturated-file` → `Too many findings in one file`, and others), and keeps `HTTP`, `URI`, `JavaScript` and `MyBatis` in their usual case. A test reads every rule id a finding can carry from the source and checks each title is short words, never snake_case or kebab-case. Rule ids and findings are unchanged.

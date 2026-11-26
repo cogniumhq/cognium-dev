@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.24.0] - 2026-11-26
+
 ### Added
 
 - **Text output: a quality finding leads with its rule title.** A non-security finding's line reads `Dead code [dead-code] (Low) …` instead of `dead-code (Low) …`; the rule id stays beside the title. Security findings, JSON and SARIF ids are unchanged; JSON `rule_title` and SARIF `shortDescription.text` pick up the new titles.
