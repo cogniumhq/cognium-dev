@@ -304,6 +304,25 @@ describe('cognium-dev#1305 E4 — absolute-path and `..`-segment guard', () => {
     }
   });
 
+  // #1416 re-review 6, note 3: an import list over several lines binds its names too.
+  it('a bare builder from an import list over several lines is credited', async () => {
+    for (const imp of [
+      ['import {', '  isAbsolute,', '  join,', "} from 'path';"],
+      ['import {', '  isAbsolute,', '  join as pjoin,', "} from 'node:path';"],
+    ]) {
+      const call = imp.join(' ').includes('pjoin') ? 'pjoin' : 'join';
+      const code = [
+        "import fs from 'fs';",
+        ...imp,
+        "const ROOT = '/srv/data';",
+        'const name = process.argv[2];',
+        "if (isAbsolute(name) || name.includes('..')) throw new Error('x');",
+        `fs.readFileSync(${call}(ROOT, name));`,
+      ].join('\n');
+      expect(await pathTraversalFlows(code), imp.join(' ')).toHaveLength(0);
+    }
+  });
+
   // #1416 re-review 3, point 4: only the guarded argument is credited.
   it('recall: another tainted argument of the path builder still reports', async () => {
     const code = [
@@ -536,6 +555,30 @@ describe('cognium-dev#1305 E4 — absolute-path and `..`-segment guard', () => {
       "    if (isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
       '    return { data: fs.readFileSync(join(ROOT, name)) };',
       '  };',
+      '}',
+    ]],
+    // #1416 re-review 6, note 2: a `/*` or `//` inside a regex literal does not open a comment.
+    ['a parameter after a regex literal with `/*` in it', [
+      "import fs from 'fs';",
+      "import { isAbsolute, join } from 'path';",
+      "const ROOT = '/srv/data';",
+      'const glob = /[/*]/;',
+      'function serve(join: (a: string, b: string) => string) {',
+      '  const name = process.argv[2];',
+      "  if (isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      '  return fs.readFileSync(join(ROOT, name));',
+      '}',
+      '/** a later doc comment */',
+      'export { glob, serve };',
+    ]],
+    ['a parameter after a regex literal with `//` in it, on the same line', [
+      "import fs from 'fs';",
+      "import { isAbsolute, join } from 'path';",
+      "const ROOT = '/srv/data';",
+      'const slashes = /[//]/; function serve(join: (a: string, b: string) => string) {',
+      '  const name = process.argv[2];',
+      "  if (isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      '  return fs.readFileSync(join(ROOT, name));',
       '}',
     ]],
   ];
