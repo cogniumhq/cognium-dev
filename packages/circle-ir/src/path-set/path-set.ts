@@ -101,10 +101,13 @@ function span(start: number, end: number): number {
   return end - start;
 }
 
-/** The declaration that holds `line` in `file`. */
+/**
+ * The declaration that holds `line` in `file`. Reads only `types` and `calls`
+ * from the IR, so a caller holding just those can pass them.
+ */
 export function declAt(
   file: string,
-  ir: CircleIR,
+  ir: Pick<CircleIR, 'types' | 'calls'>,
   line: number,
   ids?: StableIdFile,
 ): DeclRef {
