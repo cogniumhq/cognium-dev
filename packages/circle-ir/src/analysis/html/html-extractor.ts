@@ -235,5 +235,21 @@ function stripQuotes(text: string): string {
   return text;
 }
 
+/**
+ * The `src` of each `<script src>` in an HTML page or Vue SFC, read from the
+ * text so that it needs no parser (analyzeProject may run files elsewhere).
+ * Commented-out tags are skipped.
+ */
+export function extractScriptSrcs(code: string): string[] {
+  const srcs: string[] = [];
+  const text = code.replace(/<!--[\s\S]*?-->/g, '');
+  for (const tag of text.matchAll(/<script\b([^>]*)>/gi)) {
+    const m = /\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i.exec(tag[1]);
+    const src = m ? (m[1] ?? m[2] ?? m[3]) : undefined;
+    if (src) srcs.push(src);
+  }
+  return srcs;
+}
+
 // Re-export getAttributeValue and getTagName for use by security pass
 export { getAttributeValue, getTagName, findChildByType, stripQuotes };

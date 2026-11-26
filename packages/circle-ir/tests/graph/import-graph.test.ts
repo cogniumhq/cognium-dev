@@ -76,6 +76,51 @@ describe('ImportGraph', () => {
     expect(g.edgesFrom('/src/a.ts')).toContain('/src/utils.ts');
   });
 
+  it('resolves extension-less imports to .mts, .cts, .mjs and .cjs files', () => {
+    const pg = buildProject([
+      ['/src/a.ts', ['./esm', './cjs', './plain-esm', './plain-cjs']],
+      ['/src/esm.mts', []],
+      ['/src/cjs.cts', []],
+      ['/src/plain-esm.mjs', []],
+      ['/src/plain-cjs.cjs', []],
+    ]);
+    const g = new ImportGraph(pg);
+    expect(g.edgesFrom('/src/a.ts').sort()).toEqual([
+      '/src/cjs.cts', '/src/esm.mts', '/src/plain-cjs.cjs', '/src/plain-esm.mjs',
+    ]);
+  });
+
+  it('resolves ./x.mjs and ./x.cjs to x.mts and x.cts on disk', () => {
+    const pg = buildProject([
+      ['/src/a.mts', ['./b.mjs', './c.cjs']],
+      ['/src/b.mts', []],
+      ['/src/c.cts', []],
+    ]);
+    const g = new ImportGraph(pg);
+    expect(g.edgesFrom('/src/a.mts').sort()).toEqual(['/src/b.mts', '/src/c.cts']);
+  });
+
+  it('resolves an extension-less import to a .vue file, and to the TS source before its .js twin', () => {
+    const pg = buildProject([
+      ['/src/a.ts', ['./Widget', './lib']],
+      ['/src/Widget.vue', []],
+      ['/src/lib.mts', []],
+      ['/src/lib.js', []],
+    ]);
+    const g = new ImportGraph(pg);
+    expect(g.edgesFrom('/src/a.ts').sort()).toEqual(['/src/Widget.vue', '/src/lib.mts']);
+  });
+
+  it('adds an edge from an HTML page to a script it loads with <script src>', () => {
+    const pg = buildProject([
+      ['/site/page.html', []],
+      ['/site/js/app-ui.js', []],
+    ]);
+    const g = new ImportGraph(pg, new Map([['/site/page.html', ['js/app-ui.js']]]));
+    expect(g.edgesFrom('/site/page.html')).toEqual(['/site/js/app-ui.js']);
+    expect(g.edgesTo('/site/js/app-ui.js')).toEqual(['/site/page.html']);
+  });
+
   it('detects a direct 2-file cycle', () => {
     const pg = buildProject([
       ['/src/a.ts', ['./b']],
