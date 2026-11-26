@@ -155,6 +155,48 @@ function initializerOf(line: string, name: string, lang: Lang): string | null {
   return m ? m[1]! : null;
 }
 
+/** Nesting depth of `()`, `[]`, `{}` outside string/template literals. */
+function expressionNestingDepth(expr: string): number {
+  let depth = 0;
+  let inTemplate = false;
+  for (let i = 0; i < expr.length; i++) {
+    const ch = expr[i]!;
+    if (ch === '`') {
+      inTemplate = !inTemplate;
+      continue;
+    }
+    if (inTemplate) continue;
+    if (ch === '"' || ch === "'") {
+      const q = ch;
+      i++;
+      while (i < expr.length && expr[i] !== q) {
+        if (expr[i] === '\\') i++;
+        i++;
+      }
+      continue;
+    }
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+  }
+  return depth;
+}
+
+/** JS/TS rhs for `name = …` when the initializer spans multiple lines. */
+function jsInitializerAcrossLines(lines: readonly string[], defLine: number, name: string): string | null {
+  const esc = name.replace(/[$]/g, '\\$');
+  const assignRe = new RegExp(`^(?:(?:const|let|var)\\s+)?${esc}\\s*=(?!=)\\s*(.*)$`);
+  const parts: string[] = [];
+  for (let i = defLine - 1; i < lines.length && i < defLine + 12; i++) {
+    parts.push(lines[i]!.replace(/\s*\/\/.*$/, '').trim());
+    const joined = parts.join(' ');
+    const m = assignRe.exec(joined);
+    if (!m) continue;
+    const rhs = m[1]!.replace(/;$/, '').trim();
+    if (expressionNestingDepth(rhs) === 0) return rhs;
+  }
+  return null;
+}
+
 /**
  * DFG def ids whose value is an integer or boolean derived from another value
  * by a whole-expression measure or test. Taint does not flow into these defs.
@@ -317,6 +359,51 @@ function goIntConstNames(lines: readonly string[]): Set<string> {
  * holds zero values; its size is bounded, so the request text that chose the
  * size does not reach a sink through it. An unbounded size is not credited.
  */
+/**
+ * True when `rhs` is the return of a prepared-statement write (`run` / `exec` /
+ * `execute` off a `.prepare(…)` chain). Driver metadata is not the bound value
+ * (#1442).
+ */
+export function isPreparedStatementWriteMetadata(rhs: string, language: string): boolean {
+  if (language !== 'javascript' && language !== 'typescript') return false;
+  let e = rhs.trim();
+  while (e.startsWith('await ')) e = e.slice(6).trim();
+  if (!/\.prepare\s*\(/.test(e)) return false;
+  const seg = lastChainSegment(e);
+  if (!seg?.isCall) return false;
+  return seg.member === 'run' || seg.member === 'exec' || seg.member === 'execute';
+}
+
+/**
+ * DFG def ids for locals that hold prepared-statement write metadata only.
+ */
+export function preparedStatementWriteMetadataDefIds(
+  defs: readonly DFGDef[],
+  code: string,
+  language: string,
+): Set<number> {
+  const out = new Set<number>();
+  const lang =
+    language === 'typescript'
+      ? ('typescript' as const)
+      : language === 'javascript'
+        ? ('javascript' as const)
+        : null;
+  if (!lang) return out;
+  const lines = code.split('\n');
+  for (const def of defs) {
+    if (def.kind !== 'local') continue;
+    const text = lines[def.line - 1];
+    if (text === undefined) continue;
+    let rhs = initializerOf(text, def.variable, lang);
+    if (rhs === null || !isPreparedStatementWriteMetadata(rhs, language)) {
+      rhs = jsInitializerAcrossLines(lines, def.line, def.variable);
+    }
+    if (rhs !== null && isPreparedStatementWriteMetadata(rhs, language)) out.add(def.id);
+  }
+  return out;
+}
+
 export function boundedMakeDefIds(defs: readonly DFGDef[], code: string, language: string): Set<number> {
   const out = new Set<number>();
   if (language !== 'go') return out;
