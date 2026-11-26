@@ -366,6 +366,47 @@ export function getRuleInfo(sinkType: SinkType | string): RuleInfo {
   };
 }
 
+/** Words kept in capitals (or a set form) when a rule id is turned into a title. */
+const TITLE_WORDS: Record<string, string> = {
+  api: 'API', cors: 'CORS', crlf: 'CRLF', csp: 'CSP', csrf: 'CSRF', cwe22: 'CWE-22',
+  dom: 'DOM', html: 'HTML', io: 'I/O', jsx: 'JSX', jwt: 'JWT', ldap: 'LDAP',
+  nosql: 'NoSQL', redos: 'ReDoS', sql: 'SQL', sri: 'SRI', ssrf: 'SSRF', tls: 'TLS',
+  xml: 'XML', xpath: 'XPath', xss: 'XSS',
+};
+
+/** Rule ids whose words alone read badly. */
+const RULE_TITLES: Record<string, string> = {
+  'n-plus-one': 'N+1 query',
+  'todo-in-prod': 'TODO in production code',
+  'missing-x-frame-options': 'Missing X-Frame-Options',
+  'x-frame-options-allow-from': 'X-Frame-Options ALLOW-FROM',
+  'xfo-csp-mismatch': 'X-Frame-Options and CSP disagree',
+  'spring4shell': 'Spring4Shell',
+};
+
+/**
+ * A short title for a finding's rule id: the rule name for a sink type
+ * (`sql_injection` → `SQL Injection`), `Cross-file <name>` for the CLI's
+ * `cross-file-<sink>` rules, and otherwise the id's words
+ * (`variable-shadowing` → `Variable shadowing`). Never empty.
+ */
+export function ruleTitle(ruleId: string): string {
+  const sink = RULE_DEFINITIONS[ruleId as SinkType];
+  if (sink) return sink.name;
+  const set = RULE_TITLES[ruleId];
+  if (set) return set;
+  if (ruleId.startsWith('cross-file-')) {
+    const inner = RULE_DEFINITIONS[ruleId.slice('cross-file-'.length) as SinkType];
+    if (inner) return `Cross-file ${inner.name}`;
+  }
+  const words = ruleId.split(/[-_]+/).filter(w => w.length > 0)
+    .map(w => TITLE_WORDS[w.toLowerCase()] ?? w.toLowerCase());
+  if (words.length === 0) return 'Unknown rule';
+  const first = words[0];
+  words[0] = first.charAt(0).toUpperCase() + first.slice(1);
+  return words.join(' ');
+}
+
 /**
  * Get remediation advice for a sink type.
  */
