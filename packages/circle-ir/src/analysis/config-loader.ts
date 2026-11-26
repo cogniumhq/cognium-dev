@@ -1594,7 +1594,7 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'handleDiv', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'handleImage', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'handleLink', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
-  { method: 'render', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'render', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['java'] },
   { method: 'renderHTML', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'parseHTML', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   // HTML sanitizer/validator sinks (AntiSamy, OWASP HTML Sanitizer, etc.)
