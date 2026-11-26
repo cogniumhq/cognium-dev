@@ -247,6 +247,7 @@ export {
 // Rule definitions
 export {
   getRuleInfo,
+  ruleTitle,
   RULE_DEFINITIONS,
   type RuleInfo,
 } from './analysis/rules.js';

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`scan -f json`: every finding names its rule.** Each entry in `results[].vulnerabilities` gains `rule_id` (the same value as that finding's SARIF `ruleId`: the sink type for a taint flow, circle-ir's `rule_id` for a pass finding, e.g. `variable-shadowing`) and `rule_title` (a short title, e.g. `Variable shadowing`). Each `cross_file_taint_paths` entry gains `rule_id` `cross-file-<sink>` and its `rule_title`. Existing fields and ids are unchanged. In SARIF, a rule's `shortDescription.text` is now that title (it repeated the rule id before); `ruleId`, `id` and `name` are unchanged.
 - **`scan`: `*.plist` property lists are scanned for hardcoded credentials (#1311, React Native / Expo).** A directory scan now collects `*.plist` files with the same skip rules as `*.properties` (dot-directories, skipped directories, `--exclude-tests`, config `exclude`, 1 MB cap) and reports circle-ir's `hardcoded-credential` findings in them, for example an API key in `ios/<App>/Info.plist`. Firebase's public client identifiers in `GoogleService-Info.plist` are reported as `low`, not `critical`; another key on the same line keeps its severity. `--disable-pass scan-secrets` turns it off. A single `.plist` given as the scan path is not scanned.
 
 ### Changed (breaking)

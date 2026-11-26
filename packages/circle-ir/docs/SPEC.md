@@ -216,7 +216,7 @@ interface CallInfo {
     line: number;
     column: number;
   };
-  in_method: string | null;
+  in_method: string | null;  // Java: `<clinit>` / `<init>` in a static / instance field initializer
 }
 
 interface ArgumentInfo {
