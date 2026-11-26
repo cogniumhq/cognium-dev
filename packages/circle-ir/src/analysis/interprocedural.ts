@@ -1063,6 +1063,10 @@ function resolveJavaCallTargets(
   if (call.receiver_type) {
     const rt = call.receiver_type;
     owners = types.filter(t => declares(t) && (t.name === rt || (t.package !== null && `${t.package}.${t.name}` === rt)));
+    // A receiver declared as a type that no type of this file is, extends or
+    // implements (`DocumentBuilder docBuilder; docBuilder.parse(is)`) cannot
+    // dispatch to a method of this file, whatever its name.
+    if (owners.length === 0 && !types.some(t => javaTypeIsOrInherits(t, rt))) return [];
   }
   if (owners.length === 0 && call.receiver) {
     const first = types.find(declares);
@@ -1084,6 +1088,13 @@ function resolveJavaCallTargets(
     if (node && !out.includes(node)) out.push(node);
   }
   return out;
+}
+
+/** Is `t` the type named `typeName`, or does it name it in `extends` / `implements`? Generic arguments and package qualifiers are ignored. */
+function javaTypeIsOrInherits(t: TypeInfo, typeName: string): boolean {
+  const want = javaErasure(typeName).base;
+  if (t.name === want) return true;
+  return [t.extends, ...t.implements].some(n => !!n && javaErasure(n).base === want);
 }
 
 function selectJavaOverloads(candidates: MethodInfo[], call: CallInfo, types: TypeInfo[]): MethodInfo[] {
