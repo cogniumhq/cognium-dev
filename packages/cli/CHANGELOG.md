@@ -39,6 +39,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`scan`: files that were not fully analysed, budget cuts and entry-path gate drops are reported, not silent (#1306, part 1).** SARIF now always has `runs[0].invocations[0]`. `executionSuccessful` is false when a file was not analysed (an analysis error or `--file-timeout-ms`) or when the cross-file budget or the project size ceiling cut the run. Each case is a `toolExecutionNotifications` entry with a level, the file location (plus the first error line for a parse error) and `properties.reason` (`analysis-error`, `file-timeout`, `parse-error`, `cross-file-budget`, `project-size-ceiling`). A parse error is a `warning` and the run stays successful. Before this change a scan where every file timed out wrote no `invocations` and 0 results, so it looked clean. JSON adds `results[].parse_errors`, `summary.filesWithParseErrors` and `summary.executionSuccessful`. Text output marks partly parsed files `[PARTIAL]`, and the stderr status line counts files not analysed and files with syntax errors in every format. The cross-file budget warning names `--cross-file-budget-ms`. S4 skipped-path notifications are unchanged.
 - **`scan`: findings that the `require-entry-path` gate drops are counted.** They appear as a text line, as `summary.entryPathDropped` and as a SARIF `note` (`entry-path-gate`), each naming `--disable-pass require-entry-path`. They do not affect `executionSuccessful`, and they are not reported when `--category` leaves out security.
 - **`scan`: a scan with no supported files writes a valid, empty report.** JSON and SARIF are written to stdout or `-o`, and text is written with `-o`. The SARIF has no results, `executionSuccessful: true` and a `no-files` warning. Exit 0. The bundled Action's SARIF upload no longer finds a missing file.
+- **`scan`: results follow circle-ir 4.24.0.** Most changes remove false positives (supertest `request(app)` ssrf, `escapeIdentifier` and anchored allowlist guards in JS/TS, Python `re.fullmatch` guards, Java `Set.contains` guards on deserialization, the wiki `render` xss row outside Java, bare-parameter proximity pairs in JS/TS, `orphan-module` on `.mjs` / `.cjs` / `.mts` / `.cts` imports). Rust actix `body(format!(…))` now also reports `format_string`, and TypeScript `export default = { handler }` channel handlers are reported like their JavaScript form. A very large Python file no longer overflows the stack. See the circle-ir changelog for each change.
+
+### Pull requests
+
+Every pull request merged since `circle-ir-v4.23.0`, newest first.
+
+**CLI**
+
+- #1465: Every quality rule has a plain-words title; text output leads a quality finding with it.
+- #1464: Java: the `PrintStream` xss guard is decided per project, not per file.
+- #1450: `orphan-module` judges JavaScript and TypeScript files only.
+- #1459: `scan -f json`: every finding names its rule (`rule_id`, `rule_title`).
+- #1427: Text output escapes finding messages and error reasons (#1305).
+- #1436: The Firebase plist downgrade follows the key name; one message per key.
+- #1419: An unreadable file in a directory scan is reported, not fatal.
+- #1407: React Native / Expo: `.plist` files are scanned for secrets (#1311).
+- #1403: SARIF names every unanalysed file, not only a run-level count.
+- #1401: CDATA-safe one-pass XML comment stripping in the pom and Tycho parsers.
+- #1400: `entries` and `reach` text reports escape HTTP route paths (follow-up to #1394).
+- #1394: Text output escapes control and bidirectional characters in file names (#1305).
+- #1393: Review follow-ups to #1390, #1391 and #1392.
+- #1392: `sbom` accepts `-p` / `--profile`.
+- #1389: `sbom` honours the `exclude` list in `cognium.config.json`.
+- #1358: `env` in `spawn` options is not command injection.
+- #1362: Keep scanning other files when one file's `analyze()` throws (Refs #1351).
+- #1354: Usage and configuration errors exit 2; unknown options are refused.
+- #1342: Default, re-exported, member and array Express handlers resolve as route entries.
+- #1334: Directory scans run the per-file phase on `--threads` workers.
+- #1321: SARIF reports unanalysed files, timeouts and gate drops (#1306).
+
+**circle-ir 4.24.0 (changes what `scan` reports)**
+
+- #1461: `orphan-module` counts `<script src>` references and skips minified files.
+- #1413: A partial parse reports `partial` and keeps its declarations (#1307).
+- #1452: Java: a hardened XML factory also clears the inter-procedural xxe flow.
+- #1462: Java: a print to a `PrintStream` or a logger is not xss.
+- #1453: Java: a receiver typed outside the file does not bind to a same-named method.
+- #1460: `ImportGraph` resolves `.mjs`, `.cjs`, `.mts` and `.cts` imports, so `orphan-module` has fewer false positives (#1457).
+- #1417: Java: calls in field initializers are attributed to `<clinit>` / `<init>`.
+- #1440: `String.raw` as a template tag is not a SQL `raw()` sink (Refs #1431).
+- #1447: Java: `db_input` sources need a `ResultSet` or `RowSet` receiver.
+- #1451: JS/TS: proximity-only pairs whose source is a bare parameter or constructor field are dropped when flows are known (#1434).
+- #1414: A caught error is not the request value (#1305).
+- #1448: The absolute-path / `..` guard reads multi-line imports and skips regex literals.
+- #1449: Stable finding ids (Refs #1443).
+- #1441: The wiki `render` xss sink row is scoped to Java (Refs #1432).
+- #1411: Sources in `__mocks__` do not taint production sinks (Refs #1311).
+- #1418: Dead code: a module-level field follows its module (#1311).
+- #1415: `module-side-effect` ignores a local named `http` (#1305).
+- #1416: `path_traversal` credits an absolute-path and `..` guard (#1305).
+- #1439: The two juice-shop ReDoS removals from #1121 are recorded as intended (#1314).
+- #1429: `export default = { handler }` counts as a channel export (#818).
+- #1424: A discarded `JSON.parse(req.body)` is not insecure deserialization (Refs #1332).
+- #1409: JS/TS: a number cannot forge a log entry (`log_injection`, #1305).
+- #1406: Java: enum members, constructors and records are extracted (#1308).
+- #1405: Java: method references are call sites in `ir.calls` (Refs #1308).
+- #1408: React Native / Expo platform test files are test files for the test-to-production taint gate.
+- #1402: The declared-version index reads comments with CDATA in mind; an unterminated CDATA is never read.
+- #1398: `parseMavenDependencies` strips XML comments before reading the pom.
+- #1396: Linear-time `def` / `func` header patterns in the no-op helper check.
+- #1395: A pom `<dependency>` `${property}` version resolves from the pom's own `<properties>`.
+- #1390: `detectLanguage` maps `.ts`, `.tsx`, `.mts` and `.cts` to TypeScript.
+- #1391: `predictable-temp-file` reports CWE-379 instead of the deprecated CWE-377.
+- #1384: Java: no duplicate `Class.forName` deserialization finding (#1349).
+- #1382: JS/TS: subscribe-callback taint reaches an instance method (#1381).
+- #1376: Java: drop `Class.forName` deserialization in a CLI `main` file (Refs #1349).
+- #1379: Java: `log_injection` on SLF4J messages built by concatenation (Refs #1378).
+- #1124: JS/TS: an interprocedural flow takes only a source that can reach the call (#1121).
+- #1360: A JSON response is not an xss sink.
+- #1356: Python: DRF ViewSet verbs come from the `as_view()` map only.
+- #1361: A file read does not taint its own path argument.
+- #1357: Hono `c.req.query()` is not a SQL sink.
+- #1353: Java: a heap-field source respects a strong update.
+- #1366: Dead code: module and field verdicts follow their members (Refs #1288).
+- #1365: Jest `__mocks__` entries when `jest-expo` or a Jest config is present.
+- #1364: Python: a `re.fullmatch` guard before `subprocess` is credited (Refs #1347).
+- #1359: A numeric helper returns a clean value for SQL and command sinks; Hono `c.env` is not request data.
+- #1363: Java: a `Set.contains` allowlist guard also clears `deserialization`.
+- #1355: Python: range-guard sanitizer fan-out is capped, so very large files no longer overflow the stack (#1350).
+- #1352: Python: Django `include()` prefixes compose; DRF verbs and prefixed string literals are read.
+- #1344: `TsCallGraph` emits class heritage (`extends` / `implements`) references (Refs #1343).
+- #1341: Navigation records `exports.X` / `module.exports.X` reads as references (#1340).
+- #1339: Performance: block bindings are memoized in TS call edges (#1338).
+- #1335: JS/TS: anchored allowlist reject guards clear cmdi, xpathi, sqli and xss (Refs #1332).
+- #1337: Navigation resolves `call` / `apply` / `bind` through receiver methods (#1336).
+- #1333: `escapeIdentifier` is a SQL injection sanitizer (Refs #1332).
+- #1331: Imported Express handlers are entry points (Refs #1323).
+- #1330: JS: no `ssrf` on supertest `request(app)` (#1326).
+- #1329: A private `#map = new Map()` field is an in-memory Map receiver (#1325).
+- #1322: TypeScript: import types in call type arguments are benign parse errors.
+- #1317: Rust: actix `body(format!(…))` reports a `format_string` flow.
+
+**Elsewhere in the repository (tests, CI, tooling; nothing shipped)**
+
+- #1463: Record the tree-sitter Go and JavaScript grammar versions from the wasm files.
+- #1437: Test: built-CLI fixture for a Java cookie case (Refs #1313).
+- #1426: Tests: lock the JS `trust_boundary` safe cases (Refs #1371).
+- #1423: Mark the vendored tree-sitter wasm files as third-party.
+- #1422: Test design: recheck scenarios for regex-related cases.
+- #1377: Tests: more coverage of the file watchdog and CLI option helpers.
+- #1387: CI: the pull-request scan SARIF step runs single-threaded too.
+- #1385: CI: the pull-request scan compare runs single-threaded to avoid parse timeouts.
+- #1386: CI: Dependabot skips TypeScript major updates until typescript-eslint supports them.
+- #1383: Test: the CLI locks an SLF4J concatenation `log_injection` case (#1378).
+- #1369: Test design: project-profile scan wiring scenarios.
+- #1380: Tests: lock the Java regression manifest's true-positive anchors (Refs #1349).
+- #1373: Dev dependencies: tooling group updates.
+- #1374: Dev dependencies: eslint group updates.
+- #1375: Dependencies: postcss 8.5.32 → 8.5.33 (html-index).
+- #1368: List the paths automated fixes must not edit.
+- #1367: Add a root `cognium.config.json`.
+- #1345: Test: lock the `super.update` call site after cross-file heritage (#1343).
+- #1319: CI: the rc-tag job no longer uploads an empty SHA256SUMS.
 
 ## [4.23.0] - 2026-11-19
 

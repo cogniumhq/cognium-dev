@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Java: method references are call sites in `ir.calls` (Refs cognium-dev#1308).** `System.out::println`, `String::length`, `this::f`, `super::g`, `Box::new` and `java.util.LinkedList::new` each give a `CallInfo` with the new `reference_form`: `method` (`X::m`, receiver `X`), `super` (`super::m`), or `constructor` (`T::new`, named and resolved like `new T(…)`). `arguments` is empty. `T[]::new` creates an array and is not a call site. The navigation index does not bind them as calls; the Java graph keeps reading them from the tree as reference edges, so reach output is unchanged.
   - **Consumer Impact:** a consumer that walks `ir.calls` for Java and does not check `reference_form` now also sees these sites, with no arguments, and treats them as invocations. Passes that match on a method name do: `unbounded-collection` (CWE-770) now fires on a grow method passed as a reference inside a loop (`setContext(bindings::put, …)`). On 97 idempiere files that use method references, all categories, findings went 1742 → 1744, both of them that case; none were removed. To keep invocations only, skip calls whose `reference_form` is set.
 - **`ProjectAnalysis.entry_path_dropped` counts the findings that the `require-entry-path` gate removes (cognium-dev#1306).** `applyRequireEntryPath` returns its drop count. `analyzeProject` sets the field when the count is above 0. Results are unchanged.
+- **`TsCallGraph` reports class heritage (Refs cognium-dev#1343) (#1344).** `buildTsCallGraph` output carries each class's resolved `extends` / `implements` types, and a supertype declared in the scanned tree gets a reference edge, so heritage across files is visible to callers of the graph.
+- **Navigation resolves `call`, `apply` and `bind` through receiver methods (#1336) (#1337).** `obj.method.call(…)`, `.apply(…)` and `.bind(…)` are followed to `method` like a direct `obj.method(…)` call.
+- **Navigation records `exports.X` and `module.exports.X` reads as references (#1340) (#1341).** A read of a CommonJS export points at the assigned declaration, so a blast-radius walk can follow a handler passed through `exports`.
 
 ### Changed
 
@@ -76,10 +79,132 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hono: `c.env` bindings are not request data.** In a handler that also reads the request, the context parameter `c` was tainted and `const table = c.env.TABLE` inherited it. A local whose whole initializer is `<id>.env`, a member path below it, or a destructuring of it without defaults, in a file that imports `hono`, is now a taint barrier. An index by a variable (`c.env[q]`) keeps the taint.
 - **JS/TS: more imported Express handler shapes count as route entry points (Refs cognium-dev#1323, follow-up to #1331).** #1331 resolved a handler imported by name and registered by name (`router.get('/run', run)`). `require-entry-path` now also resolves a default export bound under another local name, a handler re-exported through one hop (`export { run } from './handler'` in `index.ts`), a member handler on a namespace or `require` import (`handlers.run`) or a class import (`Controller.run`), and a handler inside an array argument (`router.get('/p', [auth, run])`), which is now recorded in `runtime_registrations`. Before, the gate dropped the high/critical findings in these handlers whenever another JS/TS entry point was in the scan. An imported function that no route registers is still dropped.
 - **TypeScript: generic calls with `typeof import(...)` or `import(...).T` in type arguments no longer mark stable ids partial (cognium-dev#1312).** Benign-parse rules now cover call-site type arguments where tree-sitter leaves an `ERROR` `>() tail after `import` types in expressions and return statements.
+- **Rust: actix `HttpResponse::body(format!(…, input))` reports a `format_string` flow (CWE-134) as well as xss (#1317).** Range-check guards and the existing info-pattern sanitizers clear it on the safe shapes.
+- **JS/TS: `this.#map.get()` on a private field declared `#map = new Map()` is an in-memory Map read (#1325) (#1329).** It is treated like other in-memory `Map.get` calls, so it is no longer a taint source.
+- **JS: no `ssrf` on supertest `request(app)` (#1326) (#1330).** When `request` comes from `supertest`, it drives an in-process app, so the classless `request()` SSRF sink does not apply.
+- **JS/TS: `escapeIdentifier` is a SQL injection sanitizer (Refs #1332) (#1333).** A safe `ORDER BY` built with `escapeIdentifier(column)` no longer reports `sql_injection`.
+- **JS/TS: an anchored allowlist reject guard clears command, XPath, SQL and xss sinks (Refs #1332) (#1335).** `if (!/^(a|b)$/.test(x)) return;` before the sink is credited for `command_injection`, `xpath_injection`, `sql_injection` and `xss`.
+- **Performance: TS call edges index each block's bindings once (#1338) (#1339).** A function with many call sites no longer rescans its whole block for every call. Results are unchanged.
+- **Python: the range-guard sanitizer fan-out is capped, so a very large file no longer overflows the stack (#1350) (#1355).** Guard and tail scans are bounded and sanitizers are appended in a loop.
+- **Java: a `Set.contains` allowlist guard also clears `deserialization` (#1363).** The reflection allowlist guard already cleared `code_injection`; a `Class.forName` behind the same guard no longer reports a deserialization flow.
+- **Python: a `re.fullmatch` reject guard before `subprocess` is credited (Refs #1347) (#1364).** An inline `if not re.fullmatch(…, x): return` before a command or code injection sink clears it.
+- **JS/TS: `export default = { handler }` counts as a channel export (#818) (#1429).** The export check accepted only `export default { … }`, so handlers written with a stray `=` stayed behind the parameter-source gate. The handler-name and request-shaped-parameter checks are unchanged.
+- **The wiki `render` xss sink is scoped to Java (Refs #1432) (#1441).** The classless `render` row matched local JavaScript and TypeScript functions named `render`, which reported CWE-79 on plain string builders. Python keeps its own classless `render` row, so Jinja `.render()` still reports.
+- **JS/TS: proximity-only pairs whose source is a bare parameter or a constructor field are dropped when flows are known (#1434) (#1451).** This matches the parameter-source flow gate (#292) on the findings path.
+- **`ImportGraph` resolves `.mjs`, `.cjs`, `.mts` and `.cts` imports (#1457) (#1460).** An extension-less or ESM `.js` specifier now finds a file with one of these extensions, so `orphan-module` reports fewer false positives.
 
 ### Consumer Impact
 - **Java `CallInfo.in_method` is `<clinit>` or `<init>` for a call in a field initializer, where it was `null` (Refs cognium-dev#1308).** No other language changes. A consumer that treats a `null` `in_method` as "outside any method" (skipping the call, or attributing it to field or class scope) now sees these calls as inside a method, and a lookup of `<clinit>` or `<init>` among `types[].methods` finds nothing, since neither is listed there: it gets no method, not an error. Match the two names explicitly to keep the old treatment, or attribute them to the enclosing type. Java constructor calls keep the class name as `in_method`.
 - **A C or C++ file now comes back from `analyze()` with `parse_status.success: false` and `error_count: 0`, where it used to throw (#1307).** Check `parse_status.state === 'unsupported'` (or `hasGrammar(language)` before calling) rather than reading `success === false` as a parse error: a consumer that treats every `success: false` as a partial parse would report such a file as "0 syntax error(s)". For languages with a bundled grammar, the new `state` field is `complete` or `partial`; the JS/TS and Java partial-parse changes are under Fixed.
+
+### Pull requests
+
+Every pull request merged since `circle-ir-v4.23.0`, newest first.
+
+**circle-ir**
+
+- #1465: Every quality rule has a plain-words title; text output leads a quality finding with it.
+- #1464: Java: the `PrintStream` xss guard is decided per project, not per file.
+- #1461: `orphan-module` counts `<script src>` references and skips minified files.
+- #1413: A partial parse reports `partial` and keeps its declarations (#1307).
+- #1452: Java: a hardened XML factory also clears the inter-procedural xxe flow.
+- #1462: Java: a print to a `PrintStream` or a logger is not xss.
+- #1453: Java: a receiver typed outside the file does not bind to a same-named method.
+- #1460: `ImportGraph` resolves `.mjs`, `.cjs`, `.mts` and `.cts` imports, so `orphan-module` has fewer false positives (#1457).
+- #1450: `orphan-module` judges JavaScript and TypeScript files only.
+- #1417: Java: calls in field initializers are attributed to `<clinit>` / `<init>`.
+- #1459: `scan -f json`: every finding names its rule (`rule_id`, `rule_title`).
+- #1440: `String.raw` as a template tag is not a SQL `raw()` sink (Refs #1431).
+- #1447: Java: `db_input` sources need a `ResultSet` or `RowSet` receiver.
+- #1451: JS/TS: proximity-only pairs whose source is a bare parameter or constructor field are dropped when flows are known (#1434).
+- #1414: A caught error is not the request value (#1305).
+- #1448: The absolute-path / `..` guard reads multi-line imports and skips regex literals.
+- #1449: Stable finding ids (Refs #1443).
+- #1441: The wiki `render` xss sink row is scoped to Java (Refs #1432).
+- #1411: Sources in `__mocks__` do not taint production sinks (Refs #1311).
+- #1418: Dead code: a module-level field follows its module (#1311).
+- #1415: `module-side-effect` ignores a local named `http` (#1305).
+- #1416: `path_traversal` credits an absolute-path and `..` guard (#1305).
+- #1439: The two juice-shop ReDoS removals from #1121 are recorded as intended (#1314).
+- #1436: The Firebase plist downgrade follows the key name; one message per key.
+- #1429: `export default = { handler }` counts as a channel export (#818).
+- #1424: A discarded `JSON.parse(req.body)` is not insecure deserialization (Refs #1332).
+- #1409: JS/TS: a number cannot forge a log entry (`log_injection`, #1305).
+- #1406: Java: enum members, constructors and records are extracted (#1308).
+- #1405: Java: method references are call sites in `ir.calls` (Refs #1308).
+- #1407: React Native / Expo: `.plist` files are scanned for secrets (#1311).
+- #1408: React Native / Expo platform test files are test files for the test-to-production taint gate.
+- #1402: The declared-version index reads comments with CDATA in mind; an unterminated CDATA is never read.
+- #1401: CDATA-safe one-pass XML comment stripping in the pom and Tycho parsers.
+- #1398: `parseMavenDependencies` strips XML comments before reading the pom.
+- #1396: Linear-time `def` / `func` header patterns in the no-op helper check.
+- #1395: A pom `<dependency>` `${property}` version resolves from the pom's own `<properties>`.
+- #1393: Review follow-ups to #1390, #1391 and #1392.
+- #1390: `detectLanguage` maps `.ts`, `.tsx`, `.mts` and `.cts` to TypeScript.
+- #1391: `predictable-temp-file` reports CWE-379 instead of the deprecated CWE-377.
+- #1384: Java: no duplicate `Class.forName` deserialization finding (#1349).
+- #1382: JS/TS: subscribe-callback taint reaches an instance method (#1381).
+- #1376: Java: drop `Class.forName` deserialization in a CLI `main` file (Refs #1349).
+- #1379: Java: `log_injection` on SLF4J messages built by concatenation (Refs #1378).
+- #1124: JS/TS: an interprocedural flow takes only a source that can reach the call (#1121).
+- #1360: A JSON response is not an xss sink.
+- #1356: Python: DRF ViewSet verbs come from the `as_view()` map only.
+- #1361: A file read does not taint its own path argument.
+- #1358: `env` in `spawn` options is not command injection.
+- #1357: Hono `c.req.query()` is not a SQL sink.
+- #1353: Java: a heap-field source respects a strong update.
+- #1366: Dead code: module and field verdicts follow their members (Refs #1288).
+- #1365: Jest `__mocks__` entries when `jest-expo` or a Jest config is present.
+- #1364: Python: a `re.fullmatch` guard before `subprocess` is credited (Refs #1347).
+- #1359: A numeric helper returns a clean value for SQL and command sinks; Hono `c.env` is not request data.
+- #1363: Java: a `Set.contains` allowlist guard also clears `deserialization`.
+- #1362: Keep scanning other files when one file's `analyze()` throws (Refs #1351).
+- #1355: Python: range-guard sanitizer fan-out is capped, so very large files no longer overflow the stack (#1350).
+- #1352: Python: Django `include()` prefixes compose; DRF verbs and prefixed string literals are read.
+- #1344: `TsCallGraph` emits class heritage (`extends` / `implements`) references (Refs #1343).
+- #1342: Default, re-exported, member and array Express handlers resolve as route entries.
+- #1341: Navigation records `exports.X` / `module.exports.X` reads as references (#1340).
+- #1339: Performance: block bindings are memoized in TS call edges (#1338).
+- #1335: JS/TS: anchored allowlist reject guards clear cmdi, xpathi, sqli and xss (Refs #1332).
+- #1334: Directory scans run the per-file phase on `--threads` workers.
+- #1337: Navigation resolves `call` / `apply` / `bind` through receiver methods (#1336).
+- #1333: `escapeIdentifier` is a SQL injection sanitizer (Refs #1332).
+- #1331: Imported Express handlers are entry points (Refs #1323).
+- #1330: JS: no `ssrf` on supertest `request(app)` (#1326).
+- #1329: A private `#map = new Map()` field is an in-memory Map receiver (#1325).
+- #1322: TypeScript: import types in call type arguments are benign parse errors.
+- #1321: SARIF reports unanalysed files, timeouts and gate drops (#1306).
+- #1317: Rust: actix `body(format!(…))` reports a `format_string` flow.
+
+**Elsewhere in the repository (no change to circle-ir)**
+
+- #1463: Record the tree-sitter Go and JavaScript grammar versions from the wasm files.
+- #1437: Test: built-CLI fixture for a Java cookie case (Refs #1313).
+- #1426: Tests: lock the JS `trust_boundary` safe cases (Refs #1371).
+- #1427: Text output escapes finding messages and error reasons (#1305).
+- #1419: An unreadable file in a directory scan is reported, not fatal.
+- #1423: Mark the vendored tree-sitter wasm files as third-party.
+- #1422: Test design: recheck scenarios for regex-related cases.
+- #1403: SARIF names every unanalysed file, not only a run-level count.
+- #1377: Tests: more coverage of the file watchdog and CLI option helpers.
+- #1400: `entries` and `reach` text reports escape HTTP route paths (follow-up to #1394).
+- #1394: Text output escapes control and bidirectional characters in file names (#1305).
+- #1392: `sbom` accepts `-p` / `--profile`.
+- #1389: `sbom` honours the `exclude` list in `cognium.config.json`.
+- #1387: CI: the pull-request scan SARIF step runs single-threaded too.
+- #1385: CI: the pull-request scan compare runs single-threaded to avoid parse timeouts.
+- #1386: CI: Dependabot skips TypeScript major updates until typescript-eslint supports them.
+- #1383: Test: the CLI locks an SLF4J concatenation `log_injection` case (#1378).
+- #1369: Test design: project-profile scan wiring scenarios.
+- #1380: Tests: lock the Java regression manifest's true-positive anchors (Refs #1349).
+- #1373: Dev dependencies: tooling group updates.
+- #1374: Dev dependencies: eslint group updates.
+- #1375: Dependencies: postcss 8.5.32 → 8.5.33 (html-index).
+- #1368: List the paths automated fixes must not edit.
+- #1367: Add a root `cognium.config.json`.
+- #1354: Usage and configuration errors exit 2; unknown options are refused.
+- #1345: Test: lock the `super.update` call site after cross-file heritage (#1343).
+- #1319: CI: the rc-tag job no longer uploads an empty SHA256SUMS.
 
 ## [4.23.0] - 2026-11-19
 
