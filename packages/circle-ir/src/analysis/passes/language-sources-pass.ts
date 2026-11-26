@@ -8692,15 +8692,29 @@ function jsDeclarationText(code: string): string {
   return c.join('');
 }
 
+/** Words after which a `/` starts a regex literal, not a division (`return /re/`). */
+const JS_REGEX_PREFIX_WORDS = new Set([
+  'return', 'typeof', 'case', 'void', 'delete', 'throw', 'new', 'in', 'of', 'yield', 'await', 'else', 'do',
+]);
+
 /**
  * Whether a `/` at `k` (not followed by `/` or `*`) can start a regex literal rather than divide:
- * the previous non-blank character is one of `( , = : [ ! & | ? { } ;`, or there is none on its
- * line (#1416 re-review 6).
+ * the previous non-blank character is one of `( , = : [ ! & | ? { } ; < > + - * % ~ ^` (so after
+ * `=>` too), the previous word is a whole `return`, `typeof`, `case`, `void`, `delete`, `throw`,
+ * `new`, `in`, `of`, `yield`, `await`, `else` or `do`, or there is nothing before it on its line
+ * (#1416 re-review 6). Accepted misreads, of division: after a postfix `++` / `--`, after a `}`
+ * that ends an expression, and on a continued line that starts with `/` (`total⏎  / 2 / n`).
+ * The text between the two slashes is then blanked, which could hide a declaration only in
+ * contrived code.
  */
 function regexMayStart(c: string[], k: number): boolean {
   let p = k - 1;
   while (p >= 0 && (c[p] === ' ' || c[p] === '\t')) p--;
-  return p < 0 || '(,=:[!&|?{};\n'.includes(c[p]);
+  if (p < 0 || '(,=:[!&|?{};<>+-*%~^\n'.includes(c[p])) return true;
+  let w = p;
+  while (w >= 0 && /[a-z]/.test(c[w])) w--;
+  if (w === p || (w >= 0 && /[\w$.]/.test(c[w]))) return false;
+  return JS_REGEX_PREFIX_WORDS.has(c.slice(w + 1, p + 1).join(''));
 }
 
 /** The index of the first non-blank character at or after `k` (`text.length` if none). */
@@ -8863,6 +8877,21 @@ function jsDeclaredNames(code: string): string[] {
   return out;
 }
 
+/** `line` trimmed, without a trailing line comment or any block comment that closes on it. */
+function withoutLineComments(line: string): string {
+  let out = '';
+  for (let k = 0; k < line.length; k++) {
+    if (line.startsWith('//', k)) break;
+    if (line.startsWith('/*', k)) {
+      const e = line.indexOf('*/', k + 2);
+      if (e < 0) break;
+      out += ' ';
+      k = e + 1;
+    } else out += line[k];
+  }
+  return out.trim();
+}
+
 /**
  * The `path` bindings of a file, by a plain scan of its lines: `import path from 'path'`,
  * `import * as p from 'node:path'`, `import { join as j, posix } from 'path'` (on one line or
@@ -8879,7 +8908,9 @@ function jsPathBindings(lines: string[]): JsPathBindings {
     let line = lines[i].trim();
     // an import list over several lines (`import {` … `} from 'path';`) is read as one line
     if (line.startsWith('import ') && line.includes('{') && !line.includes('}')) {
-      while (i + 1 < lines.length && !line.includes('}')) line += ' ' + lines[++i].trim();
+      // a line or block comment in the list is dropped, so it hides no name after it
+      line = withoutLineComments(line);
+      while (i + 1 < lines.length && !line.includes('}')) line += ' ' + withoutLineComments(lines[++i]);
     }
     line = line.replace(/;$/, '').trimEnd();
     if (line.startsWith('import ')) {
