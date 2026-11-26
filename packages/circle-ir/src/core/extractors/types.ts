@@ -78,8 +78,9 @@ function detectLanguage(tree: Tree): 'javascript' | 'java' | 'python' | 'rust' {
 export interface TypeExtractionOptions {
   /**
    * Emit `record_declaration` types, set `enclosing_type` and
-   * `type_parameters`, emit an enum's methods and fields, and type a varargs
-   * parameter. Every one is additive to what the default path emits.
+   * `type_parameters`, and type a varargs parameter. Every one is additive to
+   * what the default path emits. (An enum's methods and fields are emitted
+   * on the default path since #1308.)
    */
   navigationTypes?: boolean;
 }
@@ -335,25 +336,6 @@ function extractJavaTypes(
   }
 
   if (!options?.navigationTypes) return types;
-
-  // An enum's members, which the default path misses: after the constants,
-  // methods, constructors and fields sit inside `enum_body_declarations`, one
-  // level below the `enum_body` that `extractMethods` walks. A static factory
-  // such as `Kind.fromInt(…)` is then declared nowhere, and every call to it
-  // is unanswerable.
-  for (const enumDecl of enums) {
-    const info = types.find(
-      t => t.kind === 'enum' && t.start_line === enumDecl.startPosition.row + 1 && t.name === getIdentifier(enumDecl, 'name'),
-    );
-    const body = enumDecl.childForFieldName('body');
-    if (!info || !body) continue;
-    for (let i = 0; i < body.childCount; i++) {
-      const decls = body.child(i);
-      if (decls?.type !== 'enum_body_declarations') continue;
-      info.methods.push(...extractMethods(decls));
-      info.fields.push(...extractFields(decls));
-    }
-  }
 
   // A varargs parameter, which the default path reports with no type and a
   // placeholder name: `spread_parameter` carries neither a `type` nor a
@@ -1704,10 +1686,18 @@ function extractEnumInfo(node: Node): TypeInfo {
   // Extract interfaces
   const implementsList = extractImplementsList(node);
 
-  // Extract body
+  // Extract body. After the constants, an enum's methods, constructors and
+  // fields sit inside `enum_body_declarations`, one level below `enum_body`;
+  // without walking it a static factory such as `Kind.fromInt(…)` is
+  // declared nowhere (#1308).
   const body = node.childForFieldName('body');
   const methods = body ? extractMethods(body) : [];
   const fields = body ? extractFields(body) : [];
+  for (const decls of body?.children ?? []) {
+    if (decls?.type !== 'enum_body_declarations') continue;
+    methods.push(...extractMethods(decls));
+    fields.push(...extractFields(decls));
+  }
 
   const pkg = extractPackageFromAncestors(node);
 
@@ -1745,6 +1735,15 @@ function extractMethods(body: Node): MethodInfo[] {
     if (child.type === 'method_declaration' || child.type === 'constructor_declaration') {
       methods.push(extractMethodInfo(child, precedingComment));
       precedingComment = null; // Reset after using
+    } else if (child.type === 'compact_constructor_declaration') {
+      // A record's `Name { … }` constructor: its parameters are the record
+      // header's components, which the declaration does not repeat (#1308).
+      const info = extractMethodInfo(child, precedingComment);
+      const rec = body.parent?.type === 'record_declaration' ? body.parent : null;
+      const params = rec?.childForFieldName('parameters');
+      if (params) info.parameters = extractParameters(params);
+      methods.push(info);
+      precedingComment = null;
     } else {
       // Non-method, non-comment node - reset preceding comment
       precedingComment = null;
@@ -1758,7 +1757,7 @@ function extractMethods(body: Node): MethodInfo[] {
  * Extract method information.
  */
 function extractMethodInfo(node: Node, precedingComment: Node | null = null): MethodInfo {
-  const isConstructor = node.type === 'constructor_declaration';
+  const isConstructor = node.type === 'constructor_declaration' || node.type === 'compact_constructor_declaration';
   const name = getIdentifier(node, 'name') ?? (isConstructor ? '<init>' : 'unknown');
 
   // Extract return type
