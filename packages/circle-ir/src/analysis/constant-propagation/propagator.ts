@@ -221,22 +221,37 @@ export class ConstantPropagator {
     const javaMethodParamIndex = this.buildJavaMethodParameterIndex(prePassMethods);
     const javaCalleeOverlay = new Map<string, Set<string>>();
 
-    if (omitJavaUnscopedTaintAliases && javaMethodParamIndex.arityKeyToParams.size > 0) {
+    // cognium-dev#1320: class fields tainted by an earlier round. A field
+    // written in one method is read in another (`dataBad = data;` in bad(),
+    // `String data = dataBad;` in badSink()), so it is seeded unscoped for
+    // every method, as the result below already reports it.
+    const javaFieldCarry = new Set<string>();
+
+    if (omitJavaUnscopedTaintAliases && (javaMethodParamIndex.arityKeyToParams.size > 0 || this.classFields.size > 0)) {
       // Fixpoint: same-file calls pass taint into callees; const-prop order
       // follows declaration order, so seed params from call sites iteratively.
-      let prevSig = '';
+      let prevSig = 'fields:[]';
       for (let round = 0; round < 16; round++) {
         this.resetStateForJavaFixpointRound();
+        for (const field of javaFieldCarry) this.tainted.add(field);
         this.javaCalleeParameterOverlay = javaCalleeOverlay;
         this.visit(tree.rootNode);
         this.refineTaintFromConstants();
         this.javaCalleeParameterOverlay = undefined;
 
-        const discovered = this.collectJavaCalleeParameterSeedsFromCalls(tree.rootNode, javaMethodParamIndex);
+        const discovered = javaMethodParamIndex.arityKeyToParams.size > 0
+          ? this.collectJavaCalleeParameterSeedsFromCalls(tree.rootNode, javaMethodParamIndex)
+          : new Map<string, Set<string>>();
         let sig = '';
         for (const [m, ps] of [...discovered.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
           sig += `${m}:[${[...ps].sort().join(',')}];`;
         }
+        for (const name of this.tainted) {
+          if (!name.includes(':') || /^[^:]+:b\d+:/.test(name)) continue;
+          const field = name.substring(name.indexOf(':') + 1);
+          if (this.classFields.has(field)) javaFieldCarry.add(field);
+        }
+        sig += `fields:[${[...javaFieldCarry].sort().join(',')}]`;
         if (sig === prevSig) {
           break;
         }

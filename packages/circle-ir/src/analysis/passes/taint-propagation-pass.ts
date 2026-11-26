@@ -2822,6 +2822,38 @@ function csharpMethodScopedAliases(
   return out;
 }
 
+/**
+ * cognium-dev#1320 — Java locals copied from a tainted field of their own class
+ * (`String data = dataBad;`, `data = this.dataBad;`), one per method.
+ *
+ * `buildJavaTaintedVars` keys aliases by name across the file, so the copy in
+ * a sink method either lost to a same-named local in the writing method or
+ * took that method's source line. Each copy here starts at its own line in
+ * its own method. `tainted` is const-prop's set: a bare field name is in it
+ * when some method of the file writes taint to that field.
+ */
+function javaFieldCarriedLocals(
+  code: string,
+  types: CircleIR['types'],
+  tainted: ReadonlySet<string>,
+): Array<{ variable: string; field: string; line: number; method: string }> {
+  const out: Array<{ variable: string; field: string; line: number; method: string }> = [];
+  const lines = splitLinesCached(code);
+  const copyRe = /^\s*(?:final\s+)?(?:[A-Za-z_][\w.]*(?:\s*<[^>]*>)?(?:\s*\[\s*\])*\s+)?([A-Za-z_]\w*)\s*=\s*(?:this\s*\.\s*)?([A-Za-z_]\w*)\s*;/;
+  for (const t of types) {
+    const fields = new Set((t.fields ?? []).map(f => f.name).filter(n => tainted.has(n)));
+    if (fields.size === 0) continue;
+    for (const m of t.methods) {
+      for (let i = m.start_line; i <= m.end_line && i <= lines.length; i++) {
+        const c = copyRe.exec(lines[i - 1] ?? '');
+        if (!c || c[1] === c[2] || !fields.has(c[2]) || fields.has(c[1])) continue;
+        out.push({ variable: c[1], field: c[2], line: i, method: m.name });
+      }
+    }
+  }
+  return out;
+}
+
 let _reassignSplitCode: string | undefined;
 let _reassignSplitLines: string[] | undefined;
 function splitLinesCached(code: string): string[] {
@@ -4246,6 +4278,20 @@ function detectExpressionScanFlows(
       sourcesWithVar.push(aliasEntry);
     }
   } else if ((language === 'java' || language === 'csharp') && typeof code === 'string' && sourcesWithVar.length > 0) {
+    if (language === 'java') {
+      for (const alias of javaFieldCarriedLocals(code, types ?? [], tainted)) {
+        if (sourcesWithVar.some(s => s.variable === alias.variable && s.in_method === alias.method)) continue;
+        const from = sourcesWithVar.find(s => s.variable === alias.field)
+          ?? sourcesWithVar.reduce((a, s) => (s.line < a.line ? s : a), sourcesWithVar[0]);
+        sourcesWithVar.push({
+          ...from,
+          variable: alias.variable,
+          line: alias.line,
+          in_method: alias.method,
+          literal_kill_line: alias.line,
+        });
+      }
+    }
     const seedVars = new Set(sourcesWithVar.map(s => s.variable));
     const derived = buildJavaTaintedVars(code, seedVars);
     if (derived.size > 0) {
