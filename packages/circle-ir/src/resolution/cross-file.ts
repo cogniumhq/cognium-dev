@@ -228,6 +228,60 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function isJavaIdent(s: string): boolean {
+  if (!s) return false;
+  const first = s[0]!;
+  if (first !== '_' && !((first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z'))) return false;
+  for (let i = 1; i < s.length; i++) {
+    const c = s[i]!;
+    if (c === '_' || (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) continue;
+    return false;
+  }
+  return true;
+}
+
+/** Single-statement body `fieldName = paramName` for a one-param static setter. */
+function parseJavaStaticFieldAssignment(inner: string): { field: string; param: string } | null {
+  let s = inner.trim();
+  if (s.endsWith(';')) s = s.slice(0, -1).trim();
+  const eq = s.indexOf('=');
+  if (eq < 0) return null;
+  const field = s.slice(0, eq).trim();
+  const param = s.slice(eq + 1).trim();
+  if (!isJavaIdent(field) || !isJavaIdent(param)) return null;
+  if (s.slice(eq + 1).includes('=')) return null;
+  return { field, param };
+}
+
+/** Body that is only `return fieldName` or `return this.fieldName`. */
+function parseJavaStaticGetterReturn(inner: string): string | null {
+  let s = inner.trim();
+  if (!s.startsWith('return')) return null;
+  s = s.slice('return'.length).trim();
+  if (s.endsWith(';')) s = s.slice(0, -1).trim();
+  if (s.startsWith('this.')) s = s.slice(5);
+  if (!isJavaIdent(s)) return null;
+  return s;
+}
+
+/** Body `return OtherType.staticMethod()`. */
+function parseJavaStaticDelegateReturn(inner: string): { type: string; method: string } | null {
+  let s = inner.trim();
+  if (!s.startsWith('return')) return null;
+  s = s.slice('return'.length).trim();
+  if (s.endsWith(';')) s = s.slice(0, -1).trim();
+  const paren = s.indexOf('(');
+  if (paren < 0 || !s.endsWith(')')) return null;
+  const call = s.slice(0, paren).trim();
+  const dot = call.lastIndexOf('.');
+  if (dot < 0) return null;
+  const type = call.slice(0, dot);
+  const method = call.slice(dot + 1);
+  if (!isJavaIdent(type) || !isJavaIdent(method)) return null;
+  if (s.slice(paren + 1, -1).trim() !== '') return null;
+  return { type, method };
+}
+
 export class CrossFileResolver {
   // -- pre-3.89.0 pre-index cache (see FileIndex above) --
   private readonly fileIndexes: WeakMap<CircleIR, FileIndex> = new WeakMap();
@@ -1876,10 +1930,8 @@ export class CrossFileResolver {
   private analyzeJavaStaticFieldPairs(ir: CircleIR, filePath: string): void {
     if (ir.meta.language !== 'java') return;
     const lines = this.sourceLines?.get(filePath);
-  if (!lines) return;
+    if (!lines) return;
     const pkg = ir.meta.package || '';
-    const staticSetterRe = /^([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;?\s*$/;
-    const getterRe = /return\s+(?:this\.)?([A-Za-z_]\w*)\s*;?/;
 
     for (const type of ir.types) {
       const typeFqn = pkg ? `${pkg}.${type.name}` : type.name;
@@ -1893,21 +1945,21 @@ export class CrossFileResolver {
         if (open < 0 || close <= open) continue;
         const inner = body.slice(open + 1, close).replace(/\/\/[^\n]*/g, '').trim();
 
-        if (m.parameters.length === 1 && staticSetterRe.test(inner)) {
-          const stm = staticSetterRe.exec(inner);
-          if (stm && stm[2] === m.parameters[0].name) {
-            const entry = pairs.get(stm[1]) ?? {};
+        if (m.parameters.length === 1) {
+          const stm = parseJavaStaticFieldAssignment(inner);
+          if (stm && stm.param === m.parameters[0].name) {
+            const entry = pairs.get(stm.field) ?? {};
             entry.setter = m.name;
-            pairs.set(stm[1], entry);
+            pairs.set(stm.field, entry);
             continue;
           }
         }
         if (m.parameters.length === 0) {
-          const gm = inner.match(getterRe);
-          if (gm && inner.replace(gm[0], '').trim() === '') {
-            const entry = pairs.get(gm[1]) ?? {};
+          const field = parseJavaStaticGetterReturn(inner);
+          if (field) {
+            const entry = pairs.get(field) ?? {};
             entry.getter = m.name;
-            pairs.set(gm[1], entry);
+            pairs.set(field, entry);
           }
         }
       }
@@ -1918,8 +1970,6 @@ export class CrossFileResolver {
         this.javaStaticFieldGetters.set(`${typeFqn}.${fieldName}`, getterFqn);
       }
 
-      const delegateReturnRe =
-        /^return\s+([A-Za-z_]\w+)\.([A-Za-z_]\w+)\s*\(\s*\)\s*;?\s*$/;
       for (const m of type.methods) {
         if (!m.modifiers.includes('static') || m.parameters.length !== 0) continue;
         const body = lines.slice(m.start_line - 1, m.end_line).join('\n');
@@ -1927,10 +1977,10 @@ export class CrossFileResolver {
         const close = body.lastIndexOf('}');
         if (open < 0 || close <= open) continue;
         const inner = body.slice(open + 1, close).replace(/\/\/[^\n]*/g, '').trim();
-        const dm = delegateReturnRe.exec(inner);
+        const dm = parseJavaStaticDelegateReturn(inner);
         if (!dm) continue;
-        const delegateTypeFqn = pkg ? `${pkg}.${dm[1]}` : dm[1];
-        const delegateFqn = `${delegateTypeFqn}.${dm[2]}`;
+        const delegateTypeFqn = pkg ? `${pkg}.${dm.type}` : dm.type;
+        const delegateFqn = `${delegateTypeFqn}.${dm.method}`;
         this.javaStaticGetterDelegates.set(`${typeFqn}.${m.name}`, delegateFqn);
       }
     }
@@ -1954,12 +2004,11 @@ export class CrossFileResolver {
     const close = body.lastIndexOf('}');
     if (open < 0 || close <= open) return;
     const inner = body.slice(open + 1, close).replace(/\/\/[^\n]*/g, '').trim();
-    const staticSetterRe = /^([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;?\s*$/;
-    const stm = staticSetterRe.exec(inner);
-    if (!stm || stm[2] !== m.parameters[0].name) return;
+    const stm = parseJavaStaticFieldAssignment(inner);
+    if (!stm || stm.param !== m.parameters[0].name) return;
 
     const typeFqn = targetMethod.replace(/\.[^.]+$/, '');
-    const fieldKey = `${typeFqn}.${stm[1]}`;
+    const fieldKey = `${typeFqn}.${stm.field}`;
     const getterFqn = this.javaStaticFieldGetters.get(fieldKey);
     if (!getterFqn) return;
 
@@ -2600,11 +2649,18 @@ export class CrossFileResolver {
 }
 
 /** A Java line with comments and string / char literals blanked. */
+function stripJavaLineComment(text: string): string {
+  const idx = text.indexOf('//');
+  return idx >= 0 ? text.slice(0, idx) : text;
+}
+
 function stripJavaLiterals(text: string): string {
   return text
     .replace(/"(?:[^"\\]|\\.)*"/g, '""')
     .replace(/'(?:[^'\\]|\\.)'/g, "''")
-    .replace(/\/\/.*$/, '');
+    .split('\n')
+    .map(stripJavaLineComment)
+    .join('\n');
 }
 
 /**
