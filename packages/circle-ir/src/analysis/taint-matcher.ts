@@ -3214,6 +3214,9 @@ const SAFE_RECEIVERS_BY_METHOD: Record<string, Set<string>> = {
     'identityprovider', 'ldap', 'saml', 'oidc',
   ]),
 
+  // ES template tag `String.raw` — not SQL (Knex/Objection `.raw(sql)` keeps sinking).
+  raw: new Set(['string']),
+
   // add() is extremely generic — safe on collections, UI containers, builders, etc.
   add: new Set([
     'list', 'set', 'map', 'collection', 'array', 'queue', 'deque',
