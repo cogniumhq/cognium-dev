@@ -151,7 +151,35 @@ function hasChannelHandlerParamSignature(method: MethodInfo): boolean {
   return method.parameters.some(p => CHANNEL_HANDLER_PARAM.test(p.name));
 }
 
+/** cognium-dev #1348 — snake_case spellings of the channel-axis handler names for Python. */
+const PY_CHANNEL_HANDLER_NAMES: ReadonlySet<string> = new Set([
+  'handle',
+  'get_user',
+  'on_login',
+  'on_message',
+  'on_webhook',
+  'resolve_user',
+  'sse',
+]);
+
+/**
+ * Python has no export statement: a module-level function without a leading
+ * underscore is public, unless `__all__` is declared and leaves it out.
+ */
+function pyModuleExports(name: string, lines: string[]): boolean {
+  if (name.startsWith('_')) return false;
+  const all = lines.join('\n').match(/^__all__\s*=\s*[[(]([^\])]*)[\])]/m);
+  if (!all) return true;
+  return all[1].split(',').some(item => item.trim().replace(/^['"]|['"]$/g, '') === name);
+}
+
 function isChannelExportedHandler(method: MethodInfo, language: string, lines: string[]): boolean {
+  if (language === 'python') {
+    return isModuleLevelFunction(method, lines) &&
+      PY_CHANNEL_HANDLER_NAMES.has(method.name) &&
+      hasChannelHandlerParamSignature(method) &&
+      pyModuleExports(method.name, lines);
+  }
   if (language !== 'javascript' && language !== 'typescript') return false;
   if (!isModuleLevelFunction(method, lines)) return false;
   if (!CHANNEL_EXPORT_HANDLER_NAMES.has(method.name)) return false;
