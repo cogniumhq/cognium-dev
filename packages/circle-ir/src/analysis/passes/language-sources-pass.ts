@@ -653,6 +653,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(
         ...findJsPathResolveStartsWithGuardSanitizers(code),
       );
+      // cognium-dev#1305 E4: isAbsolute(x) || x has a `..` segment → reject.
+      additionalSanitizers.push(...findJsAbsoluteDotDotGuardSanitizers(code));
       // JS/TS open_redirect: a same-site relative-path guard that rejects `//` AND `/\`.
       additionalSanitizers.push(...findJsRelativeRedirectGuardSanitizers(code));
       // cognium-dev#1146: same-file helper returns path.resolve after allow-list guard.
@@ -8472,6 +8474,738 @@ function findJsPathResolveStartsWithGuardSanitizers(
 }
 
 /**
+ * Whether a `split(…)` argument splits on both `/` and `\\` (#1416 review 2): a regex
+ * literal whose body holds a backslash escape and a slash, e.g. `/[\\/]/`, `/[/\\]/`,
+ * `/\\/|\\\\/`. A string (`'/'`), `path.sep` or any other argument is one separator.
+ * `arg` has its whitespace removed.
+ */
+function splitsOnBothSeparators(arg: string): boolean {
+  const m = /^\/(.+)\/[a-z]*$/.exec(arg);
+  if (!m) return false;
+  const body = m[1];
+  const hasBackslash = body.includes('\\\\');
+  const hasSlash = body.replace(/\\\\/g, '').includes('/');
+  return hasBackslash && hasSlash;
+}
+
+/**
+ * Calls an argument of which is used as is (#1416 re-review 2): the path builders and the
+ * path sinks. An allow-list: any other callee, a local wrapper included, may decode or
+ * rewrite its argument, so a guard on the raw value does not cover its result. A builder
+ * counts only when it comes from `path` / `node:path` (#1416 re-review 3): `path.join`
+ * with `path` imported or required from it, or a bare `join` imported from it.
+ */
+const JS_PATH_BUILDERS = new Set(['join', 'resolve', 'normalize']);
+const JS_PATH_SINK_CALLEES = new Set([
+  'readFile', 'readFileSync', 'writeFile', 'writeFileSync', 'appendFile', 'appendFileSync',
+  'createReadStream', 'createWriteStream', 'open', 'openSync', 'stat', 'statSync',
+  'lstat', 'lstatSync', 'access', 'accessSync', 'existsSync', 'readdir', 'readdirSync',
+  'mkdir', 'mkdirSync', 'rm', 'rmSync', 'rmdir', 'rmdirSync', 'unlink', 'unlinkSync',
+  'copyFile', 'copyFileSync', 'rename', 'renameSync', 'sendFile', 'download',
+]);
+/** Sinks whose first two arguments are both paths: the other one must be constant too. */
+const JS_TWO_PATH_SINKS = new Set(['copyFile', 'copyFileSync', 'rename', 'renameSync']);
+const JS_PATH_MODULES = new Set(['path', 'node:path', 'path/posix', 'node:path/posix', 'path/win32', 'node:path/win32']);
+
+/** What a file binds to the `path` module (#1416 re-review 3). */
+interface JsPathBindings {
+  /** Local names of the module itself, or of its `posix` / `win32` objects. */
+  modules: Set<string>;
+  /** Local names of `join` / `resolve` / `normalize` imported from it. */
+  builders: Set<string>;
+  /** `const NAME = <expr>` bound once in the file: NAME → expr. */
+  constants: Map<string, string>;
+}
+
+const JS_IDENT = /^[A-Za-z_$][\w$]*$/;
+
+/** The module named by a `'…'` / `"…"` string, or undefined. */
+function quotedModule(text: string): string | undefined {
+  const t = text.trim();
+  const q = t.charAt(0);
+  if ((q !== "'" && q !== '"') || t.length < 2 || t.charAt(t.length - 1) !== q) return undefined;
+  return t.slice(1, -1);
+}
+
+/** Records `{ a, b as c }` (import) or `{ a, b: c }` (require) taken from the path module. */
+function addPathNamedBindings(inner: string, sep: 'as' | ':', b: JsPathBindings): void {
+  for (const part of inner.split(',')) {
+    const t = part.trim();
+    if (!t) continue;
+    const at = sep === 'as' ? t.search(/\sas\s/) : t.indexOf(':');
+    const imported = (at < 0 ? t : t.slice(0, at)).trim();
+    const local = (at < 0 ? t : t.slice(at + (sep === 'as' ? 4 : 1))).trim();
+    if (!JS_IDENT.test(local)) continue;
+    if (JS_PATH_BUILDERS.has(imported)) b.builders.add(local);
+    else if (imported === 'posix' || imported === 'win32') b.modules.add(local);
+  }
+}
+
+/** The identifier that starts `text` (after leading whitespace), or undefined. A plain scan, no regex. */
+function leadingIdentifier(text: string): string | undefined {
+  const t = text.trimStart();
+  let k = 0;
+  while (k < t.length && /[\w$]/.test(t[k])) k++;
+  const id = t.slice(0, k);
+  return id && JS_IDENT.test(id) ? id : undefined;
+}
+
+/** The index of the bracket that closes the `(` / `[` / `{` at `open`, skipping quoted strings; -1 if none. */
+function matchingBracket(text: string, open: number): number {
+  let depth = 0;
+  for (let k = open; k < text.length; k++) {
+    const ch = text[k];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const q = ch;
+      for (k++; k < text.length && text[k] !== q; k++) if (text[k] === '\\') k++;
+    } else if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if ((ch === ')' || ch === ']' || ch === '}') && --depth === 0) return k;
+  }
+  return -1;
+}
+
+/**
+ * `text` cut at its first top-level `;` or unbalanced closing bracket, then split at the
+ * top-level `sep` characters; quoted strings and bracketed parts are kept whole.
+ */
+function splitTopLevel(text: string, sep: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let k = 0; k < text.length; k++) {
+    const ch = text[k];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const q = ch;
+      for (k++; k < text.length && text[k] !== q; k++) if (text[k] === '\\') k++;
+    } else if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (--depth < 0) { parts.push(text.slice(from, k)); return parts; }
+    } else if (depth === 0 && ch === ';') { parts.push(text.slice(from, k)); return parts; }
+    else if (depth === 0 && ch === sep) { parts.push(text.slice(from, k)); from = k + 1; }
+  }
+  parts.push(text.slice(from));
+  return parts;
+}
+
+/** Adds the names a binding target binds: `a`, `a: T`, `...a`, `{ a, b: c, d = 1 }`, `[a, [b]]`. */
+function addBindingNames(target: string, out: string[], depth = 0): void {
+  let t = target.trim();
+  if (t.startsWith('...')) t = t.slice(3).trim();
+  const c = t.charAt(0);
+  if ((c === '{' || c === '[') && depth < 8) {
+    const close = matchingBracket(t, 0);
+    for (const part of splitTopLevel(t.slice(1, close < 0 ? t.length : close), ',')) {
+      const element = splitTopLevel(part, '=')[0];
+      const kv = c === '{' ? splitTopLevel(element, ':') : [element];
+      addBindingNames(kv.length > 1 ? kv.slice(1).join(':') : kv[0], out, depth + 1);
+    }
+    return;
+  }
+  const id = leadingIdentifier(t);
+  if (id !== undefined) out.push(id);
+}
+
+/** Adds the names a parameter list (the text inside its parentheses) binds; TS parameter-property modifiers are skipped. */
+function addParameterNames(params: string, out: string[]): void {
+  for (const p of splitTopLevel(params, ',')) {
+    const t = p.trim().replace(/^(?:(?:public|private|protected|readonly|override)\s+)+/, '');
+    addBindingNames(splitTopLevel(t, '=')[0], out);
+  }
+}
+
+/** Each `(` of the text mapped to the `)` that closes it, in one pass that skips quoted strings. */
+function parenPairs(line: string): Map<number, number> {
+  const pairs = new Map<number, number>();
+  const open: number[] = [];
+  for (let k = 0; k < line.length; k++) {
+    const ch = line[k];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const q = ch;
+      for (k++; k < line.length && line[k] !== q; k++) if (line[k] === '\\') k++;
+    } else if (ch === '(') open.push(k);
+    else if (ch === ')' && open.length > 0) pairs.set(open.pop() as number, k);
+  }
+  return pairs;
+}
+
+/** Whether `text` ends with the word `function`, optionally followed by `*` (a generator). */
+function endsWithFunctionKeyword(text: string): boolean {
+  let t = text.trimEnd();
+  if (t.endsWith('*')) t = t.slice(0, -1).trimEnd();
+  if (!t.endsWith('function')) return false;
+  const before = t.charAt(t.length - 9);
+  return before === '' || !/[\w$.]/.test(before);
+}
+
+/** Words that take a parenthesised head followed by a block, and so are not method definitions. */
+const JS_BLOCK_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'with', 'return', 'typeof', 'await', 'function']);
+
+/**
+ * The file text the declaration scan reads (#1416 re-review 5): comments and the contents of
+ * quoted strings and template literals blanked to spaces, newlines kept, and a `\x` escape
+ * outside a string (in a regex literal) blanked, so no bracket or quote in them is counted.
+ * A `'` or `"` string ends at the end of its line, and a quote left open (`/'/`) is blanked.
+ */
+function jsDeclarationText(code: string): string {
+  const c = code.split('');
+  const blank = (from: number, to: number): void => {
+    for (let k = from; k < to && k < c.length; k++) if (c[k] !== '\n') c[k] = ' ';
+  };
+  for (let k = 0; k < c.length; k++) {
+    const ch = c[k];
+    if (ch === '\\') {
+      blank(k, k + 2);
+      k++;
+    } else if (ch === "'" || ch === '"' || ch === '`') {
+      const lineEnd = ch === '`' ? '`' : '\n';
+      let e = k + 1;
+      for (; e < c.length && c[e] !== ch && c[e] !== lineEnd; e++) if (c[e] === '\\') e++;
+      // an unclosed quote is blanked too, so every quote left in the text pairs on its line
+      blank(c[e] === ch ? k + 1 : k, e);
+      k = e;
+    } else if (ch === '/' && c[k + 1] === '/') {
+      const e = code.indexOf('\n', k);
+      blank(k, e < 0 ? c.length : e);
+      k = e < 0 ? c.length : e;
+    } else if (ch === '/' && c[k + 1] === '*') {
+      const e = code.indexOf('*/', k + 2);
+      blank(k, e < 0 ? c.length : e + 2);
+      k = e < 0 ? c.length : e + 1;
+    }
+  }
+  return c.join('');
+}
+
+/** The index of the first non-blank character at or after `k` (`text.length` if none). */
+function skipBlank(text: string, k: number): number {
+  while (k < text.length && /\s/.test(text[k])) k++;
+  return k;
+}
+
+/**
+ * The end of a `const` / `let` / `var` declarator list that starts at `from`: its first `;` or
+ * unbalanced closing bracket, or a line break outside brackets that neither follows nor precedes
+ * a `,` or `=`. Brackets may span lines, so `const {⏎ join,⏎ } = h` is read whole.
+ */
+function declarationEnd(text: string, from: number): number {
+  let depth = 0;
+  for (let k = from; k < text.length; k++) {
+    const ch = text[k];
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (--depth < 0) return k;
+    } else if (depth === 0 && ch === ';') return k;
+    else if (depth === 0 && ch === '\n') {
+      const prev = text.slice(from, k).trimEnd().slice(-1);
+      const next = text.charAt(skipBlank(text, k));
+      if (prev !== ',' && prev !== '=' && next !== ',' && next !== '=') return k;
+    }
+  }
+  return text.length;
+}
+
+/** How far past a `)` a return type is read before the scan gives up. */
+const JS_TYPE_WINDOW = 2000;
+
+/**
+ * Where the body or arrow after a parameter list's `)` at `close` starts: the `{` or `=>` that
+ * follows, after an optional TypeScript return type (`: T`, `: Promise<{ a: string }>`,
+ * `: (a: string) => string`); -1 when none follows. A type may span lines inside brackets; a
+ * line break outside them ends it unless the next line starts with `{`, `=>`, `|` or `&`.
+ * A `{` at depth 0 is the body unless its matching `}` is followed by `=>`, `{`, `|`, `&` or
+ * `[`: then the braces are an object type (`): { data: Buffer } => {`) and the scan goes on,
+ * falling back to that `{` if nothing after it reads as a body (#1416 re-review 6).
+ */
+function parameterListBodyStart(text: string, close: number): number {
+  let k = skipBlank(text, close + 1);
+  if (text[k] === '{' || text.startsWith('=>', k)) return k;
+  if (text[k] !== ':') return -1;
+  let depth = 0;
+  let objectType = -1;
+  const end = Math.min(text.length, k + JS_TYPE_WINDOW);
+  for (k++; k < end; k++) {
+    const ch = text[k];
+    if (ch === '=' && text[k + 1] === '>') {
+      if (depth === 0) return k;
+      k++;
+    } else if (ch === '(' || ch === '[' || ch === '<') depth++;
+    else if (ch === '{') {
+      if (depth === 0) {
+        const close = matchingBrace(text, k);
+        const next = close < 0 ? -1 : skipBlank(text, close + 1);
+        if (next < 0 || !(['{', '|', '&', '['].includes(text.charAt(next)) || text.startsWith('=>', next))) return k;
+        if (objectType < 0) objectType = k;
+        k = next - 1;
+        continue;
+      }
+      depth++;
+    } else if (ch === ')' || ch === ']' || ch === '>' || ch === '}') {
+      if (--depth < 0) return objectType;
+    } else if (depth === 0 && (ch === ';' || ch === ',' || ch === '=')) return objectType;
+    else if (depth === 0 && ch === '\n') {
+      const next = skipBlank(text, k);
+      if (!['{', '|', '&'].includes(text.charAt(next)) && !text.startsWith('=>', next)) return objectType;
+    }
+  }
+  return objectType;
+}
+
+/** The index of the `}` that closes the `{` at `open` (-1 if none). */
+function matchingBrace(text: string, open: number): number {
+  let depth = 0;
+  for (let k = open; k < text.length; k++) {
+    if (text[k] === '{') depth++;
+    else if (text[k] === '}' && --depth === 0) return k;
+  }
+  return -1;
+}
+
+/** `head` (the text before a `(`) with a trailing `<…>` type-parameter list removed. */
+function withoutTypeParameters(head: string): string {
+  const t = head.trimEnd();
+  if (!t.endsWith('>')) return t;
+  let depth = 0;
+  for (let k = t.length - 1; k >= 0; k--) {
+    if (t[k] === '>' && t[k - 1] !== '=') depth++;
+    else if (t[k] === '<' && --depth === 0) return t.slice(0, k).trimEnd();
+  }
+  return t;
+}
+
+/** How far back from a `(` the scan looks for the function or method name before it. */
+const JS_HEAD_WINDOW = 400;
+
+/**
+ * Every name a file declares (#1416 re-review 5): `const` / `let` / `var` targets, destructuring
+ * included; `function` and `class` names; the parameters of functions, arrows, methods and
+ * `catch`; import bindings. It reads the whole file text with comments and string contents
+ * blanked, not line by line, so a parameter list or destructuring pattern over several lines,
+ * a TypeScript return type after `)` and `<…>` type parameters before `(` are all read. A plain
+ * scan: it may also list a name that is not declared (that only costs a credit).
+ */
+function jsDeclaredNames(code: string): string[] {
+  const text = jsDeclarationText(code);
+  const out: string[] = [];
+  for (const m of text.matchAll(/^[ \t]*import\s([^;'"`]*?)\sfrom\s*['"]/gm)) {
+    let clause = m[1].replace(/\s+/g, ' ').trim();
+    if (clause.startsWith('type ')) continue;
+    const brace = clause.indexOf('{');
+    if (brace >= 0) {
+      const close = clause.indexOf('}', brace);
+      for (const part of clause.slice(brace + 1, close > brace ? close : clause.length).split(',')) {
+        const t = part.trim().replace(/^type\s/, '').trim();
+        const at = t.lastIndexOf(' as ');
+        const id = leadingIdentifier(at < 0 ? t : t.slice(at + 4));
+        if (id !== undefined) out.push(id);
+      }
+      clause = clause.slice(0, brace);
+    }
+    for (const part of clause.split(',')) {
+      const t = part.trim();
+      const id = leadingIdentifier(t.startsWith('*') ? t.slice(t.indexOf(' as ') + 4) : t);
+      if (id !== undefined) out.push(id);
+    }
+  }
+  for (const m of text.matchAll(/\b(?:const|let|var)\s/g)) {
+    const from = m.index + m[0].length;
+    for (const declarator of splitTopLevel(text.slice(from, declarationEnd(text, from)), ',')) {
+      addBindingNames(splitTopLevel(declarator, '=')[0], out);
+    }
+  }
+  for (const m of text.matchAll(/\b(?:function|class)\b/g)) {
+    const id = leadingIdentifier(text.slice(m.index + m[0].length, m.index + m[0].length + JS_HEAD_WINDOW).replace(/^\s*\*/, ''));
+    if (id !== undefined) out.push(id);
+  }
+  for (const [k, close] of parenPairs(text)) {
+    const head = withoutTypeParameters(text.slice(Math.max(0, k - JS_HEAD_WINDOW), k));
+    const name = trailingIdentifier(head);
+    const before = name === undefined ? head : head.slice(0, -name.length).trimEnd();
+    const body = parameterListBodyStart(text, close);
+    const arrow = body >= 0 && text.startsWith('=>', body);
+    const isFunction = name === 'function' || endsWithFunctionKeyword(before);
+    // a method: `name(…) {` or `name(…): T {`; not `a ? f(x) : {…}`, `case f(x): {` or `o.f(x)`
+    const method = name !== undefined && !JS_BLOCK_KEYWORDS.has(name) && body >= 0 && !arrow &&
+      !/[.?]$/.test(before) && trailingIdentifier(before) !== 'case';
+    if (arrow || isFunction || method) addParameterNames(text.slice(k + 1, close), out);
+  }
+  for (let k = text.indexOf('=>'); k >= 0; k = text.indexOf('=>', k + 2)) {
+    const before = text.slice(Math.max(0, k - JS_HEAD_WINDOW), k);
+    const id = trailingIdentifier(before);
+    if (id !== undefined && !before.trimEnd().endsWith(')')) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * The `path` bindings of a file, by a plain scan of its lines: `import path from 'path'`,
+ * `import * as p from 'node:path'`, `import { join as j, posix } from 'path'`,
+ * `const path = require('path')`, `const { join, resolve: r } = require('node:path')`.
+ * A name the file declares more than once (re-declared or shadowed in any scope, as a
+ * variable, function or parameter) is dropped from all three sets (#1416 re-review 4).
+ */
+function jsPathBindings(lines: string[]): JsPathBindings {
+  const b: JsPathBindings = { modules: new Set(), builders: new Set(), constants: new Map() };
+  const declared = new Map<string, number>();
+  for (const n of jsDeclaredNames(lines.join('\n'))) declared.set(n, (declared.get(n) ?? 0) + 1);
+  for (const raw of lines) {
+    const line = raw.trim().replace(/;$/, '').trimEnd();
+    if (line.startsWith('import ')) {
+      const from = line.lastIndexOf(' from ');
+      if (from < 0) continue;
+      const mod = quotedModule(line.slice(from + 6));
+      if (mod === undefined || !JS_PATH_MODULES.has(mod)) continue;
+      let clause = line.slice(7, from).trim();
+      if (clause.startsWith('type ')) continue;
+      const brace = clause.indexOf('{');
+      if (brace >= 0) {
+        const close = clause.indexOf('}', brace);
+        if (close > brace) addPathNamedBindings(clause.slice(brace + 1, close), 'as', b);
+        clause = clause.slice(0, brace);
+      }
+      for (const part of clause.split(',')) {
+        const t = part.trim();
+        const local = t.startsWith('*') ? t.slice(t.indexOf(' as ') + 4).trim() : t;
+        if (JS_IDENT.test(local)) b.modules.add(local);
+      }
+      continue;
+    }
+    const decl = /^(const|let|var)\s+/.exec(line);
+    if (!decl) continue;
+    const rest = line.slice(decl[0].length);
+    const eq = rest.indexOf('=');
+    if (eq < 0 || rest.charAt(eq + 1) === '=') continue;
+    const target = rest.slice(0, eq).trim();
+    const init = rest.slice(eq + 1).trim();
+    if (init.startsWith('require(') && init.endsWith(')')) {
+      const mod = quotedModule(init.slice(8, -1));
+      if (mod !== undefined && JS_PATH_MODULES.has(mod)) {
+        if (JS_IDENT.test(target)) b.modules.add(target);
+        else if (target.startsWith('{') && target.endsWith('}')) addPathNamedBindings(target.slice(1, -1), ':', b);
+        continue;
+      }
+    }
+    if (decl[1] === 'const' && JS_IDENT.test(target)) b.constants.set(target, init);
+  }
+  // a name declared more than once means something else in some scope
+  const once = (n: string): boolean => declared.get(n) === 1;
+  return {
+    modules: new Set([...b.modules].filter(once)),
+    builders: new Set([...b.builders].filter(once)),
+    constants: new Map([...b.constants].filter(([n]) => once(n))),
+  };
+}
+
+/** The identifier that ends `text` (after trailing whitespace), or undefined. A plain scan, no regex. */
+function trailingIdentifier(text: string): string | undefined {
+  const t = text.trimEnd();
+  let k = t.length;
+  while (k > 0 && /[\w$]/.test(t[k - 1])) k--;
+  const id = t.slice(k);
+  return id && /^[A-Za-z_$][\w$]*$/.test(id) ? id : undefined;
+}
+
+/** Whether the receiver chain that ends `text` (`path`, `path.posix`) is the path module. */
+function isPathModuleRef(text: string, b: JsPathBindings): boolean {
+  const recv = trailingIdentifier(text);
+  if (recv === undefined) return false;
+  const before = text.trimEnd().slice(0, -recv.length).trimEnd();
+  if (!before.endsWith('.')) return b.modules.has(recv);
+  // `x.posix` / `x.win32` where `x` is the module; any other member (`this.path`) is not
+  if (recv !== 'posix' && recv !== 'win32') return false;
+  const outer = before.slice(0, -1);
+  const id = trailingIdentifier(outer);
+  return id !== undefined && !outer.trimEnd().slice(0, -id.length).trimEnd().endsWith('.') && b.modules.has(id);
+}
+
+type JsPathCallKind = 'builder' | 'sink' | undefined;
+
+/** What `head` (the text before a call's `(`) names: a path builder, a path sink, or neither. */
+function pathCallKind(head: string, b: JsPathBindings): JsPathCallKind {
+  const callee = trailingIdentifier(head);
+  if (!callee) return undefined;
+  const rest = head.trimEnd().slice(0, -callee.length).trimEnd();
+  const member = rest.endsWith('.');
+  if (!member && b.builders.has(callee)) return 'builder';
+  if (member && JS_PATH_BUILDERS.has(callee) && isPathModuleRef(rest.slice(0, -1), b)) return 'builder';
+  if (JS_PATH_SINK_CALLEES.has(callee)) return 'sink';
+  return undefined;
+}
+
+/** The index of the `)` that closes the `(` at `open`, skipping quoted strings; -1 if not on the line. */
+function closingParen(line: string, open: number): number {
+  let depth = 0;
+  for (let k = open; k < line.length; k++) {
+    const ch = line[k];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const q = ch;
+      for (k++; k < line.length && line[k] !== q; k++) if (line[k] === '\\') k++;
+    } else if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (--depth === 0) return ch === ')' ? k : -1;
+    }
+  }
+  return -1;
+}
+
+/** The top-level arguments of the call whose `(` is at `open` and `)` at `close`, trimmed. */
+function callArguments(line: string, open: number, close: number): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let from = open + 1;
+  for (let k = open + 1; k < close; k++) {
+    const ch = line[k];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const q = ch;
+      for (k++; k < close && line[k] !== q; k++) if (line[k] === '\\') k++;
+    } else if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+    else if (ch === ',' && depth === 0) { args.push(line.slice(from, k).trim()); from = k + 1; }
+  }
+  args.push(line.slice(from, close).trim());
+  return args;
+}
+
+/**
+ * Whether `arg` is a constant path piece (#1416 re-review 3): a string literal, `__dirname`,
+ * `process.cwd()`, a `const` bound once to one of these, or a path builder over them.
+ */
+function isConstantPathArg(arg: string, b: JsPathBindings, depth = 0): boolean {
+  const a = arg.trim();
+  if (depth > 4 || a === '') return false;
+  const q = a.charAt(0);
+  if ((q === "'" || q === '"') && a.length >= 2 && a.charAt(a.length - 1) === q && !a.slice(1, -1).includes(q)) return true;
+  if (q === '`' && a.length >= 2 && a.charAt(a.length - 1) === '`' && !a.slice(1, -1).includes('`') && !a.includes('${')) return true;
+  if (a === '__dirname' || a === 'process.cwd()' || a === 'import.meta.dirname') return true;
+  if (JS_IDENT.test(a)) {
+    const init = b.constants.get(a);
+    return init !== undefined && isConstantPathArg(init.replace(/;$/, ''), b, depth + 1);
+  }
+  const open = a.indexOf('(');
+  if (open > 0 && closingParen(a, open) === a.length - 1 && pathCallKind(a.slice(0, open), b) === 'builder') {
+    return callArguments(a, open, a.length - 1).every((x) => isConstantPathArg(x, b, depth + 1));
+  }
+  return false;
+}
+
+/** The start of the callee expression (`fs.readFileSync`, `path?.join`) that ends just before `open`. */
+function calleeStart(line: string, open: number): number {
+  let k = open;
+  while (k > 0 && /\s/.test(line[k - 1])) k--;
+  while (k > 0) {
+    const ch = line[k - 1];
+    if (/[\w$.]/.test(ch)) k--;
+    else if (ch === '?' && line[k] === '.') k--;
+    else break;
+  }
+  return k;
+}
+
+/** The nearest unclosed `(` before `at`, or -1. */
+function enclosingOpenParen(line: string, at: number): number {
+  let depth = 0;
+  for (let k = at - 1; k >= 0; k--) {
+    const ch = line[k];
+    if (ch === ')') depth++;
+    else if (ch === '(') {
+      if (depth === 0) return k;
+      depth--;
+    }
+  }
+  return -1;
+}
+
+/** How a line uses a guarded value (#1416 re-review 3). */
+interface JsPathUse {
+  /** Every mention is used as is. */
+  asIs: boolean;
+  /** `const x = <path builder>(…v…)`: the name the builder's result is bound to. */
+  boundTo?: string;
+}
+
+/**
+ * Whether every mention of `v` on `line` uses the value as is (#1416 review 1, re-reviews 2
+ * and 3): a direct argument of a path builder or a path sink, and every call around it up
+ * to the sink a path builder too (`fs.readFileSync(path.join(ROOT, name))`). A method call
+ * on it (`name.replace(…)`), an argument of any other call (`decodeURIComponent(name)`, a
+ * local `dec(name)`), any call around the builder (`decodeURIComponent(path.join(ROOT,
+ * name))`, `path.join(ROOT, name).replace(…)`), an assignment or any other expression
+ * around it is not as is. The other arguments of a builder (and of a two-path sink such as
+ * `rename`) must be constant (`isConstantPathArg`) or another guarded value in `carriers`,
+ * so `path.join(ROOT, name, other)` with a tainted `other` is not as is. A builder that is
+ * not inside a sink may stand only as `const|let|var x = <builder>(…);`; its result `x` is
+ * returned in `boundTo` for the caller to follow.
+ */
+function jsPathUse(line: string, v: string, b: JsPathBindings, carriers: ReadonlySet<string>): JsPathUse {
+  const esc = v.replace(/\$/g, '\\$');
+  const ref = new RegExp(`(?<![\\w$.])${esc}(?![\\w$])`, 'g');
+  const otherOk = (arg: string) => carriers.has(arg) || isConstantPathArg(arg, b);
+  let m: RegExpExecArray | null;
+  let any = false;
+  let boundTo: string | undefined;
+  while ((m = ref.exec(line)) !== null) {
+    any = true;
+    // the expression that carries the value: the mention, then each builder call around it
+    let start = m.index;
+    let end = m.index + v.length;
+    let builders = 0;
+    for (;;) {
+      const prev = line.slice(0, start).trimEnd().slice(-1);
+      const next = line.slice(end).trimStart().charAt(0);
+      if ((prev === '(' || prev === ',') && (next === ')' || next === ',')) {
+        const open = enclosingOpenParen(line, start);
+        if (open < 0) return { asIs: false };
+        const kind = pathCallKind(line.slice(0, open), b);
+        if (kind === undefined) return { asIs: false };
+        const close = closingParen(line, open);
+        if (close < 0) return { asIs: false };
+        const args = callArguments(line, open, close);
+        const mine = line.slice(start, end).trim();
+        if (kind === 'sink') {
+          const callee = trailingIdentifier(line.slice(0, open)) ?? '';
+          if (JS_TWO_PATH_SINKS.has(callee) && !args.slice(0, 2).every((x) => x === mine || otherOk(x))) return { asIs: false };
+          break;   // the path is consumed here; what the sink returns is not a path
+        }
+        let own = false;
+        for (const x of args) {
+          if (!own && x === mine) { own = true; continue; }
+          if (!otherOk(x)) return { asIs: false };
+        }
+        start = calleeStart(line, open);
+        end = close + 1;
+        builders++;
+        continue;
+      }
+      // not an argument: only a builder result bound on its own, `const x = <builder>(…);`
+      if (builders === 0) return { asIs: false };
+      const lhs = /^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=$/.exec(line.slice(0, start).trim());
+      const tail = line.slice(end).trim();
+      if (!lhs || !(tail === '' || tail === ';' || tail.startsWith('//') || (tail.startsWith(';') && tail.slice(1).trim().startsWith('//')))) {
+        return { asIs: false };
+      }
+      if (boundTo !== undefined && boundTo !== lhs[1]) return { asIs: false };
+      boundTo = lhs[1];
+      break;
+    }
+  }
+  return { asIs: any, boundTo };
+}
+
+/** `const|let|var x = <one of names>;` on its own: the alias name, or undefined. */
+function plainAliasOf(line: string, names: Iterable<string>): string | undefined {
+  const m = /^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)(?:\s*;)?(?:\s*\/\/.*)?$/.exec(line.trim());
+  if (!m) return undefined;
+  for (const n of names) if (n === m[2]) return m[1];
+  return undefined;
+}
+
+/**
+ * JS/TS: absolute-path + `..`-segment reject guard (cognium-dev#1305 E4).
+ *
+ *   if (path.isAbsolute(name) || name.split(/[\\/]/).includes('..')) throw new Error('bad name');
+ *   const full = path.join(ROOT, name);
+ *   fs.readFileSync(full);
+ *
+ * A name that is not absolute and has no `..` segment, joined onto a root,
+ * stays under that root — the two ways out are exactly the two rejected. BOTH
+ * checks must be in one `||` condition on the same variable, and the guard must
+ * reject (`guardRejects`, #333): either check alone leaves the other escape
+ * open. The `..` check may be the substring test (`name.includes('..')`) or a
+ * segment test that splits on BOTH separators (`name.split(/[\\/]/).includes('..')`):
+ * `path.join` on Windows also splits on `\`, so a POSIX-only `split('/')` lets
+ * `..\x` through and earns nothing. A negated check or an `&&` in the condition
+ * is a different guard and earns nothing.
+ *
+ * Credits the guard line and every later line in the same block, until the
+ * variable is reassigned (`jsGuardCreditLines`), where the variable is used as
+ * is: a direct argument of a path builder or a path sink (`path.join(ROOT, name)`,
+ * `fs.readFileSync(name)`). A line that decodes or rewrites it
+ * (`decodeURIComponent(name)`, `name.replace(…)`, a local `dec(name)`, …) is not
+ * credited: the guard checked the raw value, and `%2e%2e/` decodes to `../`
+ * after it. Every call around the value up to the sink must be a path call too,
+ * so `decodeURIComponent(path.join(ROOT, name))` is not credited, and a builder
+ * counts only when it comes from `path` / `node:path`, so a local `normalize`
+ * that decodes is not one. The other arguments of the builder must be constant
+ * (`ROOT`, `'sub'`, `__dirname`): `path.join(ROOT, name, other)` is not credited.
+ * A plain alias (`const safe = name`) and a builder's result (`const full =
+ * path.join(ROOT, name)`) are followed, not credited: their later lines are
+ * held to the same rule, so `decodeURIComponent(safe)` and
+ * `decodeURIComponent(full)` still report. Only `path_traversal` is sanitized.
+ */
+function findJsAbsoluteDotDotGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const terminatorRe =
+    /\b(?:throw|return|continue|res\s*\.\s*status\s*\([^)]*\)\s*\.\s*(?:send|end|json))/;
+  // Matched against the condition with its whitespace removed.
+  const absRe =
+    /(?<![!\w$.])(?:(?:path|nodePath|Path)\.(?:(?:posix|win32)\.)?)?isAbsolute\(([A-Za-z_$][\w$]*)\)/;
+  let bindings: JsPathBindings | undefined;
+
+  for (let i = 0; i < lines.length; i++) {
+    const open = /\bif\s*\(/.exec(lines[i]);
+    if (!open) continue;
+    // The condition: the balanced parens after `if`, on this line only.
+    let depth = 0;
+    let end = -1;
+    for (let k = open.index + open[0].length - 1; k < lines[i].length; k++) {
+      if (lines[i][k] === '(') depth++;
+      else if (lines[i][k] === ')' && --depth === 0) { end = k; break; }
+    }
+    if (end < 0) continue;
+    const cond = lines[i].slice(open.index + open[0].length, end).replace(/\s+/g, '');
+    if (cond.includes('&&') || !cond.includes('||')) continue;
+    const abs = absRe.exec(cond);
+    if (!abs) continue;
+    const v = abs[1];
+    const esc = v.replace(/\$/g, '\\$');
+    const dotDot = new RegExp(
+      `(?<![!\\w$.])${esc}(?:\\.split\\(([^)]*)\\))?\\.includes\\((['"\`])\\.\\.\\2\\)`,
+    );
+    const dd = dotDot.exec(cond);
+    // a segment test must split on both separators (not POSIX-only); no split = the substring test
+    if (!dd || (dd[1] !== undefined && !splitsOnBothSeparators(dd[1]))) continue;
+    if (!guardRejects(lines, i, terminatorRe, 4)) continue;
+
+    const pb = (bindings ??= jsPathBindings(lines));
+    const range = jsGuardCreditLines(lines, i, v);
+    const inRange = new Set(range);
+    // the guarded value and its plain aliases, each with the lines it is live on
+    const carriers = new Map<string, Set<number>>([[v, inRange]]);
+    const refRe = (n: string) => new RegExp(`(?<![\\w$.])${n.replace(/\$/g, '\\$')}(?![\\w$])`);
+    for (const l of range) {
+      const named = [...carriers].filter(([n, live]) => live.has(l) && refRe(n).test(lines[l]));
+      if (named.length === 0) continue;
+      if (l !== i) {
+        const alias = plainAliasOf(lines[l], named.map(([n]) => n));
+        if (alias !== undefined) {
+          carriers.set(alias, new Set(jsGuardCreditLines(lines, l, alias).filter((x) => x > l && inRange.has(x))));
+          continue;
+        }
+        const live = new Set(named.map(([n]) => n));
+        const uses = named.map(([n]) => jsPathUse(lines[l], n, pb, live));
+        if (!uses.every((u) => u.asIs)) continue;
+        const bound = new Set(uses.map((u) => u.boundTo));
+        if (bound.size > 1) continue;
+        const [result] = bound;
+        if (result !== undefined) {
+          // `const full = path.join(ROOT, name)`: followed like an alias, not credited on its own
+          carriers.set(result, new Set(jsGuardCreditLines(lines, l, result).filter((x) => x > l && inRange.has(x))));
+          continue;
+        }
+      }
+      sanitizers.push({
+        type: 'js_absolute_dotdot_guard',
+        method: 'isAbsolute',
+        line: l + 1,
+        sanitizes: ['path_traversal'],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
  * JS/TS open_redirect: the same-site relative-path guard (CWE-601).
  *
  *   if (!next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\')) return res.redirect('/');
@@ -14341,6 +15075,27 @@ function maskJsLiteralsAndComments(code: string): string {
 }
 
 /**
+ * True when the call spanning `[start, end)` of masked line `i` is a whole
+ * expression statement whose value is dropped: a statement starts right
+ * before it (start of code, or after `;`, `{` or `}`) and `;` follows it.
+ * Anything else (assignment, argument, `return`, chained access, a call
+ * the line regex cut short at an inner `)`) is not treated as discarded.
+ */
+function isDiscardedJsCallStatement(
+  codeLines: string[],
+  i: number,
+  start: number,
+  end: number,
+): boolean {
+  if (!codeLines[i].slice(end).trimStart().startsWith(';')) return false;
+  let before = codeLines[i].slice(0, start).trimEnd();
+  for (let k = i - 1; before === '' && k >= 0; k--) {
+    before = codeLines[k].trimEnd();
+  }
+  return before === '' || /[;{}]$/.test(before);
+}
+
+/**
  * Sprint 89 detector B (#189) — JS insecure deserialization via
  * `JSON.parse(req.body)`.
  *
@@ -14412,6 +15167,9 @@ export function findJsJsonParseBodyFindings(
         }
       }
       if (!tainted) continue;
+      // #1332: `JSON.parse(x);` on its own only checks the syntax; with
+      // the result thrown away no parsed object reaches a property lookup.
+      if (isDiscardedJsCallStatement(codeLines, i, m.index, m.index + m[0].length)) continue;
       if (seen.has(i + 1)) continue;
       seen.add(i + 1);
       findings.push({
