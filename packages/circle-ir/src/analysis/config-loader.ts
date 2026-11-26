@@ -1595,6 +1595,9 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'handleImage', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'handleLink', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'render', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['java'] },
+  // Python Jinja/Mako template `.render()` — keep separate from the Java wiki
+  // row so a classless match does not fire on JS/TS locals named `render` (#1432).
+  { method: 'render', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['python'] },
   { method: 'renderHTML', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'parseHTML', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   // HTML sanitizer/validator sinks (AntiSamy, OWASP HTML Sanitizer, etc.)
