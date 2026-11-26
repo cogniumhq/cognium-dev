@@ -495,6 +495,49 @@ describe('cognium-dev#1305 E4 — absolute-path and `..`-segment guard', () => {
       '  return fs.readFileSync(join(ROOT, name));',
       '}',
     ]],
+    // #1416 re-review 6: the `{` of an object return type is not the arrow's body.
+    ['an arrow with an object return type', [
+      "import fs from 'fs';",
+      "import { isAbsolute, join } from 'path';",
+      "const ROOT = '/srv/data';",
+      'export const serve = (join: (a: string, b: string) => string): { data: Buffer } => {',
+      '  const name = process.argv[2];',
+      "  if (isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      '  return { data: fs.readFileSync(join(ROOT, name)) };',
+      '};',
+    ]],
+    ['an arrow with an object return type over the default path import', [
+      ...head,
+      'export const serve = (path: { join(a: string, b: string): string }): { data: Buffer } => {',
+      '  const name = process.argv[2];',
+      "  if (path.isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      '  return { data: fs.readFileSync(path.join(ROOT, name)) };',
+      '};',
+    ]],
+    ['an arrow with an object return type over several lines', [
+      "import fs from 'fs';",
+      "import { isAbsolute, join } from 'path';",
+      "const ROOT = '/srv/data';",
+      'export const serve = (join: (a: string, b: string) => string): {',
+      '  data: Buffer;',
+      '} => {',
+      '  const name = process.argv[2];',
+      "  if (isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      '  return { data: fs.readFileSync(join(ROOT, name)) };',
+      '};',
+    ]],
+    ['a class field arrow with an object return type', [
+      "import fs from 'fs';",
+      "import { isAbsolute, join } from 'path';",
+      "const ROOT = '/srv/data';",
+      'export class S {',
+      '  serve = (join: (a: string, b: string) => string): { data: Buffer } => {',
+      '    const name = process.argv[2];',
+      "    if (isAbsolute(name) || name.split(/[\\\\/]/).includes('..')) throw new Error('x');",
+      '    return { data: fs.readFileSync(join(ROOT, name)) };',
+      '  };',
+      '}',
+    ]],
   ];
 
   for (const [shape, lines] of tsShadows) {
@@ -509,6 +552,9 @@ describe('cognium-dev#1305 E4 — absolute-path and `..`-segment guard', () => {
       ['export const serve = (req: { q: string }): Buffer => {'],
       ['export function serve(', '  req: { q: string },', '  extra: number,', ') {'],
       ['function serve<T>(req: { q: string }, t: T) {'],
+      ['export const serve = (req: { q: string }): { data: Buffer } => {'],
+      ['export function serve(req: { q: string }): { data: Buffer } {'],
+      ['export class S {', '  serve(req: { q: string }): { data: Buffer } {'],
     ]) {
       const code = [
         ...head,

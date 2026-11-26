@@ -8712,12 +8712,16 @@ const JS_TYPE_WINDOW = 2000;
  * follows, after an optional TypeScript return type (`: T`, `: Promise<{ a: string }>`,
  * `: (a: string) => string`); -1 when none follows. A type may span lines inside brackets; a
  * line break outside them ends it unless the next line starts with `{`, `=>`, `|` or `&`.
+ * A `{` at depth 0 is the body unless its matching `}` is followed by `=>`, `{`, `|`, `&` or
+ * `[`: then the braces are an object type (`): { data: Buffer } => {`) and the scan goes on,
+ * falling back to that `{` if nothing after it reads as a body (#1416 re-review 6).
  */
 function parameterListBodyStart(text: string, close: number): number {
   let k = skipBlank(text, close + 1);
   if (text[k] === '{' || text.startsWith('=>', k)) return k;
   if (text[k] !== ':') return -1;
   let depth = 0;
+  let objectType = -1;
   const end = Math.min(text.length, k + JS_TYPE_WINDOW);
   for (k++; k < end; k++) {
     const ch = text[k];
@@ -8726,15 +8730,32 @@ function parameterListBodyStart(text: string, close: number): number {
       k++;
     } else if (ch === '(' || ch === '[' || ch === '<') depth++;
     else if (ch === '{') {
-      if (depth === 0) return k;
+      if (depth === 0) {
+        const close = matchingBrace(text, k);
+        const next = close < 0 ? -1 : skipBlank(text, close + 1);
+        if (next < 0 || !(['{', '|', '&', '['].includes(text.charAt(next)) || text.startsWith('=>', next))) return k;
+        if (objectType < 0) objectType = k;
+        k = next - 1;
+        continue;
+      }
       depth++;
     } else if (ch === ')' || ch === ']' || ch === '>' || ch === '}') {
-      if (--depth < 0) return -1;
-    } else if (depth === 0 && (ch === ';' || ch === ',' || ch === '=')) return -1;
+      if (--depth < 0) return objectType;
+    } else if (depth === 0 && (ch === ';' || ch === ',' || ch === '=')) return objectType;
     else if (depth === 0 && ch === '\n') {
       const next = skipBlank(text, k);
-      if (!['{', '|', '&'].includes(text.charAt(next)) && !text.startsWith('=>', next)) return -1;
+      if (!['{', '|', '&'].includes(text.charAt(next)) && !text.startsWith('=>', next)) return objectType;
     }
+  }
+  return objectType;
+}
+
+/** The index of the `}` that closes the `{` at `open` (-1 if none). */
+function matchingBrace(text: string, open: number): number {
+  let depth = 0;
+  for (let k = open; k < text.length; k++) {
+    if (text[k] === '{') depth++;
+    else if (text[k] === '}' && --depth === 0) return k;
   }
   return -1;
 }
