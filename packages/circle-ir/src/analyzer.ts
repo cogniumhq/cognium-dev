@@ -100,7 +100,7 @@ import { CodeGraph, AnalysisPipeline, ProjectGraph } from './graph/index.js';
 import { CrossFilePass } from './analysis/passes/cross-file-pass.js';
 
 // HTML preprocessor
-import { extractHtmlContent } from './analysis/html/html-extractor.js';
+import { extractHtmlContent, extractScriptSrcs } from './analysis/html/html-extractor.js';
 import { runHtmlAttributeSecurityChecks } from './analysis/html/html-attribute-security-pass.js';
 import { runVueTemplateXssChecks } from './analysis/html/vue-template-xss-pass.js';
 import { mergeHtmlResults } from './analysis/html/html-merge.js';
@@ -2024,6 +2024,8 @@ export async function analyzeProject(
   const failedFiles: Array<{ file: string; message: string }> = [];
   const projectGraph = new ProjectGraph();
   const sourceLinesByFile = new Map<string, string[]>();
+  // Page → its <script src> values, so a script only a page loads is in use.
+  const scriptSrcsByPage = new Map<string, string[]>();
 
   // 1. Per-file analysis
   //    #366 — optional wall-clock bound. The check is between files, which is
@@ -2094,6 +2096,10 @@ export async function analyzeProject(
     projectGraph.addFile(filePath, new CodeGraph(ir));
     sourceLinesByFile.set(filePath, code.split('\n'));
     projectSourceChars += code.length;
+    if (language === 'html' || language === 'vue') {
+      const srcs = extractScriptSrcs(code);
+      if (srcs.length > 0) scriptSrcsByPage.set(filePath, srcs);
+    }
   }
 
   // 1.5 (#637) — a C# call that resolves to a method in another project file
@@ -2140,7 +2146,7 @@ export async function analyzeProject(
   }
 
   // 3. Import-graph analysis (circular deps + orphan modules)
-  const importGraph = new ImportGraph(projectGraph);
+  const importGraph = new ImportGraph(projectGraph, scriptSrcsByPage);
   const circularFindings = disabledPasses.includes('circular-dependency')
     ? []
     : new CircularDependencyPass().run(projectGraph, importGraph);

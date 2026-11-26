@@ -162,3 +162,70 @@ describe('OrphanModulePass: only files whose imports the graph resolves are judg
     expect(findings.map(f => f.file)).toEqual(['/repo/web/legacy.mjs', '/repo/web/stale.tsx']);
   });
 });
+
+describe('OrphanModulePass: scripts loaded by HTML and minified files', () => {
+  // A page loads a script with <script src>, which is not an import, so a
+  // script used only by a page had no incoming edge.
+  it('does NOT flag a script an HTML page loads with <script src>', () => {
+    const pg = buildProject([
+      ['/repo/report/template.html', []],
+      ['/repo/report/content/js/charts.js', []],
+      ['/repo/report/content/js/stale.js', []],
+    ]);
+    const scriptSrcs = new Map([['/repo/report/template.html', ['content/js/charts.js']]]);
+    const findings = new OrphanModulePass().run(pg, new ImportGraph(pg, scriptSrcs));
+    expect(findings.map(f => f.file)).toEqual(['/repo/report/content/js/stale.js']);
+  });
+
+  it('resolves ./ and ../ script paths and ignores a query string or fragment', () => {
+    const pg = buildProject([
+      ['/repo/site/pages/about.html', []],
+      ['/repo/site/js/menu.js', []],
+      ['/repo/site/pages/local.js', []],
+    ]);
+    const scriptSrcs = new Map([
+      ['/repo/site/pages/about.html', ['../js/menu.js?v=3', './local.js#top']],
+    ]);
+    const findings = new OrphanModulePass().run(pg, new ImportGraph(pg, scriptSrcs));
+    expect(findings).toHaveLength(0);
+  });
+
+  it('gives no edge for a remote, protocol-relative, data: or root-relative src', () => {
+    const pg = buildProject([
+      ['/repo/site/index.html', []],
+      ['/repo/site/jquery.js', []],
+      ['/repo/site/widget.js', []],
+    ]);
+    const scriptSrcs = new Map([['/repo/site/index.html', [
+      'https://cdn.example.com/jquery.js',
+      '//cdn.example.com/jquery.js',
+      'data:text/javascript,alert(1)',
+      '/widget.js',
+    ]]]);
+    const findings = new OrphanModulePass().run(pg, new ImportGraph(pg, scriptSrcs));
+    expect(findings.map(f => f.file)).toEqual(['/repo/site/jquery.js', '/repo/site/widget.js']);
+  });
+
+  it('does NOT flag minified files (.min.js, -min.js), which are build output', () => {
+    const pg = buildProject([
+      ['/repo/static/js/vendor.min.js', []],
+      ['/repo/static/js/lib-min.js', []],
+      ['/repo/static/js/esm.min.mjs', []],
+      ['/repo/static/js/minimal.js', []],
+      ['/repo/static/js/admin.js', []],
+    ]);
+    const findings = new OrphanModulePass().run(pg, new ImportGraph(pg));
+    expect(findings.map(f => f.file)).toEqual(['/repo/static/js/admin.js', '/repo/static/js/minimal.js']);
+  });
+
+  it('does NOT flag a script shipped beside its own minified build (x.js + x.min.js)', () => {
+    const pg = buildProject([
+      ['/repo/static/js/bootstrap.js', []],
+      ['/repo/static/js/bootstrap.min.js', []],
+      ['/repo/static/js/theme.js', []],
+      ['/repo/other/theme.min.js', []],
+    ]);
+    const findings = new OrphanModulePass().run(pg, new ImportGraph(pg));
+    expect(findings.map(f => f.file)).toEqual(['/repo/static/js/theme.js']);
+  });
+});
