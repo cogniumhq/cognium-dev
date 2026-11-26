@@ -39,6 +39,12 @@ const EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.rs', ''];
 // Entry-point filenames (base without extension) — not treated as orphans
 const ENTRY_POINT_NAMES = /^(index|main|app|server|mod|cli|bin|start|run|entry|init)$/i;
 
+// Files whose modules are referenced by relative path, which this graph
+// resolves. Elsewhere a file in use can have no edge here (Java's package
+// imports and same-package names, Python's absolute imports, Go, Rust, C#,
+// shell, HTML), so it is never judged an orphan.
+const ORPHAN_JUDGED_FILES = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|vue)$/i;
+
 // ---------------------------------------------------------------------------
 // ImportGraph
 // ---------------------------------------------------------------------------
@@ -172,12 +178,14 @@ export class ImportGraph {
   }
 
   /**
-   * Returns file paths with zero incoming import edges that are not entry points.
-   * Entry points: filename base (without extension) matches /^(index|main|app|server|mod)$/i
+   * Returns JS/TS file paths with zero incoming import edges that are not entry points.
+   * Entry points: filename base (without extension) matches ENTRY_POINT_NAMES.
+   * Files of other languages are never returned (see ORPHAN_JUDGED_FILES).
    */
   findOrphans(): string[] {
     const orphans: string[] = [];
     for (const file of this.allFiles) {
+      if (!ORPHAN_JUDGED_FILES.test(file)) continue;
       if ((this.inEdges.get(file)?.size ?? 0) > 0) continue;
       // Check if entry point
       const base = file.split('/').pop() ?? '';

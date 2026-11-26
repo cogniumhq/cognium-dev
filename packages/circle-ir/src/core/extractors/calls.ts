@@ -2376,6 +2376,30 @@ function findEnclosingMethod(node: Node): string | null {
     return '<init>';
   }
 
+  return findEnclosingFieldInitializer(node);
+}
+
+/**
+ * `<clinit>` for a node inside a Java static field's initializer, an
+ * interface constant's, or an enum constant's arguments; `<init>` for one
+ * inside an instance field's initializer; else `null`. That code runs at class
+ * load or construction, so its calls belong to that pseudo-method rather than
+ * to no method at all. Only a field directly in a Java type body counts, so
+ * C# fields (in a `declaration_list`) keep `null`.
+ */
+function findEnclosingFieldInitializer(node: Node): string | null {
+  for (let cur = node, parent = node.parent; parent; cur = parent, parent = parent.parent) {
+    if (parent.type === 'constant_declaration') return '<clinit>';
+    if (parent.type === 'enum_constant') {
+      return cur.type === 'argument_list' ? '<clinit>' : null;
+    }
+    if (parent.type === 'field_declaration') {
+      const body = parent.parent?.type;
+      if (body !== 'class_body' && body !== 'enum_body_declarations') return null;
+      const modifiers = parent.namedChildren.find(c => c?.type === 'modifiers');
+      return modifiers?.children.some(c => c?.type === 'static') ? '<clinit>' : '<init>';
+    }
+  }
   return null;
 }
 

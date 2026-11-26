@@ -3024,6 +3024,20 @@ function matchesSourcePattern(
         javaWikiTagInheritedContextReceiver(call.receiver, pattern.class, call, types, imports)
       ) {
         // JSPWiki tag handler inherited m_wikiContext (cognium-dev#624)
+      } else if (
+        language === 'java' &&
+        pattern.type === 'db_input' &&
+        pattern.class === 'ResultSet' &&
+        call.receiver_type &&
+        call.receiver_type !== 'var' &&
+        !/(?:ResultSet|RowSet)$/.test(call.receiver_type)
+      ) {
+        // A receiver declared as another type is not a database read:
+        // `JSONObject result; result.getString("path")` matched `ResultSet`
+        // by its name only and seeded JSON field reads as db_input. Only the
+        // ResultSet rows: a `JedisCluster` is not a `Jedis` subtype by name.
+        // A `var` local has no written type and keeps the name match.
+        return false;
       } else if (!receiverMightBeClass(call.receiver, pattern.class)) {
         // The receiver might be a variable name, not the class name
         // For now, we do a simple match - in a full implementation,
@@ -3213,6 +3227,9 @@ const SAFE_RECEIVERS_BY_METHOD: Record<string, Set<string>> = {
     'jwt', 'passport', 'session', 'security', 'credentials',
     'identityprovider', 'ldap', 'saml', 'oidc',
   ]),
+
+  // ES template tag `String.raw` — not SQL (Knex/Objection `.raw(sql)` keeps sinking).
+  raw: new Set(['string']),
 
   // add() is extremely generic — safe on collections, UI containers, builders, etc.
   add: new Set([

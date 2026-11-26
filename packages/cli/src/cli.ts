@@ -2047,7 +2047,7 @@ export const PASS_REGISTRY: PassInfo[] = [
   // Architecture
   { rule_id: 'dependency-fan-out', category: 'architecture', severity: 'low', description: 'Module imports 20+ other modules' },
   { rule_id: 'circular-dependency', category: 'architecture', cwe: 'CWE-1047', severity: 'medium', description: 'Cycle in module import graph' },
-  { rule_id: 'orphan-module', category: 'architecture', severity: 'low', description: 'File with no incoming imports, not an entry point' },
+  { rule_id: 'orphan-module', category: 'architecture', severity: 'low', description: 'JS/TS file with no incoming imports, not an entry point' },
   { rule_id: 'deep-inheritance', category: 'architecture', cwe: 'CWE-1086', severity: 'low', description: 'Inheritance depth > 5 levels' },
   { rule_id: 'missing-override', category: 'architecture', severity: 'low', description: 'Method matches supertype signature, lacks @Override' },
   { rule_id: 'unused-interface-method', category: 'architecture', severity: 'low', description: 'Interface method never called through that interface' },
