@@ -165,6 +165,46 @@ describe('formatJSON', () => {
     expect(parsed.cross_file_taint_paths).toHaveLength(1);
     expect(parsed.summary.crossFileTaintPaths).toBe(1);
   });
+
+  test('every finding carries its rule id and a short rule title', () => {
+    const plist = { type: 'hardcoded-credential', severity: 'critical', message: 'API key', line: 3, cwe: 'CWE-798', category: 'security' };
+    const results = [
+      makeResult('src/Foo.java', [sqlVuln, deadCodeVuln]),
+      makeResult('src/Bar.java', [{ ...deadCodeVuln, type: 'n-plus-one', category: 'performance' }]),
+      makeResult('ios/App/Info.plist', [plist]),
+    ];
+    const parsed = JSON.parse(formatJSON(results));
+    const vulns = parsed.results.flatMap((r: any) => r.vulnerabilities);
+    expect(vulns.map((v: any) => [v.rule_id, v.rule_title])).toEqual([
+      ['sql_injection', 'SQL Injection'],
+      ['dead-code', 'Dead code'],
+      ['n-plus-one', 'N+1 query'],
+      ['hardcoded-credential', 'Hardcoded credential'],
+    ]);
+    // the existing fields are unchanged
+    expect(vulns[1]).toMatchObject(deadCodeVuln);
+  });
+
+  test('a cross-file taint path carries the rule id SARIF gives it', () => {
+    const crossFileData: CrossFileData = {
+      taintPaths: [{
+        id: 'tp-1',
+        source: { file: 'A.java', line: 5, type: 'http_param', cwe: '', code: '' },
+        sink: { file: 'B.java', line: 20, type: 'sql_injection', cwe: 'CWE-89', code: '' },
+        hops: [],
+        sanitizers_in_path: [],
+        path_exists: true,
+        confidence: 0.95,
+      }],
+      crossFileCalls: [],
+    };
+    const parsed = JSON.parse(formatJSON([makeResult('A.java', [])], crossFileData));
+    expect(parsed.cross_file_taint_paths[0]).toMatchObject({
+      id: 'tp-1', rule_id: 'cross-file-sql_injection', rule_title: 'Cross-file SQL Injection',
+    });
+    const sarif = JSON.parse(formatSARIF([makeResult('A.java', [])], crossFileData));
+    expect(sarif.runs[0].results[0].ruleId).toBe('cross-file-sql_injection');
+  });
 });
 
 // ─── formatSARIF ─────────────────────────────────────────────────────────────
@@ -216,6 +256,19 @@ describe('formatSARIF', () => {
     const results = [makeResult('src/Foo.java', [withFix])];
     const parsed = JSON.parse(formatSARIF(results));
     expect(parsed.runs[0].results[0].properties.fix).toBe('Remove unreachable block');
+  });
+
+  test('a rule\'s short description is its title; ruleId matches the JSON rule_id', () => {
+    const results = [makeResult('src/Foo.java', [sqlVuln, deadCodeVuln])];
+    const parsed = JSON.parse(formatSARIF(results));
+    const rules = parsed.runs[0].tool.driver.rules;
+    expect(rules.map((r: any) => [r.id, r.shortDescription.text])).toEqual([
+      ['sql_injection', 'SQL Injection'],
+      ['dead-code', 'Dead code'],
+    ]);
+    const json = JSON.parse(formatJSON(results));
+    expect(parsed.runs[0].results.map((r: any) => r.ruleId))
+      .toEqual(json.results[0].vulnerabilities.map((v: any) => v.rule_id));
   });
 });
 

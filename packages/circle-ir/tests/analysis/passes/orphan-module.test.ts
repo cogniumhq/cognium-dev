@@ -122,3 +122,43 @@ describe('OrphanModulePass', () => {
     expect(findings[0].line).toBe(1);
   });
 });
+
+describe('OrphanModulePass: only files whose imports the graph resolves are judged', () => {
+  // Java refers to a class by its package import or, in the same package, by
+  // its bare name; neither is a relative path, so the import graph never has
+  // an edge into a Java file. A Maven project of 208 classes was reported as
+  // 208 orphans.
+  it('does NOT flag Java classes, which are referenced by package, not path', () => {
+    const pg = buildProject([
+      ['/repo/plugin/src/main/java/org/example/score/Score.java', []],
+      ['/repo/library/src/main/java/org/example/helpers/Categories.java', []],
+    ]);
+    const findings = new OrphanModulePass().run(pg, new ImportGraph(pg));
+    expect(findings).toHaveLength(0);
+  });
+
+  it('does NOT flag Python, Go, Rust, C#, shell or HTML files', () => {
+    const pg = buildProject([
+      ['/repo/pkg/util.py', []],
+      ['/repo/internal/store.go', []],
+      ['/repo/src/parser.rs', []],
+      ['/repo/src/Service.cs', []],
+      ['/repo/scripts/run-tool.sh', []],
+      ['/repo/report/template.html', []],
+    ]);
+    const findings = new OrphanModulePass().run(pg, new ImportGraph(pg));
+    expect(findings).toHaveLength(0);
+  });
+
+  it('still flags an unimported JS/TS module beside them', () => {
+    const pg = buildProject([
+      ['/repo/src/Score.java', []],
+      ['/repo/web/index.ts', ['./used']],
+      ['/repo/web/used.ts', []],
+      ['/repo/web/stale.tsx', []],
+      ['/repo/web/legacy.mjs', []],
+    ]);
+    const findings = new OrphanModulePass().run(pg, new ImportGraph(pg));
+    expect(findings.map(f => f.file)).toEqual(['/repo/web/legacy.mjs', '/repo/web/stale.tsx']);
+  });
+});

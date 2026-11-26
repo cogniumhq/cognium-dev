@@ -326,7 +326,7 @@ of `config-loader.ts` into dedicated `AnalysisPass` implementations.
 | 64 | `missing-override` | — | warning | inherit, ast | shipped | Method matches supertype signature but lacks @Override annotation (Java only) |
 | 66 | `unused-interface-method` | — | note | inherit, cg | shipped | Interface method declared but never called through that interface (Java, TS) |
 | 68 | `circular-dependency` | CWE-1047 | warning | imports | shipped | Cycle in module/package import graph (Tarjan's SCC) |
-| 71 | `orphan-module` | — | note | imports | shipped | File has no incoming imports and is not a declared entry point |
+| 71 | `orphan-module` | — | note | imports | shipped | JS/TS file has no incoming imports and is not a declared entry point (other languages are not judged) |
 | 72 | `dependency-fan-out` | — | note | imports | shipped | Module imports 20+ other modules (high efferent coupling) |
 | 86 | `god-class` | CWE-1060 | warning | cfg, dfg, cg | shipped | Class with high WMC (>47), LCOM2 (>0.8), or CBO (>14) — 2 of 3 thresholds |
 | 87 | `feature-envy` | CWE-1060 | note | cg | **removed from pipeline** (v3.14.0) | Fires on legitimate delegation/facade patterns; raw signals in `ir.calls`+`ir.types`; reserved for circle-ir-ai |
