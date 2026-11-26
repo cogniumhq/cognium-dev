@@ -307,7 +307,23 @@ export function generateFindings(
         continue;
       }
 
-      if (pathResult.pathExists || isProximityVulnerability(source, sink, methodRanges, fieldNames)) {
+      const proximityHit =
+        !pathResult.pathExists &&
+        isProximityVulnerability(source, sink, methodRanges, fieldNames);
+
+      // cognium-dev#1434 / #292 — bare `interprocedural_param` sources must not
+      // become findings via the proximity window on JS/TS when the taint layer
+      // already refused to emit a flow for that pair.
+      if (
+        flowsKnown &&
+        (language === 'javascript' || language === 'typescript') &&
+        proximityHit &&
+        (source.type === 'interprocedural_param' || source.type === 'constructor_field')
+      ) {
+        continue;
+      }
+
+      if (pathResult.pathExists || proximityHit) {
         // cognium-dev#387 — proximity-only pairings whose sink arguments are
         // locals with no tainted reaching defs (literals, UUID, etc.) are not
         // backed by flows and are dropped.
