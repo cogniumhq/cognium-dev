@@ -943,7 +943,22 @@ export interface FileMetrics {
 // =============================================================================
 
 export interface Finding {
+  /**
+   * Stable id: a digest of {@link Finding.key}, so it carries no line and no
+   * per-file ordinal. Unchanged when lines move or another finding comes or
+   * goes. Findings that share a key are told apart by sink line order; only
+   * those can renumber each other. Before #1443 this was `vuln<N>`, a per-file
+   * counter in emit order.
+   */
   id: string;
+  /**
+   * `CWE|file|declaration|rule` — the identity `cognium-dev recheck` keys a
+   * finding by. The declaration is the enclosing method's `ids@0.1` id when
+   * the caller passed stable ids to `generateFindings`, else its
+   * `qualified@0.1` id; the rule is the sink type. Optional for findings built
+   * outside `generateFindings`.
+   */
+  key?: string;
   type: SinkType;
   cwe: string;
   severity: Severity;
