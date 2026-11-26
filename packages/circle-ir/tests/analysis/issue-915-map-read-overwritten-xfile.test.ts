@@ -32,6 +32,10 @@ ${doPostBody}
     private static String doSomething(HttpServletRequest request, String param) throws IOException {
 ${helperBody}
     }
+
+    static class Holder {
+        String v;
+    }
 }
 `;
 
@@ -113,6 +117,20 @@ describe('#915 overwritten map read in the project phase', () => {
         return bar;`)).toBe(0);
   });
 
+  it('helper passes the map read through a statement that spans lines, then returns an unrelated value: clean', async () => {
+    expect(await xssPaths(SINK_HELPER, `        java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
+        map.put("key", param);
+        String c = (String) map.get("key");
+        String d = c.substring(0, c.length() - 1);
+        String e =
+                new String(
+                        d.getBytes());
+        String f = e.split(" ")[0];
+        String g = "barbarians_at_the_gate";
+        String bar = Other.wrap(g);
+        return bar;`)).toBe(0);
+  });
+
   it('helper reads the request key, then the literal key: clean (BenchmarkTest02052 shape)', async () => {
     expect(await xssPaths(SINK_HELPER, `        String bar = "safe!";
         java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
@@ -135,6 +153,62 @@ describe('#915 overwritten map read in the project phase', () => {
         map.put("keyB", param);
         String c = (String) map.get("keyB");
         String bar = c.substring(0, c.length() - 1);
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  // A source that reaches the return through a container or an object field:
+  // the Java DFG has no def-use chain for these, so a missing chain is not
+  // proof that the return is clean.
+  const MAP_READ = `        java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
+        map.put("keyB", param);
+        String c = (String) map.get("keyB");`;
+
+  it('helper builds the request source into a StringBuilder: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `        StringBuilder sb = new StringBuilder();
+        String c = request.getHeader("X");
+        sb.append("v=").append(c);
+        String bar = sb.toString();
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper appends the map read to a StringBuilder: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        StringBuilder sb = new StringBuilder();
+        sb.append(c);
+        String bar = sb.toString();
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper stores the map read in an array: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        String[] arr = new String[1];
+        arr[0] = c;
+        String bar = arr[0];
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper adds the map read to a list: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        java.util.List<String> l = new java.util.ArrayList<String>();
+        l.add(c);
+        String bar = l.get(0);
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper stores the map read in a field: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        Holder h = new Holder();
+        h.v = c;
+        String bar = h.v;
+        return bar;`)).toBeGreaterThan(0);
+  });
+
+  it('helper has a lambda that returns a literal, then returns the map read: still fires', async () => {
+    expect(await xssPaths(SINK_HELPER, `${MAP_READ}
+        java.util.function.Supplier<String> s = () -> {
+            return "x";
+        };
+        String bar = c;
         return bar;`)).toBeGreaterThan(0);
   });
 });

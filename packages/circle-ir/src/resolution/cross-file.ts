@@ -2155,6 +2155,15 @@ export class CrossFileResolver {
    * Conservative: every source must name its local, and every `return` must
    * be a string literal or a plain local whose reaching def the DFG knows.
    * The walk follows every def-use chain, with no stop at cross-file calls.
+   *
+   * A missing chain alone is not proof: the Java DFG has no chain through a
+   * container or an object (`sb.append(c)`, `arr[0] = c`, `l.add(c)`,
+   * `h.v = c`). So every use of a source-carrying def must be accounted for:
+   * a plain local assignment whose def the DFG chains, a branch condition, or
+   * a `return`. Any other use, and any lambda or anonymous class body in the
+   * method (its `return`s are not the method's), keeps the return a source.
+   * A `return` split over lines does not match the one-line pattern, so it
+   * keeps the return a source too.
    */
   private javaSourcesMissReturn(file: string, ir: CircleIR, method: MethodInfo): boolean {
     if (ir.meta.language !== 'java') return false;
@@ -2174,13 +2183,47 @@ export class CrossFileResolver {
     }
     const reached = this.allChainReachableDefs(ir, seeds);
 
-    let returns = 0;
-    for (let l = method.start_line; l <= method.end_line; l++) {
+    const stmt = (l: number): string => {
       const raw = lines[l - 1] ?? '';
       const slash = raw.indexOf('//');
-      let text = (slash >= 0 ? raw.slice(0, slash) : raw).trim();
+      const text = (slash >= 0 ? raw.slice(0, slash) : raw).trim();
+      return text.startsWith('}') ? text.slice(1).trimStart() : text;
+    };
+    for (let l = method.start_line + 1; l <= method.end_line; l++) {
+      const t = stmt(l);
+      if (t.includes('->') || (/\bnew\s/.test(t) && /\)\s*\{$/.test(t))) return false;
+    }
+    const useLines = new Set<number>();
+    for (const u of ir.dfg.uses) {
+      if (u.def_id !== null && reached.has(u.def_id) &&
+          u.line >= method.start_line && u.line <= method.end_line) useLines.add(u.line);
+    }
+    // A statement may span lines (`String e =` / `new String(d.getBytes());`):
+    // read the whole statement around a use.
+    const ends = (t: string): boolean => /[;{}]$/.test(t);
+    for (const l of useLines) {
+      let first = l;
+      while (first > method.start_line + 1 && !ends(stmt(first - 1))) first--;
+      let last = l;
+      while (last < method.end_line && !ends(stmt(last))) last++;
+      const parts: string[] = [];
+      for (let k = first; k <= last; k++) parts.push(stmt(k));
+      const text = parts.join(' ');
+      if (/^return\b/.test(text)) continue;
+      if (/\.(?:append|insert|add\w*|put\w*|set\w*|push|offer\w*|write|print\w*)\s*\(/.test(text)) return false;
+      const eq = text.search(/(?<![=!<>])=(?!=)/);
+      if (/^(?:else\s+)?(?:if|while)\s*\(/.test(text) && eq < 0) continue;
+      // `[final] [Type] name = …;`: the last token before `=` names a local
+      // (`arr[0]` and `h.v` do not).
+      const lhs = eq > 0 && text.endsWith(';') ? text.slice(0, eq).trim().split(/\s/).pop() : undefined;
+      if (!lhs || !/^[A-Za-z_$][\w$]*$/.test(lhs) || !ir.dfg.defs.some(d =>
+        d.line >= first && d.line <= last && d.variable === lhs && reached.has(d.id))) return false;
+    }
+
+    let returns = 0;
+    for (let l = method.start_line; l <= method.end_line; l++) {
+      const text = stmt(l);
       if (!/\breturn\b/.test(text)) continue;
-      if (text.startsWith('}')) text = text.slice(1).trimStart();
       const m = /^return\s(.*);$/.exec(text);
       if (!m) return false;
       returns++;
