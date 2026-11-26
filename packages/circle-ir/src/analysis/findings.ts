@@ -30,6 +30,9 @@ import { ARGV_NO_SHELL_TAG } from './js-spawn-argv.js';
 import { sanitizerCoversSink } from './sanitizer-index.js';
 import { walkBackwardDefs } from './dfg-walk.js';
 import { isProvablyLiteralExpression } from './literal-expression.js';
+import { declAt } from '../path-set/path-set.js';
+import { digest128 } from '../stable-ids/hash.js';
+import type { StableIdFile } from '../stable-ids/types.js';
 
 /**
  * Generate vulnerability findings from taint analysis results.
@@ -41,6 +44,12 @@ import { isProvablyLiteralExpression } from './literal-expression.js';
  * flows introduced upstream (LLM enrichment hallucinations or
  * detector regressions). Both parameters are optional to preserve
  * backward compatibility with pre-3.165 callers.
+ *
+ * cognium-dev#1443 — each finding's id is derived from
+ * `CWE|file|declaration|rule` ({@link Finding.key}). Pass the file's
+ * `deriveStableIds` result as `stableIds` to key on the `ids@0.1` declaration
+ * (the same key `cognium-dev recheck` writes); without it the declaration is
+ * the `qualified@0.1` name read from `types`.
  */
 export function generateFindings(
   sources: TaintSource[],
@@ -52,6 +61,7 @@ export function generateFindings(
   sanitizers: TaintSanitizer[] = [],
   types: TypeInfo[] = [],
   flowsArg?: TaintFlowInfo[],
+  stableIds?: StableIdFile,
 ): Finding[] {
   const flows = flowsArg ?? [];
   const findings: Finding[] = [];
@@ -83,7 +93,6 @@ export function generateFindings(
 
   const methodRanges = buildMethodRanges(types);
   const fieldNames = buildFieldNames(types);
-  let findingId = 1;
 
   const defByIdForProximity = new Map<number, DFGDef>();
   const chainsByToDefForProximity = new Map<number, DFGChain[]>();
@@ -346,7 +355,7 @@ export function generateFindings(
         });
 
         findings.push({
-          id: `vuln${findingId++}`,
+          id: '', // assigned by assignStableIds once deduplicated
           type: sink.type,
           cwe: sink.cwe,
           severity,
@@ -428,7 +437,7 @@ export function generateFindings(
       variables: (fl.path ?? []).map(st => st.variable).filter(Boolean),
     };
     findings.push({
-      id: `vuln${findingId++}`,
+      id: '', // assigned by assignStableIds once deduplicated
       type: sink.type,
       cwe: sink.cwe,
       severity: calcSeverity({
@@ -516,7 +525,39 @@ export function generateFindings(
     return b.confidence - a.confidence;
   });
 
+  assignStableIds(deduped, fileName, types, stableIds);
   return deduped;
+}
+
+/**
+ * cognium-dev#1443 — set `key` (`CWE|file|declaration|rule`) and `id` (its
+ * digest) on each finding. No line goes into either, so an edit above the
+ * sink, or another finding coming or going, leaves them alone. Findings that
+ * share a key (one rule twice in one declaration) are numbered in sink line
+ * order and the number goes into the digest; the first keeps the bare one.
+ */
+function assignStableIds(
+  findings: Finding[],
+  fileName: string,
+  types: TypeInfo[],
+  stableIds: StableIdFile | undefined,
+): void {
+  const ir = { types, calls: [] };
+  const byKey = new Map<string, Finding[]>();
+  for (const f of findings) {
+    const decl = declAt(fileName, ir, f.sink.line, stableIds);
+    const key = `${f.cwe}|${fileName}|${decl.id}|${f.type}`;
+    f.key = key;
+    const group = byKey.get(key) ?? [];
+    group.push(f);
+    byKey.set(key, group);
+  }
+  for (const [key, group] of byKey) {
+    group.sort((a, b) => a.sink.line - b.sink.line);
+    group.forEach((f, i) => {
+      f.id = digest128(i === 0 ? ['finding', key] : ['finding', key, String(i + 1)]);
+    });
+  }
 }
 
 /**
