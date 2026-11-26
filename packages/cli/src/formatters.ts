@@ -655,7 +655,7 @@ export function formatResults(
 
   for (const result of results) {
     if (result.error) {
-      lines.push(colors.red(`[ERROR] ${termSafe(result.file)}: ${result.error}`));
+      lines.push(colors.red(`[ERROR] ${termSafe(result.file)}: ${termSafe(result.error)}`));
       continue;
     }
 
@@ -691,8 +691,8 @@ export function formatResults(
         `  ${colorFn(`[${icon}]`)} ${colorFn(vuln.type)} (${severityUpper})${cweTag}${categoryTag}${libraryApiTag}`
       );
 
-      // Line number and taint flow message
-      lines.push(`      Line ${vuln.line}: ${vuln.message}`);
+      // Line number and taint flow message (escaped: it can quote a file name or scanned text)
+      lines.push(`      Line ${vuln.line}: ${termSafe(vuln.message)}`);
 
       // Add help text for the vulnerability
       const help = VULNERABILITY_HELP[vuln.type];
