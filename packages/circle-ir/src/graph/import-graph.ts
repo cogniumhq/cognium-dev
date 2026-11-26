@@ -35,7 +35,13 @@ function normalizePath(p: string): string {
   return (isAbsolute ? '/' : '') + result.join('/');
 }
 
-const EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs', '.py', '.java', '.rs', ''];
+const EXTENSIONS = [
+  '.ts', '.tsx', '.mts', '.cts',
+  '.js', '.jsx', '.mjs', '.cjs',
+  '.vue',
+  '.py', '.java', '.rs',
+  '',
+];
 
 // Entry-point filenames (base without extension) — not treated as orphans
 const ENTRY_POINT_NAMES = /^(index|main|app|server|mod|cli|bin|start|run|entry|init)$/i;
@@ -114,7 +120,7 @@ export class ImportGraph {
         // Strip the .js suffix and retry with TypeScript extensions.
         if (!resolved && base.endsWith('.js')) {
           const stripped = base.slice(0, -3);
-          for (const ext of ['.ts', '.tsx', '.js']) {
+          for (const ext of ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs']) {
             const candidate = stripped + ext;
             if (this.allFiles.has(candidate)) {
               resolved = candidate;
