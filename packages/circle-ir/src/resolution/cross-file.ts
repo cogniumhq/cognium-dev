@@ -1283,7 +1283,8 @@ export class CrossFileResolver {
             //     local def on this caller line as tainted (the assignment LHS).
             const calleeNode0 = methodIndex.get(resolved.targetMethod);
             if (callee.returnsSource && !callee.sanitizes && callee.sourceType &&
-                !(calleeNode0 && this.sourcesOnlySteerBranches(callee.file, calleeNode0.ir, calleeNode0.method))) {
+                !(calleeNode0 && this.sourcesOnlySteerBranches(callee.file, calleeNode0.ir, calleeNode0.method)) &&
+                !(calleeNode0 && this.javaSourcesMissReturn(callee.file, calleeNode0.ir, calleeNode0.method))) {
               const calleeNode = calleeNode0;
               const calleeSourceLine = calleeNode
                 ? this.findRealSourceLineInMethod(calleeNode.ir, calleeNode.method)
@@ -1391,6 +1392,11 @@ export class CrossFileResolver {
                 for (const arg of this.dangerousSinkArguments(sink, sinkCall)) {
                   const matched = this.matchTaintedArg(arg, tainted, isJs);
                   if (!matched) continue;
+                  // #915: the source's value is overwritten before the sink
+                  // (`bar = map.get("keyB"); bar = map.get("keyA"); write(bar)`).
+                  if (callerIR.meta.language === 'java' && matched.origin.defIds &&
+                      this.noReachingDefIn(callerIR, sink.line, matched.var,
+                        this.allChainReachableDefs(callerIR, matched.origin.defIds))) continue;
                   const key = `${matched.origin.file}:${matched.origin.line}→${callerFile}:${sink.line}`;
                   if (seen.has(key)) continue;
                   seen.add(key);
@@ -2134,6 +2140,295 @@ export class CrossFileResolver {
       }
     }
     return true;
+  }
+
+  /**
+   * True when the DFG proves no source value inside a Java `method` reaches
+   * any of its `return` statements, so its return is not a source for
+   * cross-file chaining (#915).
+   *
+   * OWASP helpers read the request value back out of a local map
+   * (`c = (String) map.get("key")`, a `plugin_param` source) and then return
+   * something else: the literal entry (`bar = (String) map.get("keyA")`) or an
+   * unrelated value (`bar = thing.doSomething("barbarians_at_the_gate")`).
+   *
+   * Conservative: every source must name its local, and every `return` must
+   * be a string literal or a plain local whose reaching def the DFG knows.
+   * The walk follows every def-use chain, with no stop at cross-file calls.
+   *
+   * A missing chain alone is not proof: the Java DFG has no chain through a
+   * container or an object (`sb.append(c)`, `arr[0] = c`, `l.add(c)`,
+   * `h.v = c`). So every use of a source-carrying def must be accounted for:
+   * a plain local assignment whose def the DFG chains, a branch condition, or
+   * a `return`. Any other use, and any lambda or anonymous class body in the
+   * method (its `return`s are not the method's), keeps the return a source.
+   * A `return` split over lines does not match the one-line pattern, so it
+   * keeps the return a source too.
+   */
+  private javaSourcesMissReturn(file: string, ir: CircleIR, method: MethodInfo): boolean {
+    if (ir.meta.language !== 'java') return false;
+    const lines = this.sourceLines?.get(file);
+    const chains = ir.dfg.chains;
+    if (!lines || !chains || chains.length === 0) return false;
+    const real = ir.taint.sources.filter(s =>
+      s.type !== 'interprocedural_param' && s.line >= method.start_line && s.line <= method.end_line);
+    if (real.length === 0) return false;
+
+    const seeds = new Set<number>();
+    for (const src of real) {
+      if (!src.variable) return false;
+      const defs = ir.dfg.defs.filter(d => d.variable === src.variable && d.line === src.line);
+      if (defs.length === 0) return false;
+      for (const d of defs) seeds.add(d.id);
+    }
+    const reached = this.allChainReachableDefs(ir, seeds);
+
+    const stmt = (l: number): string => {
+      const raw = lines[l - 1] ?? '';
+      const slash = raw.indexOf('//');
+      const text = (slash >= 0 ? raw.slice(0, slash) : raw).trim();
+      return text.startsWith('}') ? text.slice(1).trimStart() : text;
+    };
+    for (let l = method.start_line + 1; l <= method.end_line; l++) {
+      const t = stmt(l);
+      // String literals are blanked first, so `"->"` in a literal does not count.
+      const code = CrossFileResolver.blankJavaLiterals(t);
+      if (code.includes('->') || (/\bnew\s/.test(code) && /\)\s*\{$/.test(code))) return false;
+    }
+    const useLines = new Set<number>();
+    for (const u of ir.dfg.uses) {
+      if (u.def_id !== null && reached.has(u.def_id) &&
+          u.line >= method.start_line && u.line <= method.end_line) useLines.add(u.line);
+    }
+    // A statement may span lines (`String e =` / `new String(d.getBytes());`):
+    // read the whole statement around a use.
+    const ends = (t: string): boolean => /[;{}]$/.test(t);
+    for (const l of useLines) {
+      let first = l;
+      while (first > method.start_line + 1 && !ends(stmt(first - 1))) first--;
+      let last = l;
+      while (last < method.end_line && !ends(stmt(last))) last++;
+      const parts: string[] = [];
+      for (let k = first; k <= last; k++) parts.push(stmt(k));
+      const text = CrossFileResolver.blankJavaLiterals(parts.join(' '));
+      if (/^return\b/.test(text)) continue;
+      if (/\.(?:append|insert|add\w*|put\w*|set\w*|push|offer\w*|write|print\w*)\s*\(/.test(text)) return false;
+      // The source handed to another object's method (`ref.getAndSet(c)`,
+      // `map.replace(k, c)`) may be stored there, whatever the method's name.
+      const names = new Set<string>();
+      for (const u of ir.dfg.uses) {
+        if (u.def_id !== null && reached.has(u.def_id) && u.line >= first && u.line <= last) names.add(u.variable);
+      }
+      if (CrossFileResolver.passesToForeignCall(text, names)) return false;
+      const eq = text.search(/(?<![=!<>])=(?!=)/);
+      if (/^(?:else\s+)?(?:if|while)\s*\(/.test(text) && eq < 0) continue;
+      // A chained assignment (`p = arr[0] = c`, `r = h.v = c`) also stores
+      // into the inner target.
+      if (eq > 0 && /(?<![=!<>])=(?!=)/.test(text.slice(eq + 1))) return false;
+      // `[final] [Type] name = …;`: the last token before `=` names a local
+      // (`arr[0]` and `h.v` do not).
+      const lhs = eq > 0 && text.endsWith(';') ? text.slice(0, eq).trim().split(/\s/).pop() : undefined;
+      if (!lhs || !/^[A-Za-z_$][\w$]*$/.test(lhs) || !ir.dfg.defs.some(d =>
+        d.line >= first && d.line <= last && d.variable === lhs && reached.has(d.id))) return false;
+    }
+
+    let returns = 0;
+    for (let l = method.start_line; l <= method.end_line; l++) {
+      const text = stmt(l);
+      if (!/\breturn\b/.test(text)) continue;
+      const m = /^return\s(.*);$/.exec(text);
+      if (!m) return false;
+      returns++;
+      const expr = m[1].trim();
+      if (/^"(?:[^"\\]|\\.)*"$/.test(expr)) continue;
+      const id = /^([A-Za-z_$][\w$]*)$/.exec(expr)?.[1];
+      if (!id || !this.noReachingDefIn(ir, l, id, reached)) return false;
+    }
+    return returns > 0;
+  }
+
+  /**
+   * Java string and char literals replaced by empty ones (`"a=b"` → `""`), in
+   * one left-to-right pass so a quote inside the other kind (`'"'`) does not
+   * open a literal.
+   */
+  private static blankJavaLiterals(text: string): string {
+    return text.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, m => m[0] + m[0]);
+  }
+
+  /**
+   * Static JDK and library methods known not to keep their arguments (#915),
+   * as `Class.method` → the class's package. A static call outside this list
+   * may store its argument in static state (`Other.remember(c)`), and an
+   * upper-case receiver may be an instance constant (`STORE.remember(c)`).
+   */
+  private static readonly PURE_STATICS: ReadonlyMap<string, string> = new Map([
+    ...['valueOf', 'format', 'join', 'copyValueOf'].map(m => [`String.${m}`, 'java.lang'] as const),
+    ...['Integer', 'Long', 'Short', 'Byte', 'Double', 'Float', 'Boolean'].flatMap(c =>
+      ['valueOf', 'toString', `parse${c === 'Integer' ? 'Int' : c}`].map(m => [`${c}.${m}`, 'java.lang'] as const)),
+    ['Objects.toString', 'java.util'],
+    ['Arrays.copyOf', 'java.util'],
+    ['Arrays.copyOfRange', 'java.util'],
+    ['Arrays.toString', 'java.util'],
+    ['URLDecoder.decode', 'java.net'],
+    ['URLEncoder.encode', 'java.net'],
+    ['Base64.encodeBase64', 'org.apache.commons.codec.binary'],
+    ['Base64.decodeBase64', 'org.apache.commons.codec.binary'],
+    ['StringEscapeUtils.escapeHtml', 'org.apache.commons.lang'],
+    ['HtmlUtils.htmlEscape', 'org.springframework.web.util'],
+  ]);
+
+  /** True when `segments.callee(…)` names a method in `PURE_STATICS`. */
+  private static isPureStatic(segments: string[], callee: string): boolean {
+    const cls = segments[segments.length - 1];
+    const pkg = CrossFileResolver.PURE_STATICS.get(`${cls}.${callee}`);
+    return pkg !== undefined && (segments.length === 1 || segments.slice(0, -1).join('.') === pkg);
+  }
+
+  /**
+   * True when `text` (one Java statement, literals blanked) passes one of
+   * `names` as an argument to a call that may keep it (#915). Accepted calls:
+   * a method on one of `names` (`c.substring(1)`), and a constructor
+   * (`new String(d)`) or a known pure static call (`String.valueOf(c)`,
+   * `java.net.URLDecoder.decode(c, "UTF-8")`, see `PURE_STATICS`) whose other
+   * arguments are not plain locals that could be written to. Any other call
+   * that takes one of `names` (`ref.getAndSet(c)`, `map.replace(k, c)`,
+   * `this.keep(c)`, `keep(c)`, `Other.remember(c)`, `STORE.remember(c)`)
+   * counts.
+   */
+  private static passesToForeignCall(text: string, names: Set<string>): boolean {
+    if (names.size === 0) return false;
+    const isId = (ch: string | undefined): boolean => ch !== undefined && /[\w$]/.test(ch);
+    const mentions = (s: string): boolean => {
+      for (const m of s.matchAll(/[A-Za-z_$][\w$]*/g)) {
+        if ((m.index === 0 || !/[\w$.]/.test(s[m.index - 1])) && names.has(m[0])) return true;
+      }
+      return false;
+    };
+    // Index just past the identifier ending before `end` (whitespace skipped),
+    // or -1 when there is none.
+    const idBefore = (end: number): [number, number] => {
+      let e = end;
+      while (e > 0 && /\s/.test(text[e - 1])) e--;
+      let st = e;
+      while (st > 0 && isId(text[st - 1])) st--;
+      return st < e && /[A-Za-z_$]/.test(text[st]) ? [st, e] : [-1, -1];
+    };
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] !== '(') continue;
+      let depth = 0;
+      let close = -1;
+      for (let k = i; k < text.length; k++) {
+        if (text[k] === '(') depth++;
+        else if (text[k] === ')' && --depth === 0) { close = k; break; }
+      }
+      if (close < 0) return true;
+      const inner = text.slice(i + 1, close);
+      if (!mentions(inner)) continue;
+      // The callee name, skipping type arguments (`AtomicReference<String>(`).
+      let end = i;
+      while (end > 0 && /\s/.test(text[end - 1])) end--;
+      if (text[end - 1] === '>') {
+        let d = 0;
+        let k = end - 1;
+        for (; k >= 0; k--) {
+          if (text[k] === '>') d++;
+          else if (text[k] === '<' && --d === 0) break;
+        }
+        if (k < 0) return true;
+        end = k;
+      }
+      const [cs, ce] = idBefore(end);
+      if (cs < 0) continue; // a cast or a grouping paren
+      if (/^(?:if|while|for|switch|catch|synchronized|return)$/.test(text.slice(cs, ce))) continue;
+      // The receiver chain before `.callee`, read backwards: names, calls, indexes.
+      let p = cs;
+      while (p > 0 && /\s/.test(text[p - 1])) p--;
+      const segments: string[] = [];
+      let plain = true;
+      while (text[p - 1] === '.') {
+        p--;
+        while (p > 0 && /\s/.test(text[p - 1])) p--;
+        while (text[p - 1] === ')' || text[p - 1] === ']') {
+          plain = false;
+          const open = text[p - 1] === ')' ? '(' : '[';
+          const shut = text[p - 1];
+          let d = 0;
+          let k = p - 1;
+          for (; k >= 0; k--) {
+            if (text[k] === shut) d++;
+            else if (text[k] === open && --d === 0) break;
+          }
+          if (k < 0) return true;
+          p = k;
+          while (p > 0 && /\s/.test(text[p - 1])) p--;
+        }
+        const [ss, se] = idBefore(p);
+        if (ss < 0) return true;
+        segments.unshift(text.slice(ss, se));
+        p = ss;
+        while (p > 0 && /\s/.test(text[p - 1])) p--;
+      }
+      const head = text.slice(0, p);
+      const isNew = head.endsWith('new') && !isId(head[head.length - 4]);
+      if (!isNew && segments.length > 0 && names.has(segments[0])) continue; // a method on the value itself
+      const isStatic = !isNew && plain && segments.length > 0 &&
+        CrossFileResolver.isPureStatic(segments, text.slice(cs, ce));
+      if (!isNew && !isStatic) return true;
+      // A constructor or static call may still write into another argument
+      // (`Collections.addAll(list, c)`): any other plain-local argument counts.
+      let d = 0;
+      let startArg = 0;
+      const args: string[] = [];
+      for (let k = 0; k <= inner.length; k++) {
+        const ch = inner[k];
+        if (k === inner.length || (ch === ',' && d === 0)) { args.push(inner.slice(startArg, k).trim()); startArg = k + 1; }
+        else if (ch === '(' || ch === '[' || ch === '{') d++;
+        else if (ch === ')' || ch === ']' || ch === '}') d--;
+      }
+      if (args.some(a => /^[A-Za-z_$][\w$]*$/.test(a) && !names.has(a) &&
+          !/^(?:null|true|false|this)$/.test(a) && !/^[A-Z][A-Z0-9_]*$/.test(a))) return true;
+    }
+    return false;
+  }
+
+  /**
+   * `seeds` plus every def they reach over `dfg.chains` (#915). Unlike
+   * `forwardReachableDefs`, it does not stop at cross-file calls, so a value
+   * passed through a helper in another file (`bar = Util.trim(bar)`) still
+   * counts as carrying the source.
+   */
+  private allChainReachableDefs(ir: CircleIR, seeds: Set<number>): Set<number> {
+    const reached = new Set<number>(seeds);
+    const chains = ir.dfg.chains ?? [];
+    const frontier = [...reached];
+    while (frontier.length > 0) {
+      const cur = frontier.pop()!;
+      for (const ch of chains) {
+        if (ch.from_def !== cur || reached.has(ch.to_def)) continue;
+        reached.add(ch.to_def);
+        frontier.push(ch.to_def);
+      }
+    }
+    return reached;
+  }
+
+  /**
+   * True when `varName` is used at `line` and none of its reaching defs there
+   * is in `taintDefIds` (#915). Unlike `taintClobbered`, which reads the first
+   * use only, this checks every reaching def: the Java DFG lists one use per
+   * def that may reach it (`data = ""; if (…) data = source; sink(data)`).
+   * False when the DFG has no reaching def for the use.
+   */
+  private noReachingDefIn(
+    ir: CircleIR,
+    line: number,
+    varName: string,
+    taintDefIds: Set<number> | undefined,
+  ): boolean {
+    if (!taintDefIds || taintDefIds.size === 0) return false;
+    const uses = ir.dfg.uses.filter(u => u.line === line && u.variable === varName && u.def_id !== null);
+    return uses.length > 0 && uses.every(u => !taintDefIds.has(u.def_id!));
   }
 
   /** #914 — local assigned from a source, then only read in branch conditions. */
