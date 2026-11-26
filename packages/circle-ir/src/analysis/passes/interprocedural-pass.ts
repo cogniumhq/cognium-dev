@@ -19,7 +19,7 @@ import { CSharpCredit } from './csharp-sanitizer-credit.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
-import type { TaintPropagationPassResult } from './taint-propagation-pass.js';
+import { isInJavaSanitizedMethod, type TaintPropagationPassResult } from './taint-propagation-pass.js';
 import type { LanguageSourcesResult } from './language-sources-pass.js';
 import {
   analyzeInterprocedural,
@@ -483,6 +483,17 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
         const callsAtSink = graph.callsByLine.get(f.sink_line) ?? [];
         return !shouldSuppressGatedLoggerLogInjection(f, callsAtSink);
       });
+    }
+
+    // The method-level Java guards (#101: a hardened XML factory, the
+    // canonical-path check) protect the sink's method whichever way taint
+    // reached it. TaintPropagationPass applies them to its own flows; the
+    // flows added above came after that filter, so apply them here too.
+    if (language === 'java' && typeof ctx.code === 'string') {
+      const code = ctx.code;
+      filteredAdditionalFlows = filteredAdditionalFlows.filter(f =>
+        (f.sink_type !== 'xxe' && f.sink_type !== 'path_traversal') ||
+        !isInJavaSanitizedMethod(code, graph.ir.types, f.sink_line, f.sink_type));
     }
 
     return { additionalSinks: filteredAdditionalSinks, additionalFlows: filteredAdditionalFlows, interprocedural };
