@@ -350,6 +350,8 @@ class JavaGraphBuilder {
         }
       }
     }
+    // Types the framework runs by method name (Maven goals).
+    this.typeEntries(ctx, type, classAnns, supers, methodNodes);
     // Method-level entries.
     for (const m of methodNodes) {
       const d = declAt(ctx, m, 'method');
@@ -367,6 +369,54 @@ class JavaGraphBuilder {
         }
       }
       if (this.isMain(m)) this.entry(d, 'main', 'declared', ctx.path, 'public static void main(String[])');
+    }
+  }
+
+  private typeEntries(ctx: FileCtx, type: StableDecl, classAnns: Annotation[], supers: string[], methodNodes: Node[]): void {
+    const seen = new Set<string>();
+    for (const row of this.tables.types ?? []) {
+      let evidence: string | null = null;
+      let certainty: EntryCertainty | null = null;
+      for (const a of classAnns) {
+        if (!row.annotations?.includes(a.name)) continue;
+        const c = certaintyOf(a, row.packages);
+        if (!c) continue;
+        const named = row.nameAttribute ? stringsOf(a.args.get(row.nameAttribute))[0] : undefined;
+        evidence = named !== undefined ? `@${a.name}(${row.nameAttribute} = "${named}")` : `@${a.name}`;
+        certainty = c;
+        break;
+      }
+      if (!evidence) {
+        for (const s of supers) {
+          const simple = s.slice(s.lastIndexOf('.') + 1);
+          if (!row.supertypes?.includes(simple)) continue;
+          const pkg = s.includes('.') ? s.slice(0, s.lastIndexOf('.')) : ctx.imports.explicit.get(simple) ?? null;
+          const ok = pkg === null ? ctx.imports.wildcards.some(w => row.packages.includes(w)) : row.packages.includes(pkg);
+          if (!ok) continue;
+          evidence = simple;
+          certainty = 'declared';
+          break;
+        }
+      }
+      if (!evidence || !certainty) continue;
+      const fromSupertype = !evidence.startsWith('@');
+      for (const m of methodNodes) {
+        const name = m.childForFieldName('name')?.text ?? '';
+        const kind = Object.prototype.hasOwnProperty.call(row.methods, name) ? row.methods[name] : undefined;
+        const d = declAt(ctx, m, 'method');
+        if (!kind || !d || !m.childForFieldName('body')) continue;
+        if (seen.has(`${d.id}|${kind}`)) continue;
+        seen.add(`${d.id}|${kind}`);
+        this.entry(d, kind, certainty, ctx.path, fromSupertype ? `${evidence}.${name}` : evidence, { framework: row.framework });
+      }
+      if (row.constructs) {
+        const ctors = this.members(type, ctx).filter(d => d.kind === 'method' && d.name === 'constructor');
+        for (const target of ctors.length > 0 ? ctors : [type]) {
+          if (seen.has(`${target.id}|${row.constructs}`)) continue;
+          seen.add(`${target.id}|${row.constructs}`);
+          this.entry(target, row.constructs, certainty, ctx.path, evidence, { framework: row.framework });
+        }
+      }
     }
   }
 

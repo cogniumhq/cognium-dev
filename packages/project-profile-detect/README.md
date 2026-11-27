@@ -48,6 +48,7 @@ interface DetectionResult {
 
 Precedence ladder (highest first):
 
+0. A Maven module's own `<packaging>` (default `jar`): `pom` → `unknown` (an aggregator builds no code), `maven-plugin` → `plugin`, `war` / `ear` → `server`; `jar` goes on down the ladder. Packaging, `<pluginManagement>` entries and a parent's `war` / `ear` / `maven-plugin` / `application` tags never decide a child module's shape.
 1. `spring-boot` plugin → `server`
 2. `war` / `ear` packaging → `server`
 3. `maven-plugin` / `java-gradle-plugin` → `plugin`

@@ -5,6 +5,10 @@
  *   spring-boot > application/main() > java-library/exports
  *     > plugin > cli > unknown
  *
+ * A Maven module's own `<packaging>` decides before any of these: `pom` →
+ * no shape (an aggregator builds no code), `maven-plugin` → plugin, `war` /
+ * `ear` → server; `jar` (the default) goes on to the signals above.
+ *
  * Hybrid policy (Approach C from ADR-008):
  *  - A module that is *both* application-shaped AND publicly published
  *    still resolves to its shape (`application`, `server`, `cli`) — the
@@ -28,6 +32,25 @@ export function resolveShape(mod: BuildModule): ShapeResolution {
   const has = (tag: string) => sig.plugins.includes(tag);
   const reasons: string[] = [];
 
+  // 0. Maven `<packaging>` is the module's own build type and decides first.
+  //    `pom` builds no code: an aggregator or parent. The files under its
+  //    directory that no child module owns (scripts, docs) get no shape.
+  if (mod.buildSystem === 'maven') {
+    const packaging = sig.packaging ?? 'jar';
+    if (packaging === 'pom') {
+      reasons.push('pom packaging (aggregator: builds no code of its own)');
+      return { shape: 'unknown', reasons };
+    }
+    if (packaging === 'maven-plugin') {
+      reasons.push('maven-plugin packaging');
+      return { shape: 'plugin', reasons };
+    }
+    if (packaging === 'war' || packaging === 'ear') {
+      reasons.push(`${packaging} packaging`);
+      return { shape: 'server', reasons };
+    }
+  }
+
   // 1. Spring Boot → application/server (strongest signal).
   if (has('spring-boot')) {
     reasons.push('spring-boot plugin');
@@ -42,7 +65,7 @@ export function resolveShape(mod: BuildModule): ShapeResolution {
 
   // 3. Maven / Gradle plugin → plugin shape.
   if (has('maven-plugin') || has('gradle-plugin')) {
-    reasons.push(has('maven-plugin') ? 'maven-plugin packaging' : 'gradle-plugin id');
+    reasons.push(has('maven-plugin') ? 'maven-plugin-plugin in build' : 'gradle-plugin id');
     return { shape: 'plugin', reasons };
   }
 
