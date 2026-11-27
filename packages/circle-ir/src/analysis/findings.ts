@@ -26,6 +26,7 @@ import {
   getSinkDescription,
 } from './rules.js';
 import { isNonExecutableSourceLine } from './non-executable-lines.js';
+import { xxeRemediation } from './xxe-remediation.js';
 import { ARGV_NO_SHELL_TAG } from './js-spawn-argv.js';
 import { sanitizerCoversSink } from './sanitizer-index.js';
 import { walkBackwardDefs } from './dfg-walk.js';
@@ -33,6 +34,16 @@ import { isProvablyLiteralExpression } from './literal-expression.js';
 import { declAt } from '../path-set/path-set.js';
 import { digest128 } from '../stable-ids/hash.js';
 import type { StableIdFile } from '../stable-ids/types.js';
+
+/**
+ * Remediation for a sink. XXE names the parser kind and its one-line
+ * hardening when the sink identifies the parser; every other type keeps the
+ * rule's generic text.
+ */
+function remediationFor(sink: TaintSink): string {
+  const generic = getRemediation(sink.type);
+  return sink.type === 'xxe' ? xxeRemediation(sink, generic) : generic;
+}
 
 /**
  * Generate vulnerability findings from taint analysis results.
@@ -394,7 +405,7 @@ export function generateFindings(
           path: pathResult.hops.length > 0 ? pathResult.hops : undefined,
           exploitable: pathResult.pathExists && confidence > 0.7,
           explanation: generateExplanation(source, sink, pathResult),
-          remediation: getRemediation(sink.type),
+          remediation: remediationFor(sink),
           verification: {
             graph_path_exists: pathResult.pathExists,
             flow_backed: isFlowBacked(sink.type, sink.line),
@@ -469,7 +480,7 @@ export function generateFindings(
       path: hops.length > 0 ? (hops as never[]) : undefined,
       exploitable: fl.confidence > 0.7,
       explanation: generateExplanation(src as TaintSource, sink, pathResult),
-      remediation: getRemediation(sink.type),
+      remediation: remediationFor(sink),
       verification: {
         graph_path_exists: true,
         // #387 — derived FROM a flow by construction, so backed by definition.

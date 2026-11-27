@@ -56,6 +56,7 @@
 
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { CallInfo, TypeInfo } from '../../types/index.js';
+import { formatXxeFix, xxeParserFix } from '../xxe-remediation.js';
 
 const JAVA_FACTORIES = new Set<string>([
   'SAXParserFactory',
@@ -426,6 +427,9 @@ export class XmlEntityExpansionPass
         'ENTITIES, false)` before `createXMLStreamReader`.'
       );
     }
+    // TransformerFactory, SchemaFactory: the parser-kind table's line.
+    const known = xxeParserFix({ class: api, location: '' });
+    if (known) return formatXxeFix(known);
     return (
       'Use `XMLConstants.FEATURE_SECURE_PROCESSING` and explicitly disable ' +
       'DTD / external-entity loading on the factory before parsing.'
