@@ -1158,6 +1158,11 @@ export interface TaintPath {
   sanitizers_in_path: string[];
   path_exists: boolean;
   confidence: number;
+  /**
+   * Optional metadata tags, as on `TaintFlowInfo.tags`. For example
+   * `'tool-arguments:local-input'`: the source is the tool's own arguments.
+   */
+  tags?: string[];
 }
 
 export interface ProjectAnalysis {

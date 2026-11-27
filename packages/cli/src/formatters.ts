@@ -5,7 +5,7 @@
 import { colors } from './utils/colors.js';
 import { termSafe } from './utils/term-safe.js';
 import { version } from './version.js';
-import { ruleTitle, type TaintPath, type CrossFileCall, type SinkType } from 'circle-ir';
+import { ruleTitle, TOOL_ARGUMENTS_NOTE, TOOL_ARGUMENTS_TAG, type TaintPath, type CrossFileCall, type SinkType } from 'circle-ir';
 
 // ─── Shared types (canonical definitions, imported by cli.ts) ────────────────
 
@@ -86,6 +86,15 @@ export function applyTagSeverityDowngrade(severity: string, tags: string[] | und
   if (!tags || !(tags.includes(LIBRARY_API_SURFACE_TAG) || tags.includes(ARGV_NO_SHELL_TAG))) return severity;
   if (severity === 'critical' || severity === 'high') return 'medium';
   return severity;
+}
+
+/**
+ * The message of a finding built from a taint flow. A flow whose source is
+ * the tool's own arguments (`tool-arguments:local-input`) says so.
+ */
+export function taintFlowMessage(flow: { sink_type: string; source_line: number; sink_line: number; tags?: string[] }): string {
+  const message = `${flow.sink_type} vulnerability: tainted data flows from line ${flow.source_line} to line ${flow.sink_line}`;
+  return flow.tags?.includes(TOOL_ARGUMENTS_TAG) ? `${message} — ${TOOL_ARGUMENTS_NOTE}` : message;
 }
 
 export interface ScanResult {
@@ -617,6 +626,7 @@ function formatCrossFilePaths(taintPaths: TaintPath[]): string {
     lines.push(`      Source: ${p.source.type} at ${termSafe(p.source.file)}:${p.source.line}`);
     lines.push(`      Sink:   ${p.sink.type} at ${termSafe(p.sink.file)}:${p.sink.line}`);
     lines.push(`      Confidence: ${p.confidence.toFixed(2)}`);
+    if (p.tags?.includes(TOOL_ARGUMENTS_TAG)) lines.push(`      Note: ${TOOL_ARGUMENTS_NOTE}`);
 
     const help = VULNERABILITY_HELP[p.sink.type];
     if (help?.fix) {
@@ -977,7 +987,8 @@ function generateSarifResults(results: ScanResult[], crossFileData?: CrossFileDa
       ruleId: `cross-file-${p.sink.type}`,
       level: severity === 'critical' || severity === 'high' ? 'error' : 'warning',
       message: {
-        text: `Cross-file taint flow from ${p.source.file}:${p.source.line} to ${p.sink.file}:${p.sink.line}`,
+        text: `Cross-file taint flow from ${p.source.file}:${p.source.line} to ${p.sink.file}:${p.sink.line}`
+          + (p.tags?.includes(TOOL_ARGUMENTS_TAG) ? ` — ${TOOL_ARGUMENTS_NOTE}` : ''),
       },
       locations: [physicalLocation(p.sink.file, p.sink.line)],
       relatedLocations: [
@@ -991,6 +1002,7 @@ function generateSarifResults(results: ScanResult[], crossFileData?: CrossFileDa
         cwe: p.sink.cwe,
         severity,
         confidence: p.confidence,
+        ...(p.tags && p.tags.length > 0 ? { tags: p.tags } : {}),
       },
     });
   }
