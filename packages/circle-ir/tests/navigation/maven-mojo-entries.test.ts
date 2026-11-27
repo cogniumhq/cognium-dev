@@ -52,6 +52,16 @@ public class Other {
   public void execute() {}
 }
 `),
+  // Only the zero-parameter execute() is the goal; an overload is ordinary code.
+  f('plugin/src/main/java/t/OverloadMojo.java', `package t;
+import org.apache.maven.plugin.AbstractMojo;
+import org.apache.maven.plugins.annotations.Mojo;
+@Mojo(name = "overload")
+public class OverloadMojo extends AbstractMojo {
+  public void execute() {}
+  public void execute(String goal) { Writer.class.getName(); }
+}
+`),
   f('plugin/src/main/java/t/Writer.java', 'package t;\npublic class Writer { public void write(String s) {} }\n'),
   f('plugin/src/main/java/t/Helper.java', 'package t;\npublic class Helper { public static void help() {} }\n'),
   f('plugin/src/main/java/t/Base.java', 'package t;\npublic abstract class Base {}\n'),
@@ -93,6 +103,14 @@ describe('entry index: Maven goals', () => {
     expect(g.entries.filter(x => qname.get(x.id) === 't:ReportMojo.execute')).toHaveLength(1);
   });
 
+  it('only the zero-parameter execute() is an entry; an overload execute(String) is not', () => {
+    const decls = g.files.flatMap(file => file.decls).filter(d => d.qualified_name.startsWith('t:OverloadMojo.execute'));
+    expect(decls).toHaveLength(2);
+    const lineOf = new Map(decls.map(d => [d.id, d.start_line]));
+    const mains = g.entries.filter(x => lineOf.has(x.id) && x.kind === 'main');
+    expect(mains.map(x => lineOf.get(x.id))).toEqual([6]);
+  });
+
   it('another package\'s @Mojo is not a Maven goal', () => {
     expect(g.entries.some(x => qname.get(x.id)?.startsWith('t:Other'))).toBe(false);
   });
@@ -125,6 +143,13 @@ describe('entry-point tier: a goal\'s execute() is Tier 1', () => {
     const t = type({ annotations: ['@Mojo(name = "report")'], extends: 'Base' });
     expect(classifyEntryPointTier(method('execute'), t, { language: 'java' })).toBe('TIER_1_ENTRY_POINT');
     expect(classifyEntryPointTier(method('helper'), t, { language: 'java' })).toBe('TIER_3_LIBRARY_API');
+  });
+
+  it('an overloaded execute(Foo) is not Tier 1, by annotation or by supertype', () => {
+    const withParam: MethodInfo = { ...method('execute'), parameters: [{ name: 'foo', type: 'Foo', annotations: [] }] };
+    expect(classifyEntryPointTier(withParam, type({ annotations: ['@Mojo(name = "report")'], extends: 'Base' }), { language: 'java' })).toBe('TIER_3_LIBRARY_API');
+    expect(classifyEntryPointTier(withParam, type({ extends: 'AbstractMojo' }), { language: 'java' })).toBe('TIER_3_LIBRARY_API');
+    expect(classifyEntryPointTier(withParam, type({ implements: ['Mojo'] }), { language: 'java' })).toBe('TIER_3_LIBRARY_API');
   });
 
   it('AbstractMojo / Mojo supertypes: execute() is a lifecycle entry', () => {

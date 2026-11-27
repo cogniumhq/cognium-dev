@@ -52,6 +52,11 @@ export interface JavaTypeEntryRow {
   supertypes?: readonly string[];
   /** Method name → the entry kind of that method. */
   methods: Readonly<Record<string, EntryKind>>;
+  /**
+   * The parameter count the framework calls the named methods with. Only an
+   * overload with that count is an entry; any count when absent.
+   */
+  arity?: number;
   /** The entry kind of the constructors, when the framework constructs the type. */
   constructs?: EntryKind;
   /** An annotation attribute whose string value names the entry (a goal, a command), shown in the evidence. */
@@ -119,10 +124,12 @@ export const DEFAULT_JAVA_ENTRY_TABLES: JavaEntryTables = {
   types: [
     // Maven plugin goals: Maven constructs the class, injects its parameters
     // and runs `execute()` when the goal is invoked (`mvn plugin:goal`).
+    // Only the no-argument `execute()` is the goal; an overload is not.
     {
       packages: ['org.apache.maven.plugins.annotations'],
       annotations: ['Mojo'],
       methods: { execute: 'main' },
+      arity: 0,
       constructs: 'bean',
       nameAttribute: 'name',
       framework: 'maven-plugin',
@@ -132,6 +139,7 @@ export const DEFAULT_JAVA_ENTRY_TABLES: JavaEntryTables = {
       packages: ['org.apache.maven.plugin'],
       supertypes: ['AbstractMojo', 'Mojo'],
       methods: { execute: 'main' },
+      arity: 0,
       constructs: 'bean',
       framework: 'maven-plugin',
     },

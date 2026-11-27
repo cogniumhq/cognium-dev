@@ -95,6 +95,38 @@ describe('parseMavenPom: packaging and coordinates', () => {
     expect(m.signals.packaging).toBe('maven-plugin');
   });
 
+  // A property element whose name starts with a block's name (`<build.number>`,
+  // `<parent.version>`, `<dependencies.foo>`) is not that block: removing
+  // "from `<build.number>` to `</build>`" would take the module's own
+  // coordinates with it. The property comes before the block it is named
+  // like, so a prefix match would reach that block's closing tag.
+  test.each([
+    ['build.number', '<build.number>7</build.number>'],
+    ['parent.version', '<parent.version>1</parent.version>'],
+    ['dependencies.foo', '<dependencies.foo>x</dependencies.foo>'],
+  ])('a <%s> property does not open a nested block', (_name, prop) => {
+    const parent = '<parent><groupId>g</groupId><artifactId>p</artifactId><version>1</version></parent>';
+    const xml = '<project>'
+      + (prop.startsWith('<parent') ? '' : parent)
+      + `<properties>${prop}</properties>`
+      + '<artifactId>a</artifactId><version>2.0</version><packaging>war</packaging>'
+      + (prop.startsWith('<parent') ? parent : '')
+      + '<build><plugins><plugin><artifactId>maven-war-plugin</artifactId><version>3.4.0</version></plugin></plugins></build>'
+      + '<dependencies><dependency><artifactId>d</artifactId><version>9</version></dependency></dependencies>'
+      + '</project>';
+    const m = parseMavenPom(xml, '/r', '/r/pom.xml', dirSig());
+    expect([m.artifactId, m.version, m.signals.packaging]).toEqual(['a', '2.0', 'war']);
+    expect(m.groupId).toBe('g');
+  });
+
+  test('a property named like a block, outside <properties>, is not that block either', () => {
+    const xml = '<project><artifactId>a</artifactId><build.number>7</build.number><version>2.0</version><packaging>war</packaging>'
+      + '<build><plugins><plugin><artifactId>maven-war-plugin</artifactId></plugin></plugins></build></project>';
+    const m = parseMavenPom(xml, '/r', '/r/pom.xml', dirSig());
+    expect([m.artifactId, m.version, m.signals.packaging]).toEqual(['a', '2.0', 'war']);
+    expect(m.signals.plugins).toContain('war');
+  });
+
   test('packaging is read case-insensitively and a commented-out one is ignored', () => {
     const m = parseMavenPom('<project><!-- <packaging>war</packaging> --><packaging>Maven-Plugin</packaging></project>', '/r', '/r/pom.xml', dirSig());
     expect(m.signals.packaging).toBe('maven-plugin');
