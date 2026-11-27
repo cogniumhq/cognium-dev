@@ -26,7 +26,7 @@ import {
   getSinkDescription,
 } from './rules.js';
 import { isNonExecutableSourceLine } from './non-executable-lines.js';
-import { xxeRemediation } from './xxe-remediation.js';
+import { pythonImportAliases, xxeRemediation } from './xxe-remediation.js';
 import { ARGV_NO_SHELL_TAG } from './js-spawn-argv.js';
 import { sanitizerCoversSink } from './sanitizer-index.js';
 import { walkBackwardDefs } from './dfg-walk.js';
@@ -38,11 +38,12 @@ import type { StableIdFile } from '../stable-ids/types.js';
 /**
  * Remediation for a sink. XXE names the parser kind and its one-line
  * hardening when the sink identifies the parser; every other type keeps the
- * rule's generic text.
+ * rule's generic text. `pyAliases` resolves Python `etree` receivers to lxml
+ * or the stdlib ElementTree.
  */
-function remediationFor(sink: TaintSink): string {
+function remediationFor(sink: TaintSink, pyAliases: () => ReadonlyMap<string, string> | undefined): string {
   const generic = getRemediation(sink.type);
-  return sink.type === 'xxe' ? xxeRemediation(sink, generic) : generic;
+  return sink.type === 'xxe' ? xxeRemediation(sink, generic, pyAliases()) : generic;
 }
 
 /**
@@ -76,6 +77,13 @@ export function generateFindings(
 ): Finding[] {
   const flows = flowsArg ?? [];
   const findings: Finding[] = [];
+  // Python import bindings, read once and only when an xxe finding needs them.
+  let pyAliasMap: ReadonlyMap<string, string> | undefined;
+  const pyAliases = (): ReadonlyMap<string, string> | undefined => {
+    if (language !== 'python' || sourceCode === undefined) return undefined;
+    pyAliasMap ??= pythonImportAliases(sourceCode);
+    return pyAliasMap;
+  };
   // cognium-dev#361 — method ranges for the proximity gate below. Optional and
   // trailing: a caller that does not pass `types` keeps the pre-existing
   // line-window behaviour exactly.
@@ -405,7 +413,7 @@ export function generateFindings(
           path: pathResult.hops.length > 0 ? pathResult.hops : undefined,
           exploitable: pathResult.pathExists && confidence > 0.7,
           explanation: generateExplanation(source, sink, pathResult),
-          remediation: remediationFor(sink),
+          remediation: remediationFor(sink, pyAliases),
           verification: {
             graph_path_exists: pathResult.pathExists,
             flow_backed: isFlowBacked(sink.type, sink.line),
@@ -480,7 +488,7 @@ export function generateFindings(
       path: hops.length > 0 ? (hops as never[]) : undefined,
       exploitable: fl.confidence > 0.7,
       explanation: generateExplanation(src as TaintSource, sink, pathResult),
-      remediation: remediationFor(sink),
+      remediation: remediationFor(sink, pyAliases),
       verification: {
         graph_path_exists: true,
         // #387 — derived FROM a flow by construction, so backed by definition.

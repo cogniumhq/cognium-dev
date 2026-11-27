@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { analyze, initAnalyzer } from '../../src/analyzer.js';
 import { generateFindings } from '../../src/analysis/findings.js';
 import { getRemediation } from '../../src/analysis/rules.js';
-import { xxeParserFix, xxeRemediation } from '../../src/analysis/xxe-remediation.js';
+import { pythonImportAliases, xxeParserFix, xxeRemediation } from '../../src/analysis/xxe-remediation.js';
 
 type Lang = 'java' | 'csharp' | 'python' | 'javascript';
 
@@ -141,6 +141,46 @@ def x():
     }
   });
 
+  const flaskFromstring = (imp: string, recv: string) => `from flask import request
+${imp}
+
+@app.route('/x')
+def x():
+    data = request.args.get('d')
+    return ${recv}.fromstring(data)
+`;
+
+  it.each([
+    ['import lxml.etree', 'lxml.etree'],
+    ['from lxml import etree as ET', 'ET'],
+    ['import lxml.etree as et', 'et'],
+  ])('Python lxml via %s', async (imp, recv) => {
+    const rem = await xxeRemediations(flaskFromstring(imp, recv), 'x.py', 'python');
+    expect(rem.length).toBeGreaterThan(0);
+    for (const r of rem) {
+      expect(r).toContain('Parser: lxml.etree.');
+      expect(r).toContain('etree.XMLParser(resolve_entities=False, no_network=True)');
+    }
+  });
+
+  // The stdlib ElementTree has no XMLParser(resolve_entities=...): lxml's
+  // advice would raise TypeError there, so an `etree` alias of the stdlib
+  // module must get the defusedxml line instead.
+  it.each([
+    ['import xml.etree.ElementTree as etree', 'etree'],
+    ['import xml.etree.ElementTree as ET', 'ET'],
+    ['from xml.etree import ElementTree as etree', 'etree'],
+  ])('Python stdlib ElementTree via %s', async (imp, recv) => {
+    const rem = await xxeRemediations(flaskFromstring(imp, recv), 'x.py', 'python');
+    expect(rem.length).toBeGreaterThan(0);
+    for (const r of rem) {
+      expect(r).toContain('Parser: xml.etree.ElementTree.');
+      expect(r).toContain('from defusedxml.ElementTree import fromstring');
+      expect(r).not.toContain('resolve_entities');
+      expect(r).not.toContain('XMLParser(');
+    }
+  });
+
   it('Python xml.dom.minidom', async () => {
     const rem = await xxeRemediations(`from flask import request
 from xml.dom import minidom
@@ -167,7 +207,21 @@ module.exports.bulk = function (req, res) {
     expect(rem.length).toBeGreaterThan(0);
     for (const r of rem) {
       expect(r).toContain('Parser: libxmljs.');
-      expect(r).toContain('noent: false');
+      expect(r).toContain('Add `libxmljs.parseXmlString(text, { noent: false })` in place of the call; never pass noent: true.');
+    }
+  });
+
+  it('libxml alias names the method it calls', async () => {
+    const rem = await xxeRemediations(`const libxml = require('libxmljs2');
+module.exports.bulk = function (req, res) {
+  var p = libxml.parseXmlString(req.body.x, {noent:true})
+  res.send('ok')
+}
+`, 'h.js', 'javascript');
+    expect(rem.length).toBeGreaterThan(0);
+    for (const r of rem) {
+      expect(r).toContain('`libxml.parseXmlString(text, { noent: false })`');
+      expect(r).not.toContain('parseXml(');
     }
   });
 });
@@ -185,6 +239,50 @@ describe('xxeParserFix', () => {
     [{ method: 'parse', location: 'sax.parse() in f' }, 'xml.sax'],
   ])('%o -> %s', (sink, parser) => {
     expect(xxeParserFix(sink)?.parser).toBe(parser);
+  });
+
+  it('Validator is hardened on the validator itself', () => {
+    const fix = xxeParserFix({ class: 'javax.xml.validation.Validator', method: 'validate', location: 'v.validate() in h' });
+    expect(fix?.parser).toBe('Validator');
+    expect(fix?.line).toBe('validator.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");');
+    expect(fix?.where).toContain('ACCESS_EXTERNAL_SCHEMA');
+    expect(fix?.where).toContain('validator');
+  });
+
+  it('a bare etree receiver with no import to resolve it keeps the generic text', () => {
+    // `etree` is lxml or the stdlib by import; without one, neither line is safe.
+    expect(xxeParserFix({ method: 'fromstring', location: 'etree.fromstring() in x' })).toBeUndefined();
+    expect(xxeParserFix({ class: 'etree', method: 'parse', location: '' })).toBeUndefined();
+  });
+
+  it('an etree receiver resolves through the file imports', () => {
+    const lxml = pythonImportAliases('from lxml import etree\n');
+    const std = pythonImportAliases('import xml.etree.ElementTree as etree\n');
+    const sink = { method: 'parse', location: 'etree.parse() in x' };
+    expect(xxeParserFix(sink, lxml)?.parser).toBe('lxml.etree');
+    expect(xxeParserFix(sink, std)?.parser).toBe('xml.etree.ElementTree');
+    expect(xxeParserFix(sink, std)?.line).toBe('from defusedxml.ElementTree import parse');
+  });
+
+  it('a qualified receiver names its module without imports', () => {
+    expect(xxeParserFix({ method: 'fromstring', location: 'lxml.etree.fromstring() in x' })?.parser).toBe('lxml.etree');
+    const std = xxeParserFix({ method: 'XML', location: 'xml.etree.ElementTree.XML() in x' });
+    expect(std?.parser).toBe('xml.etree.ElementTree');
+    expect(std?.line).toBe('from defusedxml.ElementTree import XML');
+  });
+
+  it('pythonImportAliases reads import and from-import bindings', () => {
+    const m = pythonImportAliases([
+      'import xml.etree.ElementTree as ET',
+      'from lxml import etree as LE, objectify',
+      'import os',
+      '    from xml.etree import cElementTree',
+    ].join('\n'));
+    expect(m.get('ET')).toBe('xml.etree.ElementTree');
+    expect(m.get('LE')).toBe('lxml.etree');
+    expect(m.get('objectify')).toBe('lxml.objectify');
+    expect(m.get('cElementTree')).toBe('xml.etree.cElementTree');
+    expect(m.has('os')).toBe(false);
   });
 
   it('XMLInputFactory line disables DTD support', () => {
