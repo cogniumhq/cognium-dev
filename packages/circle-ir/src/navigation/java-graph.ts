@@ -405,6 +405,7 @@ class JavaGraphBuilder {
         const kind = Object.prototype.hasOwnProperty.call(row.methods, name) ? row.methods[name] : undefined;
         const d = declAt(ctx, m, 'method');
         if (!kind || !d || !m.childForFieldName('body')) continue;
+        if (row.arity !== undefined && this.arity(m) !== row.arity) continue;
         if (seen.has(`${d.id}|${kind}`)) continue;
         seen.add(`${d.id}|${kind}`);
         this.entry(d, kind, certainty, ctx.path, fromSupertype ? `${evidence}.${name}` : evidence, { framework: row.framework });
@@ -418,6 +419,12 @@ class JavaGraphBuilder {
         }
       }
     }
+  }
+
+  /** A method's declared parameter count (a receiver parameter `Foo this` is not one). */
+  private arity(m: Node): number {
+    const params = m.childForFieldName('parameters');
+    return params ? namedChildren(params).filter(c => c.type === 'formal_parameter' || c.type === 'spread_parameter').length : 0;
   }
 
   private isMain(m: Node): boolean {

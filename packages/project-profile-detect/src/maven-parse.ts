@@ -21,8 +21,11 @@
 
 import type { BuildModule, MavenParentRef, ModuleSignals } from './types.js';
 
-const TAG = (name: string) => new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, 'i');
-const ALL_TAGS = (name: string) => new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, 'gi');
+// `(?=[\s/>])` ends the tag name: `<build>` and `<build attr>` match `build`,
+// `<build.number>` (a property) does not. `\b` would match it, since `.` is a
+// word boundary.
+const TAG = (name: string) => new RegExp(`<${name}(?=[\\s/>])[^>]*>([\\s\\S]*?)<\\/${name}>`, 'i');
+const ALL_TAGS = (name: string) => new RegExp(`<${name}(?=[\\s/>])[^>]*>([\\s\\S]*?)<\\/${name}>`, 'gi');
 
 function firstTag(xml: string, name: string): string | undefined {
   const m = TAG(name).exec(xml);
@@ -52,8 +55,8 @@ const NESTED_BLOCKS = [
 
 function stripBlock(xml: string, name: string): string {
   return xml
-    .replace(new RegExp(`<${name}\\b[^>]*\\/>`, 'gi'), '')
-    .replace(new RegExp(`<${name}\\b[^>]*>[\\s\\S]*?<\\/${name}>`, 'gi'), '');
+    .replace(new RegExp(`<${name}(?=[\\s/>])[^>]*\\/>`, 'gi'), '')
+    .replace(new RegExp(`<${name}(?=[\\s/>])[^>]*>[\\s\\S]*?<\\/${name}>`, 'gi'), '');
 }
 
 /** The `<project>` element's own children, nested blocks removed. */

@@ -253,10 +253,20 @@ const TIER_1_CLASS_ANNOTATIONS = new Set([
  *
  * - `@Mojo` (`org.apache.maven.plugins.annotations`): a Maven plugin goal;
  *   Maven injects its `@Parameter` fields and runs `execute()`.
+ *
+ * The named methods are called with no arguments: only a zero-parameter
+ * overload is Tier 1.
  */
 const TIER_1_CLASS_ANNOTATED_METHODS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['Mojo', new Set(['execute'])],
 ]);
+
+/**
+ * Supertypes in `TIER_1_BY_SUPERTYPE` whose lifecycle methods take no
+ * arguments: Maven calls `execute()`, so an overload `execute(Foo)` is
+ * ordinary code.
+ */
+const TIER_1_NO_ARG_SUPERTYPES: ReadonlySet<string> = new Set(['AbstractMojo', 'Mojo']);
 
 /**
  * Class names (matched via `implements` or `extends`) whose lifecycle
@@ -447,11 +457,17 @@ function annotationsInclude(
   return false;
 }
 
-/** True when a class annotation in `TIER_1_CLASS_ANNOTATED_METHODS` names `methodName`. */
+/**
+ * True when a class annotation in `TIER_1_CLASS_ANNOTATED_METHODS` names the
+ * method. The framework calls those methods with no arguments, so an
+ * overload that takes parameters (`execute(Foo)`) is not named.
+ */
 function classAnnotationNamesMethod(
   annotations: ReadonlyArray<string> | undefined,
-  methodName: string,
+  method: MethodInfo,
 ): boolean {
+  if (!method.name || method.parameters.length > 0) return false;
+  const methodName = method.name;
   for (const raw of annotations ?? []) {
     const bare = raw.startsWith('@') ? raw.slice(1) : raw;
     const cut = bare.search(/[<(]/);
@@ -511,7 +527,9 @@ function methodIsSupertypeLifecycleEntryPoint(
   for (const i of enclosingType.implements ?? []) candidates.push(simpleTypeName(i));
   for (const supertype of candidates) {
     const lifecycleMethods = TIER_1_BY_SUPERTYPE.get(supertype);
-    if (lifecycleMethods?.has(method.name)) return true;
+    if (!lifecycleMethods?.has(method.name)) continue;
+    if (TIER_1_NO_ARG_SUPERTYPES.has(supertype) && method.parameters.length > 0) continue;
+    return true;
   }
   return false;
 }
@@ -601,7 +619,7 @@ function classifyJavaEntryPoint(
   }
 
   // 3b. Class-level annotation naming the methods the framework calls
-  if (enclosingType && method.name && classAnnotationNamesMethod(enclosingType.annotations, method.name)) {
+  if (enclosingType && classAnnotationNamesMethod(enclosingType.annotations, method)) {
     return 'TIER_1_ENTRY_POINT';
   }
 
