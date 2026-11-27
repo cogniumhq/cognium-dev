@@ -19,6 +19,7 @@ import {
   type AnalyzerOptions as CircleAnalyzerOptions,
   type CircleIR,
   javaProjectOpensResponseStream,
+  TOOL_ARGUMENTS_TAG,
   parseNpmDependencies, parseNpmLockDependencies,
   parsePnpmLockDependencies, parseYarnLockDependencies, pnpmLockImporters,
   parsePypiDependencies, parsePyprojectDependencies, parsePoetryLockDependencies,
@@ -38,7 +39,7 @@ import {
   formatResults, formatJSON, formatSARIF,
   scanNotifications,
   SINK_SEVERITY, SINK_CWE,
-  applyTagSeverityDowngrade, termSafe,
+  applyTagSeverityDowngrade, taintFlowMessage, termSafe,
   type ScanResult, type CrossFileData, type ProjectProfileSummary,
 } from './formatters.js';
 import { spinnerFileLabel } from './utils/term-safe.js';
@@ -466,6 +467,10 @@ interface MetricsOptions {
  * twice. Collapse by `(type, line)`, keeping the highest-severity entry and
  * preserving order. Pure dedup: never drops the last entry for a key, so it
  * cannot hide a finding.
+ *
+ * At equal severity an entry not from the tool's own arguments wins over one
+ * that is, so a sink reads "input from the tool's own arguments" only when
+ * every flow into it does.
  */
 const VULN_SEVERITY_RANK: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
 export function dedupeVulnerabilities(
@@ -473,14 +478,19 @@ export function dedupeVulnerabilities(
 ): ScanResult['vulnerabilities'] {
   const best = new Map<string, ScanResult['vulnerabilities'][number]>();
   const order: string[] = [];
+  const fromToolArguments = (v: ScanResult['vulnerabilities'][number]) => v.tags?.includes(TOOL_ARGUMENTS_TAG) === true;
   for (const v of vulns) {
     const key = `${v.type}:${v.line}`;
     const current = best.get(key);
     if (current === undefined) {
       best.set(key, v);
       order.push(key);
-    } else if ((VULN_SEVERITY_RANK[v.severity] ?? -1) > (VULN_SEVERITY_RANK[current.severity] ?? -1)) {
-      best.set(key, v);
+    } else {
+      const rank = VULN_SEVERITY_RANK[v.severity] ?? -1;
+      const currentRank = VULN_SEVERITY_RANK[current.severity] ?? -1;
+      if (rank > currentRank || (rank === currentRank && fromToolArguments(current) && !fromToolArguments(v))) {
+        best.set(key, v);
+      }
     }
   }
   return order.map(k => best.get(k)!);
@@ -867,7 +877,7 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
     const vulnerabilities: ScanResult['vulnerabilities'] = (result.taint.flows || []).map(flow => ({
       type: flow.sink_type,
       severity: applyTagSeverityDowngrade(SINK_SEVERITY[flow.sink_type] ?? 'high', flow.tags),
-      message: `${flow.sink_type} vulnerability: tainted data flows from line ${flow.source_line} to line ${flow.sink_line}`,
+      message: taintFlowMessage(flow),
       line: flow.sink_line,
       cwe: SINK_CWE[flow.sink_type],
       category: 'security',
@@ -1120,7 +1130,7 @@ async function scanProject(
     const vulnerabilities: ScanResult['vulnerabilities'] = (analysis.taint.flows || []).map(flow => ({
       type: flow.sink_type,
       severity: applyTagSeverityDowngrade(SINK_SEVERITY[flow.sink_type] ?? 'high', flow.tags),
-      message: `${flow.sink_type} vulnerability: tainted data flows from line ${flow.source_line} to line ${flow.sink_line}`,
+      message: taintFlowMessage(flow),
       line: flow.sink_line,
       cwe: SINK_CWE[flow.sink_type],
       category: 'security',

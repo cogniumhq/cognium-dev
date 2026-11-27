@@ -92,6 +92,7 @@ import { coalesceNoteLevelFindings } from './analysis/note-coalescer.js';
 import { applyRequireEntryPath } from './analysis/require-entry-path.js';
 import { applyConstantCallerGate, applySingleFileJavaMapConstantCallerGate } from './analysis/constant-caller-gate.js';
 import { promoteCrossFilePathsToSinkFlows } from './analysis/promote-cross-file-flows.js';
+import { markCrossFileToolArgumentPaths, markToolArgumentFlows } from './analysis/tool-arguments.js';
 import { dropJsTestToProductionTaintPaths } from './analysis/test-to-production-taint-gate.js';
 import { dropEscapesToProjectCallees } from './analysis/project-callee-escape-gate.js';
 import { applyProjectProfileTransform, type ProfileResolver } from './analysis/project-profile-transform.js';
@@ -1553,6 +1554,11 @@ async function analyzeFile(
     }
   }
 
+  // A Java path-traversal flow from the tool's own arguments (`main`'s
+  // `String[]`, a commons-cli option, a Mojo `@Parameter`) is tagged and
+  // reported at half its confidence.
+  if (language === 'java') markToolArgumentFlows({ meta, types, calls, imports, taint });
+
   const unresolved = detectUnresolved(calls, types, dfg);
   const enriched   = buildEnriched(types, calls, taint.sources, taint.sinks);
 
@@ -2184,6 +2190,7 @@ export async function analyzeProject(
 
   // 2.4 (#684) — per-file flows on sink files for cross-file paths (gate parity).
   promoteCrossFilePathsToSinkFlows(fileAnalyses, crossFileResult.taintPaths);
+  markCrossFileToolArgumentPaths(fileAnalyses, crossFileResult.taintPaths);
 
   synthesizeCrossFileArgvWrapperFlows(
     fileAnalyses,

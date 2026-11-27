@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Java: a path-traversal flow from the tool's own arguments says so.** A command-line tool or a Maven plugin opens the files its own user names, which is lower risk for a local tool. Such a flow is still reported, at the same severity, with the tag `tool-arguments:local-input` and half its confidence. The source is the tool's own arguments when it is the `String[]` parameter of `static main`, a non-public `String[]` parameter that only `main` hands its own array to, the setter Maven calls for a Mojo `@Parameter` field (in a class annotated `@Mojo` or extending `AbstractMojo`), or a commons-cli read (`CommandLine.getOptionValue` and friends, `CommandLineParser.parse`) in a file that imports `org.apache.commons.cli`. Cross-file paths from such a source are tagged too, together with their copy in the sink file's flows; `TaintPath` gains an optional `tags`. `TOOL_ARGUMENTS_TAG` and `TOOL_ARGUMENTS_NOTE` ("input from the tool's own arguments (lower risk for a local tool)") are exported from the package root. Other sources, other sink types and other languages are unchanged.
+
 ## [4.24.0] - 2026-11-26
 
 ### Added
