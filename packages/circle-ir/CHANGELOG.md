@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **XXE (CWE-611) findings name the parser kind and the line that hardens it.** `Finding.remediation` from `generateFindings` for an `xxe` sink now starts with the parser kind and the one line to add, before the generic advice: `Parser: DocumentBuilderFactory. Add \`factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);\` on the factory before newDocumentBuilder().` Covered: Java `DocumentBuilderFactory`, `SAXParserFactory`, `XMLReader`, `XMLInputFactory`, `TransformerFactory`, `SchemaFactory` and the JAXB `Unmarshaller`; C# `XmlDocument`, `XDocument` and `XmlTextReader`; Python `lxml.etree`, `xml.dom.minidom` and `xml.sax`; JS `libxmljs`. A parser outside that list keeps the generic text. The `xml-entity-expansion` finding's `fix` for `TransformerFactory` and `SchemaFactory` now names the same line in place of generic advice. Findings, lines, severities and CWEs are unchanged.
+
 ## [4.24.0] - 2026-11-26
 
 ### Added
