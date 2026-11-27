@@ -14,6 +14,12 @@
  * NOT inherited:
  *  - `groupId`/`artifactId`/`version`/`packaging` — module identity
  *  - `hasJpmsModuleInfo`/`hasSpiServices`/`hasMainMethod` — filesystem-local
+ *  - the plugin tags in `MODULE_OWN_PLUGIN_TAGS`: what a module builds
+ *    (`war`, `ear`, `maven-plugin`) is its own `<packaging>`, and whether it
+ *    runs (`application`) is its own `main` or its own launcher plugin. An
+ *    aggregator parent that lists `maven-plugin-plugin` or an assembly
+ *    plugin for one child does not make every child a Maven plugin or an
+ *    application.
  *
  * Safety:
  *  - Chain depth capped at `MAX_DEPTH`, enforced as a true horizon: the walk
@@ -39,6 +45,11 @@ const MAX_DEPTH = 6;
 
 /** Maven default when a child pom omits `<relativePath>`. */
 const DEFAULT_RELATIVE_PATH = '../pom.xml';
+
+/** Plugin tags that describe the declaring module only; never inherited. */
+export const MODULE_OWN_PLUGIN_TAGS: ReadonlySet<string> = new Set([
+  'war', 'ear', 'maven-plugin', 'application',
+]);
 
 /**
  * Merge inherited distributionUrls + plugins from each Maven module's
@@ -146,7 +157,9 @@ function walkParents(
     const parentOwn = ownSignals.get(parentBuildFile);
     if (parentOwn) {
       for (const u of parentOwn.urls) outUrls.add(u);
-      for (const p of parentOwn.plugins) outPlugins.add(p);
+      for (const p of parentOwn.plugins) {
+        if (!MODULE_OWN_PLUGIN_TAGS.has(p)) outPlugins.add(p);
+      }
     }
 
     current = parent;

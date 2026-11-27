@@ -247,6 +247,18 @@ const TIER_1_CLASS_ANNOTATIONS = new Set([
 ]);
 
 /**
+ * Class-level annotations that make only the named methods of the class
+ * Tier 1: the framework constructs the class and calls those methods by
+ * name, and the class's other public methods are ordinary code.
+ *
+ * - `@Mojo` (`org.apache.maven.plugins.annotations`): a Maven plugin goal;
+ *   Maven injects its `@Parameter` fields and runs `execute()`.
+ */
+const TIER_1_CLASS_ANNOTATED_METHODS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['Mojo', new Set(['execute'])],
+]);
+
+/**
  * Class names (matched via `implements` or `extends`) whose lifecycle
  * methods are Tier 1. For each, the set of lifecycle method names that
  * qualify.
@@ -262,6 +274,10 @@ const TIER_1_BY_SUPERTYPE: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   // Spring boot CLI entry points
   ['CommandLineRunner', new Set(['run'])],
   ['ApplicationRunner', new Set(['run'])],
+  // Maven plugin goals declared by javadoc tag (`@goal`): Maven runs
+  // `execute()`. The annotated form is `TIER_1_CLASS_ANNOTATED_METHODS`.
+  ['AbstractMojo', new Set(['execute'])],
+  ['Mojo', new Set(['execute'])],
   // Netty channel handlers (#154 — CVE-2022-26884 dolphinscheduler).
   // `SimpleChannelInboundHandler<T>.channelRead0(ctx, msg)` is the
   // standard typed read entry; `ChannelInboundHandler.channelRead(ctx,
@@ -431,6 +447,21 @@ function annotationsInclude(
   return false;
 }
 
+/** True when a class annotation in `TIER_1_CLASS_ANNOTATED_METHODS` names `methodName`. */
+function classAnnotationNamesMethod(
+  annotations: ReadonlyArray<string> | undefined,
+  methodName: string,
+): boolean {
+  for (const raw of annotations ?? []) {
+    const bare = raw.startsWith('@') ? raw.slice(1) : raw;
+    const cut = bare.search(/[<(]/);
+    const written = (cut >= 0 ? bare.slice(0, cut) : bare).trim();
+    const simple = written.slice(written.lastIndexOf('.') + 1);
+    if (TIER_1_CLASS_ANNOTATED_METHODS.get(simple)?.has(methodName)) return true;
+  }
+  return false;
+}
+
 /**
  * Strip generic parameters from a type reference (`Foo<Bar>` → `Foo`).
  */
@@ -545,6 +576,7 @@ export function classifyEntryPointTier(
  *   1. Library-facade short-circuit (#128 step 2).
  *   2. Method-level annotation → TIER_1.
  *   3. Class-level annotation → TIER_1.
+ *   3b. Class-level annotation naming the method (`@Mojo` + `execute`) → TIER_1.
  *   4. Supertype lifecycle method → TIER_1.
  *   5. `main(String[])` → TIER_1.
  *   6. Fallback → TIER_3_LIBRARY_API.
@@ -565,6 +597,11 @@ function classifyJavaEntryPoint(
 
   // 3. Class-level annotation (every public method of a controller is TIER_1)
   if (enclosingType && annotationsInclude(enclosingType.annotations, TIER_1_CLASS_ANNOTATIONS)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 3b. Class-level annotation naming the methods the framework calls
+  if (enclosingType && method.name && classAnnotationNamesMethod(enclosingType.annotations, method.name)) {
     return 'TIER_1_ENTRY_POINT';
   }
 
