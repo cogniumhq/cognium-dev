@@ -1492,7 +1492,7 @@ function findSetterChainSources(
   const sources: TaintSource[] = [];
   const lines = sourceCode.split('\n');
 
-  const javaHttpPattern = /\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\.(?:getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getCookies|getQueryString|getPathInfo|getRequestURI|getRequestURL|getInputStream|getReader)\b/;
+  const javaHttpPattern = /\b(?:req|request|r|httpRequest|servletRequest|httpServletRequest)\.(?:getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getCookies|getQueryString|getPathInfo|getRequestURI|getRequestURL|getInputStream|getReader)\b/;
   const setterArgFromHttp = (arg: string): boolean => {
     const trimmed = arg.trim();
     if (javaHttpPattern.test(trimmed)) return true;
@@ -1503,7 +1503,7 @@ function findSetterChainSources(
     // after `String s = req.getParameter(...)`; the setter-chain emitter only
     // matched literal HTTP call expressions in the argument position.
     return new RegExp(
-      `\\b(?:[\\w.<>,\\s]+\\s+)?${v}\\s*=\\s*[^;\\n]*\\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\\.(?:getParameter|getParameterValues|getHeader|getCookies|getQueryString|getInputStream|getReader)\\s*\\(`,
+      `\\b(?:[\\w.<>,\\s]+\\s+)?${v}\\s*=\\s*[^;\\n]*\\b(?:req|request|r|httpRequest|servletRequest|httpServletRequest)\\.(?:getParameter|getParameterValues|getHeader|getCookies|getQueryString|getInputStream|getReader)\\s*\\(`,
     ).test(sourceCode);
   };
 
@@ -1514,6 +1514,7 @@ function findSetterChainSources(
     // Build setter/getter pairs by inspecting per-method bodies.
     const pairs = new Map<string, { setter?: string; getter?: string }>();
     const setterRe = /this\.([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;?/;
+    const staticSetterRe = /^([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;?\s*$/;
     const getterRe = /return\s+(?:this\.)?([A-Za-z_]\w*)\s*;?/;
 
     for (const m of type.methods) {
@@ -1547,6 +1548,20 @@ function findSetterChainSources(
           continue;
         }
       }
+      // Static setter (`last = v` in `static void remember(String v)`).
+      if (
+        m.modifiers.includes('static') &&
+        m.parameters.length === 1 &&
+        staticSetterRe.test(inner.trim())
+      ) {
+        const stm = staticSetterRe.exec(inner.trim());
+        if (stm && stm[2] === m.parameters[0].name) {
+          const entry = pairs.get(stm[1]) ?? {};
+          entry.setter = m.name;
+          pairs.set(stm[1], entry);
+          continue;
+        }
+      }
       // Getter?
       const gm = inner.match(getterRe);
       if (gm && m.parameters.length === 0) {
@@ -1566,14 +1581,17 @@ function findSetterChainSources(
       const setterCallRe = new RegExp(
         `\\b([A-Za-z_]\\w*)\\.${setter}\\s*\\(\\s*([^)]+?)\\s*\\)\\s*;?`,
       );
+      const staticSetterCallRe = new RegExp(
+        `\\b${setter}\\s*\\(\\s*([^)]+?)\\s*\\)\\s*;?`,
+      );
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i] ?? '';
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('//')) continue;
         const cm = trimmed.match(setterCallRe);
-        if (!cm) continue;
-        const arg = cm[2];
-        if (!setterArgFromHttp(arg)) continue;
+        const scm = !cm ? trimmed.match(staticSetterCallRe) : null;
+        const arg = cm ? cm[2] : scm?.[1];
+        if (!arg || !setterArgFromHttp(arg)) continue;
         sources.push({
           type: 'http_param',
           location: `${type.name}.${setter}(tainted) → ${type.name}.${getter}() chain — #78 round 2`,
