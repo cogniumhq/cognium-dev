@@ -314,16 +314,16 @@ export class CrossFileResolver {
   > = new Map();
 
   /** cognium-dev#1455 — Java static field set from a cross-file param (`remember(v)`). */
-  private javaStaticFieldWriters: Map<
+  private javaStaticFieldWriters: Record<
     string,
     { file: string; line: number; type: string; methodName: string }
-  > = new Map();
+  > = {};
 
   /** `${typeFqn}.${fieldName}` → static getter method FQN (e.g. `ShadowState.last`). */
-  private javaStaticFieldGetters: Map<string, string> = new Map();
+  private javaStaticFieldGetters: Record<string, string> = {};
 
   /** Wrapper static getter FQN → canonical getter FQN it delegates to. */
-  private javaStaticGetterDelegates: Map<string, string> = new Map();
+  private javaStaticGetterDelegates: Record<string, string> = {};
 
   // Resolved calls cache
   private resolvedCalls: Map<string, ResolvedCall> = new Map();
@@ -1967,7 +1967,7 @@ export class CrossFileResolver {
       for (const [fieldName, { getter }] of pairs) {
         if (!getter) continue;
         const getterFqn = `${typeFqn}.${getter}`;
-        this.javaStaticFieldGetters.set(`${typeFqn}.${fieldName}`, getterFqn);
+        this.javaStaticFieldGetters[`${typeFqn}.${fieldName}`] = getterFqn;
       }
 
       for (const m of type.methods) {
@@ -1981,7 +1981,7 @@ export class CrossFileResolver {
         if (!dm) continue;
         const delegateTypeFqn = pkg ? `${pkg}.${dm.type}` : dm.type;
         const delegateFqn = `${delegateTypeFqn}.${dm.method}`;
-        this.javaStaticGetterDelegates.set(`${typeFqn}.${m.name}`, delegateFqn);
+        this.javaStaticGetterDelegates[`${typeFqn}.${m.name}`] = delegateFqn;
       }
     }
   }
@@ -2009,15 +2009,15 @@ export class CrossFileResolver {
 
     const typeFqn = targetMethod.replace(/\.[^.]+$/, '');
     const fieldKey = `${typeFqn}.${stm.field}`;
-    const getterFqn = this.javaStaticFieldGetters.get(fieldKey);
+    const getterFqn = this.javaStaticFieldGetters[fieldKey];
     if (!getterFqn) return;
 
-    this.javaStaticFieldWriters.set(fieldKey, {
+    this.javaStaticFieldWriters[fieldKey] = {
       file: matched.origin.file,
       line: matched.origin.line,
       type: matched.origin.type,
       methodName: m.name,
-    });
+    };
 
     const promoteReturnsSource = (fqn: string) => {
       const info = this.methodTaintInfo.get(fqn);
@@ -2027,7 +2027,8 @@ export class CrossFileResolver {
       }
     };
     promoteReturnsSource(getterFqn);
-    for (const [wrapper, target] of this.javaStaticGetterDelegates) {
+    for (const wrapper of Object.keys(this.javaStaticGetterDelegates)) {
+      const target = this.javaStaticGetterDelegates[wrapper];
       if (target === getterFqn) promoteReturnsSource(wrapper);
     }
   }
@@ -2035,7 +2036,7 @@ export class CrossFileResolver {
   findJavaStaticFieldTaintPaths(deadline?: () => boolean): InterproceduralTaintPath[] {
     const paths: InterproceduralTaintPath[] = [];
     const seen = new Set<string>();
-    if (this.javaStaticFieldWriters.size === 0) return paths;
+    if (Object.keys(this.javaStaticFieldWriters).length === 0) return paths;
 
     for (const [readerFile, callerIR] of this.fileIRs) {
       if (deadline?.()) break;
@@ -2060,7 +2061,7 @@ export class CrossFileResolver {
             const usesAtLine = callerIdx.usesByLine.get(def.line) ?? [];
             const fieldKey = this.resolveJavaStaticFieldReadKey(callerIR, type, usesAtLine);
             if (!fieldKey) continue;
-            const writer = this.javaStaticFieldWriters.get(fieldKey);
+            const writer = this.javaStaticFieldWriters[fieldKey];
             if (!writer) continue;
 
             const hopChain: InterproceduralTaintPath['hops'] = [
@@ -2128,13 +2129,13 @@ export class CrossFileResolver {
       const field = containingType.fields?.find(f => f.name === name);
       if (!field?.modifiers?.includes('static')) continue;
       const key = `${typeFqn}.${name}`;
-      if (this.javaStaticFieldWriters.has(key)) return key;
+      if (Object.hasOwn(this.javaStaticFieldWriters, key)) return key;
     }
     for (let i = 0; i < names.length; i++) {
       for (let j = 0; j < names.length; j++) {
         if (i === j) continue;
         const key = `${names[i]}.${names[j]}`;
-        if (this.javaStaticFieldWriters.has(key)) return key;
+        if (Object.hasOwn(this.javaStaticFieldWriters, key)) return key;
       }
     }
     return null;
