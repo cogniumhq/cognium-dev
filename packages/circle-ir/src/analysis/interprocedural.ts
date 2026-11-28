@@ -21,6 +21,7 @@ import type {
   SinkType,
 } from '../types/index.js';
 import { CodeGraph } from '../graph/index.js';
+import { isGoSqlxBoundArgsCall } from './go-sqlx.js';
 
 
 /** cognium-dev#626 — in-place Java argv container passed as a call argument. */
@@ -745,6 +746,10 @@ export function analyzeInterprocedural(
           }
           // Go: a bool test of the value against a constant-pattern regexp (#349).
           if (graph.ir.meta.language === 'go' && isGoConstRegexMatchCall(call, graph, calls)) {
+            continue;
+          }
+          // Go sqlx: the value is a bound parameter after the query string.
+          if (graph.ir.meta.language === 'go' && isGoSqlxBoundArgsCall(call, taintedArgPositions, graph.ir.imports ?? [])) {
             continue;
           }
           // C# — same gate, same reason (#474, sibling of #455/#468).

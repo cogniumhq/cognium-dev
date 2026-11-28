@@ -1781,6 +1781,26 @@ function argIsStreamExpression(call: CallInfo, position: number): boolean {
   );
 }
 
+/**
+ * Returns true when the call's argument at `position` is recognisably a Go
+ * `context.Context` value: a local named `ctx` (or ending in `Ctx`),
+ * `context.Background()` / `context.TODO()` / `context.WithX(...)`, or a
+ * `.Context()` accessor (`r.Context()`, `c.Request.Context()`).
+ *
+ * Used by `SinkPattern.safe_if_context_arg_at`. Positive evidence only.
+ */
+function argIsContextExpression(call: CallInfo, position: number): boolean {
+  const arg = call.arguments.find(a => a.position === position);
+  if (!arg) return false;
+  const expr = (arg.expression ?? '').trim();
+  if (!expr) return false;
+  return (
+    /^(?:ctx|[A-Za-z_]\w*Ctx)$/.test(expr) ||
+    /^context\.\w+\(/.test(expr) ||
+    /\.Context\(\)$/.test(expr)
+  );
+}
+
 function argIsStringLiteral(call: CallInfo, position: number): boolean {
   const arg = call.arguments.find(a => a.position === position);
   if (!arg) return false;
@@ -2723,6 +2743,14 @@ function findSinks(
         if (
           pattern.safe_if_stream_arg_at !== undefined &&
           argIsStreamExpression(call, pattern.safe_if_stream_arg_at)
+        ) {
+          continue;
+        }
+
+        // A context in a sqlx destination slot: another library's `Get`.
+        if (
+          pattern.safe_if_context_arg_at !== undefined &&
+          argIsContextExpression(call, pattern.safe_if_context_arg_at)
         ) {
           continue;
         }

@@ -15,6 +15,7 @@ import type {
   SanitizerPattern,
   HeaderRule,
 } from '../types/config.js';
+import { GO_SQLX_SINKS } from './go-sqlx.js';
 
 /**
  * Parse YAML/JSON configuration content.
@@ -3461,6 +3462,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // pattern: constants defined near the ship-1 blocks and spread here.
   ...DESERIALIZATION_FRAMEWORK_SINKS,
   ...NOSQL_FRAMEWORK_SINKS,
+  // Go sqlx query methods (`go-sqlx.ts`).
+  ...GO_SQLX_SINKS,
 ];
 
 export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
