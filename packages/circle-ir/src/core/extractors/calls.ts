@@ -700,9 +700,21 @@ function extractJavaScriptCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
   // (cognium-dev #68 — Phase D.1)
   const jsxAttributes = getNodesFromCache(tree.rootNode, 'jsx_attribute', cache);
   for (const attr of jsxAttributes) {
-    const callInfo = extractJSXAttributeSink(attr);
+    const callInfo = extractJSXAttributeSink(attr) ?? extractJSXUrlAttributeSink(attr);
     if (callInfo) {
       calls.push(callInfo);
+    }
+  }
+
+  // The same React prop written as an object key, outside JSX:
+  // `React.createElement('div', { dangerouslySetInnerHTML: { __html: x } })`,
+  // `jsx('div', { … })`, or a props object spread onto an element.
+  if (tree.rootNode.text.includes('dangerouslySetInnerHTML')) {
+    for (const pair of findNodes(tree.rootNode, 'pair')) {
+      const callInfo = extractDangerouslySetInnerHTMLPropSink(pair);
+      if (callInfo) {
+        calls.push(callInfo);
+      }
     }
   }
 
@@ -787,8 +799,10 @@ function extractDomPropertyAssignmentSink(node: Node): CallInfo | null {
  * Currently handles `dangerouslySetInnerHTML={{ __html: expr }}` on any JSX
  * element. The synthetic call has method `dangerouslySetInnerHTML`, no
  * receiver, and a single argument carrying the `__html` value expression.
- * The taint matcher then catches the call via the standard
- * `dangerouslySetInnerHTML` sink entry in `configs/sinks/nodejs.json`.
+ * The call sits where that value is written, which is a later line than the
+ * attribute name when the object literal spans lines. The taint matcher then
+ * catches the call via the `dangerouslySetInnerHTML` sink entry of the
+ * JavaScript plugin.
  */
 function extractJSXAttributeSink(attr: Node): CallInfo | null {
   // `jsx_attribute` has children: property_identifier '=' jsx_expression
@@ -851,10 +865,15 @@ function extractJSXAttributeSink(attr: Node): CallInfo | null {
   }
   if (!htmlValue) return null;
 
+  return dangerouslySetInnerHTMLCall(attr, htmlValue);
+}
+
+/** The synthetic `dangerouslySetInnerHTML` sink call for the `__html` value `htmlValue`. */
+function dangerouslySetInnerHTMLCall(owner: Node, htmlValue: Node): CallInfo {
   const expression = getNodeText(htmlValue);
   const { variable, literal } = analyzeJSArgument(htmlValue);
 
-  const enclosingFunc = findJSEnclosingFunction(attr);
+  const enclosingFunc = findJSEnclosingFunction(owner);
 
   return {
     method_name: 'dangerouslySetInnerHTML',
@@ -868,14 +887,106 @@ function extractJSXAttributeSink(attr: Node): CallInfo | null {
       },
     ],
     location: {
-      line: attr.startPosition.row + 1,
-      column: attr.startPosition.column,
+      line: htmlValue.startPosition.row + 1,
+      column: htmlValue.startPosition.column,
     },
     in_method: enclosingFunc,
     resolved: true,
     resolution: {
       status: 'resolved',
       target: 'react.dangerouslySetInnerHTML',
+    },
+  };
+}
+
+/**
+ * `dangerouslySetInnerHTML: { __html: expr }` as a key of an object literal
+ * (React props built without JSX). The `__html` value is the sink argument.
+ */
+function extractDangerouslySetInnerHTMLPropSink(pair: Node): CallInfo | null {
+  const keyNode = pair.childForFieldName('key');
+  if (!keyNode || getNodeText(keyNode).replace(/^["']|["']$/g, '') !== 'dangerouslySetInnerHTML') return null;
+  const value = pair.childForFieldName('value');
+  if (!value || value.type !== 'object') return null;
+  for (let i = 0; i < value.namedChildCount; i++) {
+    const inner = value.namedChild(i);
+    if (!inner || inner.type !== 'pair') continue;
+    const innerKey = inner.childForFieldName('key');
+    if (!innerKey || getNodeText(innerKey).replace(/^["']|["']$/g, '') !== '__html') continue;
+    const htmlValue = inner.childForFieldName('value');
+    return htmlValue ? dangerouslySetInnerHTMLCall(pair, htmlValue) : null;
+  }
+  return null;
+}
+
+/**
+ * JSX URL attributes that load or navigate to their value: an attacker who
+ * controls it can supply a `javascript:` URL (CWE-79). Keyed by attribute,
+ * then by the intrinsic (lower-case) element names it is a sink on.
+ */
+const JSX_URL_ATTRIBUTES: Readonly<Record<string, ReadonlySet<string>>> = {
+  href: new Set(['a']),
+  src: new Set(['iframe', 'script']),
+};
+
+/**
+ * Receiver type of the synthetic call for a JSX URL attribute; the `href` /
+ * `src` sinks are registered on it so that no real `src()` / `href()` call
+ * (`gulp.src(glob)`) matches them.
+ */
+export const JSX_URL_ATTRIBUTE_RECEIVER = 'JSXUrlAttribute';
+
+/**
+ * Emit a synthetic CallInfo for `href={expr}` on `<a>` and `src={expr}` on
+ * `<iframe>` / `<script>`. A quoted value (`href="/home"`) is a constant and
+ * is skipped. The call sits on the line of the value expression.
+ */
+function extractJSXUrlAttributeSink(attr: Node): CallInfo | null {
+  const nameNode = attr.namedChild(0);
+  if (!nameNode || nameNode.type !== 'property_identifier') return null;
+  const attrName = getNodeText(nameNode);
+  const elements = JSX_URL_ATTRIBUTES[attrName];
+  if (!elements) return null;
+
+  const element = attr.parent;
+  if (!element || (element.type !== 'jsx_opening_element' && element.type !== 'jsx_self_closing_element')) return null;
+  const elementName = element.childForFieldName('name');
+  if (!elementName || !elements.has(getNodeText(elementName))) return null;
+
+  let valueExpr: Node | null = null;
+  for (let i = 0; i < attr.childCount; i++) {
+    const child = attr.child(i);
+    if (child && child.type === 'jsx_expression') {
+      valueExpr = child.namedChild(0);
+      break;
+    }
+  }
+  if (!valueExpr) return null;
+
+  const { variable, literal } = analyzeJSArgument(valueExpr);
+  if (literal !== null) return null;
+
+  return {
+    method_name: attrName,
+    receiver: null,
+    receiver_type: JSX_URL_ATTRIBUTE_RECEIVER,
+    arguments: [
+      {
+        position: 0,
+        expression: getNodeText(valueExpr),
+        variable,
+        literal,
+      },
+    ],
+    location: {
+      line: valueExpr.startPosition.row + 1,
+      column: valueExpr.startPosition.column,
+    },
+    in_method: findJSEnclosingFunction(attr),
+    resolved: true,
+    resolution: {
+      status: 'resolved',
+      target: `react.${getNodeText(elementName)}.${attrName}`,
     },
   };
 }

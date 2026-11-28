@@ -535,6 +535,9 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { property: 'data', object: 'e', type: 'dom_input', severity: 'high', property_tainted: true },
   { property: 'data', object: 'msg', type: 'dom_input', severity: 'high', property_tainted: true },
   { property: 'data', object: 'message', type: 'dom_input', severity: 'high', property_tainted: true },
+  // Vue Router current route (`this.$route.query.q`, `$route.params.id` in a template)
+  { property: 'query', object: '$route', type: 'http_param', severity: 'high', property_tainted: true },
+  { property: 'params', object: '$route', type: 'http_path', severity: 'high', property_tainted: true },
 
   // =========================================================================
   // Python / Flask / Django Sources
@@ -2296,6 +2299,14 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'bypassSecurityTrustStyle',       type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
   { method: 'bypassSecurityTrustUrl',         type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
   { method: 'bypassSecurityTrustResourceUrl', type: 'xss', cwe: 'CWE-79', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+
+  // JSX URL attributes: `<a href={x}>`, `<iframe src={x}>`, `<script src={x}>`
+  // (a `javascript:` URL runs script). The calls are synthetic, emitted by the
+  // JS call extractor with this receiver type so no real `href()` / `src()`
+  // call matches; flows into them are kept only from browser or URL input
+  // (`gateJsxUrlAttributeFlows`).
+  { method: 'href', class: 'JSXUrlAttribute', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'src',  class: 'JSXUrlAttribute', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
 
   // Express.js XSS (response methods)
   { method: 'send', class: 'Response', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
