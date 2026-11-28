@@ -59,14 +59,11 @@ export function gateJsxUrlAttributeFlows(
   code: string,
 ): void {
   if (!taint.flows || taint.flows.length === 0) return;
-  const urlSinkLines = new Set<number>();
-  const otherXssLines = new Set<number>();
-  for (const s of taint.sinks) {
-    if (s.type !== 'xss') continue;
-    if (s.class === JSX_URL_ATTRIBUTE_RECEIVER) urlSinkLines.add(s.line);
-    else otherXssLines.add(s.line);
-  }
-  for (const line of otherXssLines) urlSinkLines.delete(line);
+  const xssSinks = taint.sinks.filter((s) => s.type === 'xss');
+  const otherXssLines = new Set(xssSinks.filter((s) => s.class !== JSX_URL_ATTRIBUTE_RECEIVER).map((s) => s.line));
+  const urlSinkLines = new Set(
+    xssSinks.filter((s) => s.class === JSX_URL_ATTRIBUTE_RECEIVER && !otherXssLines.has(s.line)).map((s) => s.line),
+  );
   if (urlSinkLines.size === 0) return;
 
   const lines = code.split('\n');
