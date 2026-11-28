@@ -228,6 +228,12 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Directory part of a file path (`/`- or `\\`-separated); '' when there is none. */
+function dirOf(file: string): string {
+  const i = Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\'));
+  return i < 0 ? '' : file.slice(0, i);
+}
+
 function isJavaIdent(s: string): boolean {
   if (!s) return false;
   const first = s[0]!;
@@ -1109,12 +1115,14 @@ export class CrossFileResolver {
           // The method the value ends in: the callee itself, or, for C#, the methods
           // at the end of a pure forwarder chain (cognium-dev#637).
           const startIR = this.fileIRs.get(resolved.targetFile);
+          const startPositions = carriedPositions ?? call.arguments.map((_, i) => i);
           const terminals: Array<{ file: string; method: string; positions: number[] }> =
             startIR?.meta.language === 'csharp'
               ? this.csharpChainTerminals(resolved.targetFile, resolved.targetMethod,
-                  carriedPositions ?? call.arguments.map((_, i) => i), 0, new Set())
-              : [{ file: resolved.targetFile, method: resolved.targetMethod,
-                   positions: carriedPositions ?? call.arguments.map((_, i) => i) }];
+                  startPositions, 0, new Set())
+              : startIR?.meta.language === 'go'
+                ? this.goChainTerminals(resolved.targetFile, resolved.targetMethod, startPositions, 0, new Set())
+                : [{ file: resolved.targetFile, method: resolved.targetMethod, positions: startPositions }];
 
           for (const term of terminals) {
           // Only proceed if the target file has any YAML-matched sinks at all.
@@ -1284,6 +1292,47 @@ export class CrossFileResolver {
       const r = this.resolveCall(call, file);
       if (!r || r.resolution !== 'exact' || r.targetFile === file) continue;
       out.push(...this.csharpChainTerminals(r.targetFile, r.targetMethod, carried, depth + 1, visited));
+    }
+    visited.delete(key);
+    return out;
+  }
+
+  /**
+   * Go: the methods a value passed into `methodFqn` (at `positions`) ends in.
+   * The callee itself when it holds a sink; otherwise the callees of the pure
+   * forwarding calls it makes — the parameter passed on unchanged
+   * (`back(w, r, target)` → `redirectTo(w, r, target)`) — in the same file or
+   * in another file of the same package, up to four hops. Without this a
+   * handler → helper → helper path stopped at the first helper, which holds
+   * no sink of its own.
+   */
+  private goChainTerminals(
+    file: string,
+    methodFqn: string,
+    positions: number[],
+    depth: number,
+    visited: Set<string>,
+  ): Array<{ file: string; method: string; positions: number[] }> {
+    const ir = this.fileIRs.get(file);
+    if (!ir) return [];
+    const shortName = methodFqn.split('.').pop() ?? methodFqn;
+    const method = ir.types.flatMap(t => t.methods).find(m => m.name === shortName);
+    if (!method) return [];
+    const idx = this.getFileIndex(ir);
+    if ((idx.sinksByMethod.get(method) ?? []).length > 0) return [{ file, method: methodFqn, positions }];
+    if (depth >= 4) return [];
+    const key = `${file}#${methodFqn}`;
+    if (visited.has(key)) return [];
+    visited.add(key);
+    const names = positions.map(i => method.parameters[i]?.name).filter((n): n is string => !!n);
+    const out: Array<{ file: string; method: string; positions: number[] }> = [];
+    for (const call of names.length > 0 ? idx.callsByMethod.get(method) ?? [] : []) {
+      const carried = call.arguments.flatMap((a, i) => names.includes((a.expression ?? '').trim()) ? [i] : []);
+      if (carried.length === 0) continue;
+      const r = this.resolveCall(call, file);
+      // A name-only match counts inside the caller's own package (directory).
+      if (!r || (r.resolution !== 'exact' && dirOf(r.targetFile) !== dirOf(file))) continue;
+      out.push(...this.goChainTerminals(r.targetFile, r.targetMethod, carried, depth + 1, visited));
     }
     visited.delete(key);
     return out;
