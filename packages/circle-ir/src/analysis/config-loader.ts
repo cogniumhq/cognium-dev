@@ -1928,13 +1928,13 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Java serialization constructors
   { method: 'ObjectInputStream', class: 'constructor', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
 
-  // LDAP Injection (CWE-90)
-  { method: 'search', class: 'DirContext', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 1] },
-  { method: 'search', class: 'InitialDirContext', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 1] },
-  { method: 'search', class: 'LdapContext', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 1] },
-  { method: 'lookup', class: 'Context', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0] },
-  { method: 'lookup', class: 'InitialContext', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0] },
-  { method: 'list', class: 'DirContext', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0] },
+  // LDAP Injection (CWE-90) — JNDI / javax.naming (Java only; JS ldapjs rows below)
+  { method: 'search', class: 'DirContext', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 1], languages: ['java'] },
+  { method: 'search', class: 'InitialDirContext', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 1], languages: ['java'] },
+  { method: 'search', class: 'LdapContext', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 1], languages: ['java'] },
+  { method: 'lookup', class: 'Context', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'lookup', class: 'InitialContext', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'list', class: 'DirContext', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['java'] },
 
   // XPath Injection (CWE-643)
   { method: 'evaluate', class: 'XPath', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0] },
