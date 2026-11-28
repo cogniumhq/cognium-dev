@@ -2173,7 +2173,10 @@ export async function analyzeProject(
 
   // 1.5 (#637) — a C# call that resolves to a method in another project file
   //     is not an `external_taint_escape`; drop it before the cross-file phase
-  //     so the callee-reach check decides what is reported.
+  //     so the callee-reach check decides what is reported. Java and TypeScript
+  //     do the same for a call through an injected receiver, which the resolver
+  //     reads from source text for TypeScript, so it gets the lines first.
+  projectGraph.resolver.setSourceLines(sourceLinesByFile);
   dropEscapesToProjectCallees(fileAnalyses, projectGraph);
 
   // 2. Cross-file analysis
