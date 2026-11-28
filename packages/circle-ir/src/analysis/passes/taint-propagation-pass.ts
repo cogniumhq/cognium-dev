@@ -11,7 +11,7 @@
  * Depends on: sink-filter, constant-propagation
  */
 
-import type { TaintFlowInfo } from '../../types/index.js';
+import type { MethodInfo, TaintFlowInfo } from '../../types/index.js';
 import type { CircleIR } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
@@ -29,6 +29,7 @@ import { sanitizerCoversSink } from '../sanitizer-index.js';
 import { HTML_CONTEXT_ENCODER_METHODS } from '../constant-propagation/patterns.js';
 import { javaCanonicalStartsWithAllBare } from '../java-canonical-prefix.js';
 import { shouldGateInterproceduralParam } from '../entry-point-detection.js';
+import { isPythonWebParamSource } from '../python-web-params.js';
 
 export interface TaintPropagationPassResult {
   flows: TaintFlowInfo[];
@@ -3808,6 +3809,9 @@ function detectExpressionScanFlows(
   // unaffected, because the sanitizer call alone does not actually
   // sanitize the original `host` variable.
   const aliasSanitizedFor = new Map<string, Set<string>>();
+  // The same, for the Python handler-parameter aliases below, keyed
+  // `<function>:<alias>` because those aliases are local to one handler.
+  const handlerAliasSanitizedFor = new Map<string, Set<string>>();
 
   // Python alias expansion (#20): seed the scan with not only direct source
   // variables (e.g. `uid` from `uid = request.form.get(...)`) but also any
@@ -3961,6 +3965,56 @@ function detectExpressionScanFlows(
             for (const t of upCov) {
               if (!downCov.has(t)) { downCov.add(t); changed = true; }
             }
+          }
+        }
+      }
+    }
+  }
+
+  // Python handler parameters (FastAPI / webargs, `python-web-params.ts`):
+  // the file-wide map above starts from request reads only, so an alias of a
+  // parameter (`cmd = "ping " + host`, `name = body.name`) is derived here,
+  // from the handler's own body with its request-bound parameters as seeds.
+  // Each alias keeps its parameter's `in_method`, so it reaches sinks in that
+  // handler only.
+  if (language === 'python' && typeof code === 'string' && types) {
+    const paramSources = sourcesWithVar.filter(s => isPythonWebParamSource(s));
+    if (paramSources.length > 0) {
+      const codeLines = code.split('\n');
+      const have = new Set(sourcesWithVar.map(s => `${s.in_method ?? ''}:${s.variable}`));
+      const byMethod = new Map<MethodInfo, Array<typeof sourcesWithVar[0]>>();
+      for (const s of paramSources) {
+        const m = types.flatMap(t => t.methods).find(mm =>
+          mm.name === s.in_method && mm.start_line <= s.line && s.line <= mm.end_line);
+        if (!m) continue;
+        byMethod.set(m, [...(byMethod.get(m) ?? []), s]);
+      }
+      for (const [m, seeds] of byMethod) {
+        // Blank lines before the handler keep line numbers file-relative.
+        const body = '\n'.repeat(m.start_line - 1) + codeLines.slice(m.start_line - 1, m.end_line).join('\n');
+        const seedMap = new Map(seeds.map(s => [s.variable, s.line] as const));
+        const seedByVar = new Map(seeds.map(s => [s.variable, s] as const));
+        const local = buildPythonTaintedVars(body, seedMap);
+        for (const [varName, originLine] of local) {
+          if (seedMap.has(varName)) continue;
+          const key = `${m.name}:${varName}`;
+          if (have.has(key)) continue;
+          const anchor = resolvePythonDerivedAnchor(varName, local, seedByVar, codeLines, new Set()) ?? seeds[0];
+          sourcesWithVar.push({ ...anchor, variable: varName });
+          have.add(key);
+          // Sanitizer on the alias's own assignment (`cmd = "ping " + shlex.quote(host)`),
+          // as for the file-wide aliases above (#65 pt2), scoped to this handler.
+          if (!sanitizers) continue;
+          const lineText = codeLines[originLine - 1] ?? '';
+          const rhs = lineText.slice(lineText.indexOf('=') + 1);
+          for (const san of sanitizers) {
+            if (san.line !== originLine || !san.method.endsWith('()')) continue;
+            // `shlex.quote()` → `quote`
+            const sanName = san.method.slice(0, -2).split('.').pop() ?? '';
+            if (!sanName || !rhs.includes(`${sanName}(`)) continue;
+            let set = handlerAliasSanitizedFor.get(key);
+            if (!set) { set = new Set<string>(); handlerAliasSanitizedFor.set(key, set); }
+            for (const t of san.sanitizes) set.add(t);
           }
         }
       }
@@ -4933,6 +4987,12 @@ function detectExpressionScanFlows(
           // in a sanitizer covering this sink type (e.g.
           // `cmd = "ping " + shlex.quote(host)` → command_injection).
           if (aliasSanitizedFor.get(source.variable)?.has(sink.type)) {
+            break;
+          }
+          if (
+            source.in_method !== undefined &&
+            handlerAliasSanitizedFor.get(`${source.in_method}:${source.variable}`)?.has(sink.type)
+          ) {
             break;
           }
 
