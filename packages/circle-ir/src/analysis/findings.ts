@@ -26,6 +26,7 @@ import {
   getSinkDescription,
 } from './rules.js';
 import { isNonExecutableSourceLine } from './non-executable-lines.js';
+import { isPythonWebParamSource } from './python-web-params.js';
 import { ARGV_NO_SHELL_TAG } from './js-spawn-argv.js';
 import { sanitizerCoversSink } from './sanitizer-index.js';
 import { walkBackwardDefs } from './dfg-walk.js';
@@ -794,9 +795,13 @@ function findTaintPath(source: TaintSource, sink: TaintSink, dfg: DFG): PathResu
   const hops: TaintHop[] = [];
   const variables: string[] = [];
 
-  // Find definitions near the source line
+  // Find definitions near the source line. A Python handler-parameter source
+  // stands for its own parameter only: `request` or a `Depends(...)` value on
+  // the same signature line is not request input.
+  const ownBindingOnly = isPythonWebParamSource(source) && source.variable !== undefined;
   const sourceDefs = dfg.defs.filter(d =>
-    d.line >= source.line - 1 && d.line <= source.line + 1
+    d.line >= source.line - 1 && d.line <= source.line + 1 &&
+    (!ownBindingOnly || d.variable === source.variable)
   );
 
   // Find uses near the sink line

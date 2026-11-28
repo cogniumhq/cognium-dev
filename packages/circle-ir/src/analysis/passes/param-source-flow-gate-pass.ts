@@ -45,6 +45,7 @@ import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { InterproceduralPassResult } from './interprocedural-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import type { MethodInfo, TaintFlowInfo, TaintSource } from '../../types/index.js';
+import { findPythonWebFunctions, isPythonWebParamSource } from '../python-web-params.js';
 
 export interface ParamSourceFlowGateResult {
   /** True when the gate ran (flag unset, language in scope). */
@@ -421,11 +422,29 @@ export class ParamSourceFlowGatePass implements AnalysisPass<ParamSourceFlowGate
     // parameter's line (`function h(req) { const u = req.query.url; ... }`)
     // the surviving flow may cite the parameter while the evidence is the
     // real source. Those flows are kept.
+    // A Python FastAPI / webargs handler parameter source names its own
+    // parameter only, so it does not vouch for the other parameters on its
+    // line; those handlers are judged below by which parameters they bind.
     const realSourceLines = new Set<number>();
     const sources = ctx.hasResult('sink-filter') ? ctx.getResult<SinkFilterResult>('sink-filter').sources : [];
     for (const s of sources) {
-      if (s.type !== 'interprocedural_param') realSourceLines.add(s.line);
+      if (s.type !== 'interprocedural_param' && !isPythonWebParamSource(s)) realSourceLines.add(s.line);
     }
+
+    // Python FastAPI route handlers and webargs views: the request-bound
+    // parameters are known, so a flow from any other parameter (`request`,
+    // a `Depends(...)` value, `BackgroundTasks`) is not request input.
+    let pyWebHandlers: Map<MethodInfo, Set<string>> | undefined;
+    const pyWebHandlerParams = (m: MethodInfo): Set<string> | undefined => {
+      if (ctx.language !== 'python') return undefined;
+      if (!pyWebHandlers) {
+        pyWebHandlers = new Map();
+        for (const fn of findPythonWebFunctions(ctx.code, ctx.graph.ir.types)) {
+          if (fn.handler) pyWebHandlers.set(fn.method, new Set(fn.sources.map(src => src.variable!)));
+        }
+      }
+      return pyWebHandlers.get(m);
+    };
 
     // Computed on first need: most files have no parameter-only flow.
     let fed: RealFedParams | undefined;
@@ -477,7 +496,12 @@ export class ParamSourceFlowGatePass implements AnalysisPass<ParamSourceFlowGate
       let keep = true;
       if (f.source_type === 'interprocedural_param' && !realSourceLines.has(f.source_line)) {
         const m = enclosingMethod(methods, f.source_line);
-        keep = m !== undefined && (
+        const bound = m !== undefined ? pyWebHandlerParams(m) : undefined;
+        if (bound) {
+          const head = f.path[0]?.variable;
+          keep = head !== undefined && bound.has(head);
+        } else {
+          keep = m !== undefined && (
           isHandler(m) ||
           fedByRealSource(f, m) ||
           isReactHtmlComponent(m, f, lines) ||
@@ -489,7 +513,8 @@ export class ParamSourceFlowGatePass implements AnalysisPass<ParamSourceFlowGate
           // prompt/SSRF mirrors — keep the default path without speculativeParamSources.
           f.sink_type === 'cache_poisoning' ||
           (m !== undefined && isExportedShellIntakeHandler(m, f, ctx.language, lines))
-        );
+          );
+        }
       }
       if (keep) flows[w++] = f;
       else {
