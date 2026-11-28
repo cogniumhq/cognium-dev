@@ -136,7 +136,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 `;
     const r = await analyze(code, 'tt.go', 'go');
-    expect(flowsByType(r.taint?.flows, 'code_injection').length).toBeGreaterThanOrEqual(1);
+    expect(flowsByType(r.taint?.flows, 'template_injection').length).toBeGreaterThanOrEqual(1);
   });
 
   it('#108 GO.html_template — html/template.Parse with tainted source', async () => {
@@ -149,7 +149,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 `;
     const r = await analyze(code, 'ht.go', 'go');
-    expect(flowsByType(r.taint?.flows, 'code_injection').length).toBeGreaterThanOrEqual(1);
+    expect(flowsByType(r.taint?.flows, 'template_injection').length).toBeGreaterThanOrEqual(1);
   });
 
   // ---------------------------------------------------------------------------

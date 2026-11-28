@@ -25,7 +25,7 @@ import { LIBRARY_API_SURFACE_TAG } from '../../../src/analysis/library-api-surfa
 
 const codeInjectionSinks = (
   arr: Array<{ type?: string; tags?: string[]; line?: number }> | undefined,
-) => (arr ?? []).filter((s) => s.type === 'code_injection');
+) => (arr ?? []).filter((s) => s.type === 'code_injection' || s.type === 'template_injection');
 
 const codeInjectionFlows = (
   arr: Array<{ sink_type?: string; tags?: string[]; sink_line?: number }> | undefined,

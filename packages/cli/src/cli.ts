@@ -38,8 +38,8 @@ import {
 import {
   formatResults, formatJSON, formatSARIF,
   scanNotifications,
-  SINK_SEVERITY, SINK_CWE,
-  applyTagSeverityDowngrade, taintFlowMessage, termSafe,
+  SINK_SEVERITY,
+  flowVulnerability, termSafe, unsupportedFilesText, unsupportedFileTotal,
   type ScanResult, type CrossFileData, type ProjectProfileSummary,
 } from './formatters.js';
 import { spinnerFileLabel } from './utils/term-safe.js';
@@ -617,6 +617,30 @@ interface CollectFilesOptions {
   skipped?: SkippedPath[];
   /** S4: the scan root's real path, set by the top-level call. */
   rootReal?: string;
+  /**
+   * Files the walk found but no analyser handles, counted by lower-case
+   * extension (`(none)` for a file without one). The walk adds to it; the
+   * caller reports the counts. A file left out by `--language`, an
+   * include/exclude pattern, `--exclude-tests` or the dot-file rule is not
+   * counted, nor is a resource file the analysis reads (`*.properties`,
+   * `*.plist`).
+   */
+  unsupported?: Map<string, number>;
+}
+
+/** Resource files the analysis reads although they are not source code (#591, #1311). */
+const RESOURCE_FILE_RE = /\.(?:properties|plist)$/i;
+
+/** The key a file is counted under in `CollectFilesOptions.unsupported`. */
+export function unsupportedExtensionKey(filePath: string): string {
+  return extname(filePath).toLowerCase() || '(none)';
+}
+
+/** `CollectFilesOptions.unsupported` as a plain object, extensions in name order. */
+export function unsupportedCounts(unsupported: ReadonlyMap<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const ext of [...unsupported.keys()].sort()) out[ext] = unsupported.get(ext) as number;
+  return out;
 }
 
 export interface SkippedPath {
@@ -687,18 +711,16 @@ export async function collectFiles(targetPath: string, options: CollectFilesOpti
     if (excludeTests && isTestFile(targetPath)) {
       return files;
     }
+    const relativePath = basePath ? relative(basePath, targetPath) : targetPath;
+    const patternsAllow = (): boolean =>
+      !(includePatterns && includePatterns.length > 0 && !matchesAnyPattern(relativePath, includePatterns))
+      && !(excludePatterns && matchesAnyPattern(relativePath, excludePatterns));
     if (fileMatchesLanguage(targetPath, language)) {
       // Apply include/exclude patterns
-      const relativePath = basePath ? relative(basePath, targetPath) : targetPath;
-      if (includePatterns && includePatterns.length > 0) {
-        if (!matchesAnyPattern(relativePath, includePatterns)) {
-          return files;
-        }
-      }
-      if (excludePatterns && matchesAnyPattern(relativePath, excludePatterns)) {
-        return files;
-      }
-      files.push(targetPath);
+      if (patternsAllow()) files.push(targetPath);
+    } else if (options.unsupported && detectLanguage(targetPath) === null && !RESOURCE_FILE_RE.test(targetPath) && patternsAllow()) {
+      const ext = unsupportedExtensionKey(targetPath);
+      options.unsupported.set(ext, (options.unsupported.get(ext) ?? 0) + 1);
     }
   } else if (pathStat.isDirectory()) {
     // #1025: a scan path that is itself a skipped directory (`scan ./coverage`)
@@ -875,15 +897,7 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
     });
 
     // Security findings from taint flows
-    const vulnerabilities: ScanResult['vulnerabilities'] = (result.taint.flows || []).map(flow => ({
-      type: flow.sink_type,
-      severity: applyTagSeverityDowngrade(SINK_SEVERITY[flow.sink_type] ?? 'high', flow.tags),
-      message: taintFlowMessage(flow),
-      line: flow.sink_line,
-      cwe: SINK_CWE[flow.sink_type],
-      category: 'security',
-      ...(flow.tags && flow.tags.length > 0 ? { tags: [...flow.tags] } : {}),
-    }));
+    const vulnerabilities: ScanResult['vulnerabilities'] = (result.taint.flows || []).map(flow => flowVulnerability(flow, filePath));
 
     // Quality findings from analysis passes (dead-code, missing-await, n-plus-one, etc.)
     for (const finding of (result.findings ?? []) as SastFinding[]) {
@@ -1128,15 +1142,7 @@ async function scanProject(
   }
 
   const results: ScanResult[] = projectResult.files.map(({ file, analysis }) => {
-    const vulnerabilities: ScanResult['vulnerabilities'] = (analysis.taint.flows || []).map(flow => ({
-      type: flow.sink_type,
-      severity: applyTagSeverityDowngrade(SINK_SEVERITY[flow.sink_type] ?? 'high', flow.tags),
-      message: taintFlowMessage(flow),
-      line: flow.sink_line,
-      cwe: SINK_CWE[flow.sink_type],
-      category: 'security',
-      ...(flow.tags && flow.tags.length > 0 ? { tags: [...flow.tags] } : {}),
-    }));
+    const vulnerabilities: ScanResult['vulnerabilities'] = (analysis.taint.flows || []).map(flow => flowVulnerability(flow, file));
     for (const finding of (analysis.findings ?? []) as SastFinding[]) {
       vulnerabilities.push({
         type: finding.rule_id,
@@ -1471,6 +1477,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     }
 
     const skippedPaths: SkippedPath[] = [];
+    const unsupported = new Map<string, number>();
     const files = await collectFiles(absPath, {
       language: options.language,
       excludeTests: options.excludeTests,
@@ -1478,17 +1485,27 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       excludePatterns: config?.exclude,
       basePath: absPath,
       skipped: skippedPaths,
+      unsupported,
     });
     for (const p of skippedPaths) {
       if (p.reason !== 'symlink inside the scan root') console.error(colors.yellow(`⚠ Not scanned: ${termSafe(relative(absPath, p.path) || p.path)} (${p.reason})`));
     }
+    const unsupportedFiles = unsupportedCounts(unsupported);
+    const unsupportedTotal = unsupportedFileTotal(unsupportedFiles);
 
     if (files.length === 0) {
       if (spin) spin.warn('No supported files found');
+      if (!options.quiet && unsupportedTotal > 0) {
+        console.error(colors.dim(`${unsupportedTotal} file(s) skipped: no analyser for their type (${termSafe(unsupportedFilesText(unsupportedFiles))})`));
+      }
       // A JSON or SARIF report, and any -o file, is still written: a CI step
-      // that uploads it must get a valid empty run, not a missing file.
+      // that uploads it must get a valid empty run, not a missing file. It
+      // names the files that were skipped.
       if (options.format !== 'text' || options.output) {
-        const empty = options.format === 'json' ? formatJSON([]) : options.format === 'sarif' ? formatSARIF([]) : formatResults([]);
+        const skipped: CrossFileData | undefined = unsupportedTotal > 0
+          ? { taintPaths: [], crossFileCalls: [], filesTotal: 0, filesAnalysed: 0, unsupportedFiles }
+          : undefined;
+        const empty = options.format === 'json' ? formatJSON([], skipped) : options.format === 'sarif' ? formatSARIF([], skipped) : formatResults([], undefined, skipped);
         writeReport(empty, options.output);
       }
       await exitAfterFlush(0);
@@ -1563,6 +1580,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       results = projectScan.results;
       crossFileData = projectScan.crossFileData;
       if (skippedPaths.length > 0) crossFileData = { ...crossFileData, skippedPaths: skippedPaths.map(p => ({ path: relative(absPath, p.path) || p.path, reason: p.reason })) };
+      if (unsupportedTotal > 0) crossFileData = { ...crossFileData, unsupportedFiles };
     } else {
       if (spin) spin.text = `Scanning ${files.length} file(s)...`;
 
@@ -1815,6 +1833,9 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
         }
         if (partlyParsed > 0) {
           writeStdout(colors.yellow(`${partlyParsed} file(s) had syntax errors; findings in them may be incomplete`) + '\n');
+        }
+        if (options.verbose && unsupportedTotal > 0) {
+          writeStdout(colors.dim(`${unsupportedTotal} file(s) skipped: no analyser for their type (${termSafe(unsupportedFilesText(unsupportedFiles))})`) + '\n');
         }
       }
     }
