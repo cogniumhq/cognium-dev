@@ -2,6 +2,11 @@
 
 All notable changes to `@cognium/project-profile-detect` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — each Maven module's shape follows its own `<packaging>`
+- **A child module no longer takes its parent's build type.** An aggregator parent that lists `maven-plugin-plugin` under `<pluginManagement>` made every child, a plain `jar` included, resolve to `plugin`, and the parent itself too. Now `<packaging>` decides first, per module: `pom` → no shape (an aggregator builds no code; its loose files are `unknown`), `maven-plugin` → `plugin`, `war` / `ear` → `server`, `jar` (also the default when `<packaging>` is absent) → the other signals. `<pluginManagement>` and profile builds apply no plugin, and the per-module tags `war`, `ear`, `maven-plugin` and `application` are not inherited from a parent (`spring-boot` and distribution URLs still are). Coordinates and packaging are read from the project's own elements, not from a dependency, plugin or property, and a missing `groupId` / `version` comes from `<parent>`. A tag name must end where the element's name ends, so a property such as `<build.number>` or `<parent.version>` is not read as `<build>` or `<parent>`. On OWASP BenchmarkUtils (`library/` jar, `plugin/` maven-plugin): `plugin/dev` ×3 → parent `unknown`, library `unknown`, plugin `plugin/dev`.
+
 ## [1.1.2] — 2026-09-24
 
 ### Performance — module lookup no longer scans every module per file (#304)

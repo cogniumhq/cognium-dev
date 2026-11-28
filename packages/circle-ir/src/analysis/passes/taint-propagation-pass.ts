@@ -1657,7 +1657,7 @@ function isMongoValueBoundFilter(sinkCode: string, sinkMethod: string, sourceVar
  * by the sink call. False-negatives are preferred over false-positives in
  * the FP corpus regression context the issue is about.
  */
-function isInJavaSanitizedMethod(
+export function isInJavaSanitizedMethod(
   code: string,
   types: CircleIR['types'] | undefined,
   sinkLine: number,

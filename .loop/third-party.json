@@ -1,6 +1,6 @@
 {
   "schema": "third-party/v0",
-  "about": "Paths the Loop must not plan, test or fix in this repository. 'prefix' is a path prefix, the same rule as a Loop start request's scope.exclude. .gitattributes marks the same paths linguist-vendored. Neither path is part of a published package.",
+  "about": "Paths the Loop must not plan, test or fix in this repository. 'prefix' is a path prefix, the same rule as a Loop start request's scope.exclude. .gitattributes marks the same paths linguist-vendored. bench/ and .claude/ are not part of a published package; the tree-sitter grammar files under packages/circle-ir/wasm/ ship in circle-ir (copied to dist/wasm at build) as its runtime grammars.",
   "default_policy": {
     "test": false,
     "fix": false,
@@ -29,6 +29,20 @@
       "licence": "n/a (not published; outside every package's files)",
       "modified_locally": false,
       "notes": "Agent configuration, not product code.",
+      "policy": {
+        "test": false,
+        "fix": false,
+        "report": "opt-in"
+      }
+    },
+    {
+      "path": "packages/circle-ir/wasm/",
+      "match": "prefix",
+      "origin": "prebuilt tree-sitter grammar binaries, committed as-is; no script in this repository builds them (packages/circle-ir/scripts/copy-wasm.mjs only copies them into dist/wasm)",
+      "version": "not recorded per file; nearest facts in this repository: tree-sitter-bash 0.25.1, tree-sitter-html 0.23.2, tree-sitter-java 0.23.5, tree-sitter-python 0.25.0, tree-sitter-typescript 0.23.2 (typescript and tsx) are the versions in package-lock.json; tree-sitter-c-sharp 0.23.5 per the commit that added the file; tree-sitter-go 0.25.0 and tree-sitter-javascript 0.25.0 (same bytes as the .wasm in that npm release); tree-sitter-rust not recorded (the bytes match no tree-sitter-rust release on npm; package-lock.json says 0.24.0)",
+      "licence": "MIT (package-lock.json for the seven locked packages; npm registry for tree-sitter-go and tree-sitter-c-sharp); shipped in the circle-ir package via dist/wasm",
+      "modified_locally": false,
+      "notes": "Ten generated grammar binaries (bash, csharp, go, html, java, javascript, python, rust, tsx, typescript), not hand-written source. They are runtime files of circle-ir: replace them with a rebuilt grammar, do not edit them.",
       "policy": {
         "test": false,
         "fix": false,

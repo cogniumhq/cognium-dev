@@ -41,6 +41,19 @@ describe('formatResults', () => {
     expect(output).toContain('[reliability]');
   });
 
+  test('a quality finding leads with its rule title and keeps the rule id', () => {
+    const results = [makeResult('src/App.ts', [deadCodeVuln, { ...deadCodeVuln, type: 'missing-public-doc', category: 'maintainability' }])];
+    const prev = process.env.NO_COLOR;
+    process.env.NO_COLOR = '1';
+    try {
+      const output = formatResults(results);
+      expect(output).toContain('Dead code [dead-code] (Low)');
+      expect(output).toContain('Missing doc comment [missing-public-doc] (Low)');
+    } finally {
+      if (prev === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = prev;
+    }
+  });
+
   test('does not show category tag for security findings', () => {
     const results = [makeResult('src/Foo.java', [sqlVuln])];
     const output = formatResults(results);
@@ -165,6 +178,46 @@ describe('formatJSON', () => {
     expect(parsed.cross_file_taint_paths).toHaveLength(1);
     expect(parsed.summary.crossFileTaintPaths).toBe(1);
   });
+
+  test('every finding carries its rule id and a short rule title', () => {
+    const plist = { type: 'hardcoded-credential', severity: 'critical', message: 'API key', line: 3, cwe: 'CWE-798', category: 'security' };
+    const results = [
+      makeResult('src/Foo.java', [sqlVuln, deadCodeVuln]),
+      makeResult('src/Bar.java', [{ ...deadCodeVuln, type: 'n-plus-one', category: 'performance' }]),
+      makeResult('ios/App/Info.plist', [plist]),
+    ];
+    const parsed = JSON.parse(formatJSON(results));
+    const vulns = parsed.results.flatMap((r: any) => r.vulnerabilities);
+    expect(vulns.map((v: any) => [v.rule_id, v.rule_title])).toEqual([
+      ['sql_injection', 'SQL Injection'],
+      ['dead-code', 'Dead code'],
+      ['n-plus-one', 'N+1 query'],
+      ['hardcoded-credential', 'Hardcoded credential'],
+    ]);
+    // the existing fields are unchanged
+    expect(vulns[1]).toMatchObject(deadCodeVuln);
+  });
+
+  test('a cross-file taint path carries the rule id SARIF gives it', () => {
+    const crossFileData: CrossFileData = {
+      taintPaths: [{
+        id: 'tp-1',
+        source: { file: 'A.java', line: 5, type: 'http_param', cwe: '', code: '' },
+        sink: { file: 'B.java', line: 20, type: 'sql_injection', cwe: 'CWE-89', code: '' },
+        hops: [],
+        sanitizers_in_path: [],
+        path_exists: true,
+        confidence: 0.95,
+      }],
+      crossFileCalls: [],
+    };
+    const parsed = JSON.parse(formatJSON([makeResult('A.java', [])], crossFileData));
+    expect(parsed.cross_file_taint_paths[0]).toMatchObject({
+      id: 'tp-1', rule_id: 'cross-file-sql_injection', rule_title: 'Cross-file SQL Injection',
+    });
+    const sarif = JSON.parse(formatSARIF([makeResult('A.java', [])], crossFileData));
+    expect(sarif.runs[0].results[0].ruleId).toBe('cross-file-sql_injection');
+  });
 });
 
 // ─── formatSARIF ─────────────────────────────────────────────────────────────
@@ -217,6 +270,19 @@ describe('formatSARIF', () => {
     const parsed = JSON.parse(formatSARIF(results));
     expect(parsed.runs[0].results[0].properties.fix).toBe('Remove unreachable block');
   });
+
+  test('a rule\'s short description is its title; ruleId matches the JSON rule_id', () => {
+    const results = [makeResult('src/Foo.java', [sqlVuln, deadCodeVuln])];
+    const parsed = JSON.parse(formatSARIF(results));
+    const rules = parsed.runs[0].tool.driver.rules;
+    expect(rules.map((r: any) => [r.id, r.shortDescription.text])).toEqual([
+      ['sql_injection', 'SQL Injection'],
+      ['dead-code', 'Dead code'],
+    ]);
+    const json = JSON.parse(formatJSON(results));
+    expect(parsed.runs[0].results.map((r: any) => r.ruleId))
+      .toEqual(json.results[0].vulnerabilities.map((v: any) => v.rule_id));
+  });
 });
 
 // ─── applyTagSeverityDowngrade ───────────────────────────────────────────────
@@ -260,6 +326,25 @@ describe('file names in text output', () => {
       expect(output).not.toContain('\x07');
       expect(output.split('\n').some(l => l.startsWith('[OK] forged.ts'))).toBe(false);
       expect(output).toContain('src/a\\x1b]0;pwned\\x07\\x0a[OK] forged.ts');
+    } finally {
+      if (prev === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = prev;
+    }
+  });
+
+  test('formatResults escapes a finding message and an error reason, which can carry a file name', () => {
+    const evil = 'b\x1b[2J\n[OK] forged.ts';
+    const results = [
+      makeResult('src/a.ts', [{ ...sqlVuln, message: `tainted data flows from ${evil}:3 to line 20` }]),
+      makeResult('src/c.ts', [], `ENOENT: no such file or directory, open '${evil}'`),
+    ];
+    const prev = process.env.NO_COLOR;
+    process.env.NO_COLOR = '1';
+    try {
+      const output = formatResults(results, true);
+      expect(output).not.toContain('\x1b');
+      expect(output.split('\n').some(l => l.startsWith('[OK] forged.ts'))).toBe(false);
+      expect(output).toContain('Line 20: tainted data flows from b\\x1b[2J\\x0a[OK] forged.ts:3 to line 20');
+      expect(output).toContain("[ERROR] src/c.ts: ENOENT: no such file or directory, open 'b\\x1b[2J\\x0a[OK] forged.ts'");
     } finally {
       if (prev === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = prev;
     }

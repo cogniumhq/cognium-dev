@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initParser, parse } from '../../../src/core/index.js';
 import { registerBuiltinPlugins } from '../../../src/languages/index.js';
-import { extractHtmlContent } from '../../../src/analysis/html/html-extractor.js';
+import { extractHtmlContent, extractScriptSrcs } from '../../../src/analysis/html/html-extractor.js';
 
 beforeAll(async () => {
   registerBuiltinPlugins();
@@ -186,5 +186,23 @@ describe('extractHtmlContent', () => {
       expect(result.scriptBlocks).toHaveLength(0);
       expect(result.eventHandlers).toHaveLength(0);
     });
+  });
+});
+
+describe('extractScriptSrcs', () => {
+  it('reads double-quoted, single-quoted and bare src values in order', () => {
+    const html = `<script src="a.js"></script>
+<SCRIPT type="module" src='js/b.mjs'></SCRIPT>
+<script defer src=c.js></script>`;
+    expect(extractScriptSrcs(html)).toEqual(['a.js', 'js/b.mjs', 'c.js']);
+  });
+
+  it('skips inline scripts, data-src and commented-out tags', () => {
+    const html = `<script>var x = 1;</script>
+<script data-src="lazy.js"></script>
+<!-- <script src="old.js"></script> -->
+<link href="site.css" rel="stylesheet">
+<script src="kept.js"></script>`;
+    expect(extractScriptSrcs(html)).toEqual(['kept.js']);
   });
 });

@@ -37,10 +37,39 @@ export interface JavaServletRow {
   framework: string;
 }
 
+/**
+ * A type the framework instantiates and calls by method name: marked by a
+ * class annotation or by a supertype. The named methods it declares are
+ * entries, and so are its constructors (or the type, when it declares
+ * none) when the framework constructs it.
+ */
+export interface JavaTypeEntryRow {
+  /** Packages the annotation or the supertype must come from (an import, a wildcard or a qualified name). */
+  packages: readonly string[];
+  /** Class annotations (simple names) that mark the type. */
+  annotations?: readonly string[];
+  /** Direct supertypes (simple names, `extends` or `implements`) that mark the type. */
+  supertypes?: readonly string[];
+  /** Method name → the entry kind of that method. */
+  methods: Readonly<Record<string, EntryKind>>;
+  /**
+   * The parameter count the framework calls the named methods with. Only an
+   * overload with that count is an entry; any count when absent.
+   */
+  arity?: number;
+  /** The entry kind of the constructors, when the framework constructs the type. */
+  constructs?: EntryKind;
+  /** An annotation attribute whose string value names the entry (a goal, a command), shown in the evidence. */
+  nameAttribute?: string;
+  framework: string;
+}
+
 export interface JavaEntryTables {
   routes: readonly JavaRouteRow[];
   servlets: readonly JavaServletRow[];
   annotations: readonly JavaAnnotationRow[];
+  /** Types the framework runs by method name (Maven goals). Absent in older tables: none. */
+  types?: readonly JavaTypeEntryRow[];
   /** Repository paths of test sources. */
   testFile: RegExp;
 }
@@ -91,6 +120,29 @@ export const DEFAULT_JAVA_ENTRY_TABLES: JavaEntryTables = {
     { packages: ['org.springframework.jms.annotation'], names: ['JmsListener'], kind: 'listener', on: 'method' },
     { packages: ['org.springframework.context.event'], names: ['EventListener'], kind: 'listener', on: 'method' },
     { packages: ['org.junit', 'org.junit.jupiter.api', 'org.junit.jupiter.params', 'org.testng.annotations'], names: ['Test', 'ParameterizedTest', 'RepeatedTest', 'TestFactory', 'TestTemplate', 'Before', 'After', 'BeforeClass', 'AfterClass', 'BeforeEach', 'AfterEach', 'BeforeAll', 'AfterAll', 'BeforeMethod', 'AfterMethod', 'BeforeSuite', 'AfterSuite', 'BeforeTest', 'AfterTest'], kind: 'test', on: 'method' },
+  ],
+  types: [
+    // Maven plugin goals: Maven constructs the class, injects its parameters
+    // and runs `execute()` when the goal is invoked (`mvn plugin:goal`).
+    // Only the no-argument `execute()` is the goal; an overload is not.
+    {
+      packages: ['org.apache.maven.plugins.annotations'],
+      annotations: ['Mojo'],
+      methods: { execute: 'main' },
+      arity: 0,
+      constructs: 'bean',
+      nameAttribute: 'name',
+      framework: 'maven-plugin',
+    },
+    // Goals declared by javadoc tag (`@goal`), before the annotations.
+    {
+      packages: ['org.apache.maven.plugin'],
+      supertypes: ['AbstractMojo', 'Mojo'],
+      methods: { execute: 'main' },
+      arity: 0,
+      constructs: 'bean',
+      framework: 'maven-plugin',
+    },
   ],
   testFile: /(?:(?:^|\/)src\/test\/)|(?:Tests?\.java$)|(?:IT\.java$)/,
 };

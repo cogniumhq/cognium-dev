@@ -8,12 +8,24 @@
  * Regex-based — we don't want a runtime dependency on an XML library and
  * the surface we need is tiny. Best-effort: malformed POMs return whatever
  * fields parsed successfully.
+ *
+ * Coordinates and `<packaging>` are read from the `<project>` element's own
+ * children only: a dependency's or a plugin's `<version>` is not the
+ * module's. A missing `<groupId>` / `<version>` comes from `<parent>`, as in
+ * Maven. A missing `<packaging>` is Maven's default, `jar`.
+ *
+ * Plugins are read from `<build><plugins>` only. `<pluginManagement>`
+ * declares versions and configuration for modules that choose to use a
+ * plugin; it applies none, so it says nothing about this module's shape.
  */
 
 import type { BuildModule, MavenParentRef, ModuleSignals } from './types.js';
 
-const TAG = (name: string) => new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, 'i');
-const ALL_TAGS = (name: string) => new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, 'gi');
+// `(?=[\s/>])` ends the tag name: `<build>` and `<build attr>` match `build`,
+// `<build.number>` (a property) does not. `\b` would match it, since `.` is a
+// word boundary.
+const TAG = (name: string) => new RegExp(`<${name}(?=[\\s/>])[^>]*>([\\s\\S]*?)<\\/${name}>`, 'i');
+const ALL_TAGS = (name: string) => new RegExp(`<${name}(?=[\\s/>])[^>]*>([\\s\\S]*?)<\\/${name}>`, 'gi');
 
 function firstTag(xml: string, name: string): string | undefined {
   const m = TAG(name).exec(xml);
@@ -27,6 +39,38 @@ function allTags(xml: string, name: string): string[] {
   while ((m = re.exec(xml)) !== null) out.push(m[1].trim());
   return out;
 }
+
+/**
+ * Elements under `<project>` that hold nested `<groupId>` / `<artifactId>` /
+ * `<version>` tags (dependencies, plugins, profiles, …). Removed before the
+ * module's own coordinates are read.
+ */
+const NESTED_BLOCKS = [
+  'parent', 'dependencies', 'dependencyManagement', 'build', 'reporting',
+  'profiles', 'distributionManagement', 'modules', 'properties', 'scm',
+  'organization', 'developers', 'contributors', 'licenses', 'mailingLists',
+  'issueManagement', 'ciManagement', 'repositories', 'pluginRepositories',
+  'prerequisites', 'extensions',
+] as const;
+
+function stripBlock(xml: string, name: string): string {
+  return xml
+    .replace(new RegExp(`<${name}(?=[\\s/>])[^>]*\\/>`, 'gi'), '')
+    .replace(new RegExp(`<${name}(?=[\\s/>])[^>]*>[\\s\\S]*?<\\/${name}>`, 'gi'), '');
+}
+
+/** The `<project>` element's own children, nested blocks removed. */
+function projectOwnText(xml: string): string {
+  let out = xml.replace(/<!--[\s\S]*?-->/g, '');
+  for (const b of NESTED_BLOCKS) out = stripBlock(out, b);
+  return out;
+}
+
+/**
+ * Packaging types Maven itself knows, normalized. Any other value (an
+ * extension's packaging such as `bundle` or `hpi`) is kept as written.
+ */
+export type MavenPackaging = 'jar' | 'pom' | 'maven-plugin' | 'war' | 'ear' | string;
 
 /**
  * Map Maven plugin `<artifactId>` to the generic plugin tag used by the
@@ -70,18 +114,23 @@ export function parseMavenPom(
   // chain and merge inherited signals.
   const parentRef = extractParentRef(xml);
 
-  // Strip the parent block so its <groupId>/<version> don't shadow the
-  // module's own coordinates.
-  const stripped = xml.replace(/<parent\b[\s\S]*?<\/parent>/i, '');
+  // Read coordinates from the project's own children: the parent block, the
+  // dependencies, the build and the profiles all carry their own
+  // <groupId>/<artifactId>/<version>.
+  const own = projectOwnText(xml);
 
-  const groupId    = firstTag(stripped, 'groupId');
-  const artifactId = firstTag(stripped, 'artifactId');
-  const version    = firstTag(stripped, 'version');
-  const packaging  = firstTag(stripped, 'packaging');
+  const groupId    = firstTag(own, 'groupId') ?? parentRef?.groupId;
+  const artifactId = firstTag(own, 'artifactId');
+  const version    = firstTag(own, 'version') ?? parentRef?.version;
+  const packaging: MavenPackaging = (firstTag(own, 'packaging') || 'jar').toLowerCase();
 
   // Plugins live under <build><plugins><plugin>…</plugin>. Look at the
-  // first <build> block.
-  const buildBlock = firstTag(xml, 'build') ?? '';
+  // project's own <build> block (not a profile's), without its
+  // <pluginManagement>, which applies no plugin.
+  const buildBlock = stripBlock(
+    firstTag(stripBlock(xml.replace(/<!--[\s\S]*?-->/g, ''), 'profiles'), 'build') ?? '',
+    'pluginManagement',
+  );
   const pluginBlocks = allTags(buildBlock, 'plugin');
   const plugins = new Set<string>();
   const publishUrls = new Set<string>();

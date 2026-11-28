@@ -517,6 +517,18 @@ function lineDefinitionLacksUse(lineCode: string, variable: string, via: string)
   return !new RegExp(String.raw`(?<![.\w$])${via.replace(/\$/g, '\\$')}(?![\w$])`).test(rhs);
 }
 
+/**
+ * #1305 E2: the names a JavaScript / TypeScript `catch (…)` clause at the start
+ * of `code` (one trimmed source line) binds: `e` in `} catch (e: unknown) {`,
+ * `message` in `catch ({ message })`. Empty when the line opens no catch clause.
+ */
+function catchBindingNames(code: string | undefined): Set<string> {
+  const m = code ? /^(?:\}\s*)?catch\s*\(([^)]*)\)/.exec(code) : null;
+  if (!m) return new Set();
+  const binding = /^\s*[{[]/.test(m[1]!) ? m[1]! : m[1]!.split(':')[0]!;
+  return new Set(binding.match(/[A-Za-z_$][\w$]*/g) ?? []);
+}
+
 function findInitialTaint(
   sources: TaintSource[],
   callsByLine: Map<number, CallInfo[]>,
@@ -634,7 +646,12 @@ function findInitialTaint(
     const nextCode = lineText && !source.variable ? lineText(source.line + 1)?.trim() : undefined;
     const nextMulti = !!nextCode && hasSecondStatement(nextCode);
     const sourceLineNames = [...new Set(defsOnLine.map(d => d.variable))];
+    // #1305 E2: a source that ends a `try` body is followed by `} catch (e) {`.
+    // The caught error is the program's own value (an `Error` it threw, with its
+    // own message), not a continuation of the source's expression.
+    const nextCatchNames = jsLike ? catchBindingNames(lineText?.(source.line + 1)?.trim()) : null;
     for (const def of defsNextLine) {
+      if (nextCatchNames?.has(def.variable)) continue;
       // Only include if there's a call on the source line
       const callsOnSourceLine = callsByLine.get(source.line) ?? [];
       if (callsOnSourceLine.length > 0) {

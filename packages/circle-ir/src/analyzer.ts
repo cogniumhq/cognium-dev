@@ -61,6 +61,7 @@ import {
   parse,
   disposeTree,
   extractParseStatus,
+  hasGrammar,
   extractMeta,
   extractTypes,
   extractCalls,
@@ -91,6 +92,7 @@ import { coalesceNoteLevelFindings } from './analysis/note-coalescer.js';
 import { applyRequireEntryPath } from './analysis/require-entry-path.js';
 import { applyConstantCallerGate, applySingleFileJavaMapConstantCallerGate } from './analysis/constant-caller-gate.js';
 import { promoteCrossFilePathsToSinkFlows } from './analysis/promote-cross-file-flows.js';
+import { markCrossFileToolArgumentPaths, markToolArgumentFlows } from './analysis/tool-arguments.js';
 import { dropJsTestToProductionTaintPaths } from './analysis/test-to-production-taint-gate.js';
 import { dropEscapesToProjectCallees } from './analysis/project-callee-escape-gate.js';
 import { applyProjectProfileTransform, type ProfileResolver } from './analysis/project-profile-transform.js';
@@ -100,7 +102,7 @@ import { CodeGraph, AnalysisPipeline, ProjectGraph } from './graph/index.js';
 import { CrossFilePass } from './analysis/passes/cross-file-pass.js';
 
 // HTML preprocessor
-import { extractHtmlContent } from './analysis/html/html-extractor.js';
+import { extractHtmlContent, extractScriptSrcs } from './analysis/html/html-extractor.js';
 import { runHtmlAttributeSecurityChecks } from './analysis/html/html-attribute-security-pass.js';
 import { runVueTemplateXssChecks } from './analysis/html/vue-template-xss-pass.js';
 import { mergeHtmlResults } from './analysis/html/html-merge.js';
@@ -115,6 +117,7 @@ import { LibraryProfileSourceGatePass } from './analysis/passes/library-profile-
 import { MyBatisAnnotationSqlSinkPass } from './analysis/passes/mybatis-annotation-sql-sink-pass.js';
 import {
   SinkFilterPass,
+  javaProjectOpensResponseStream,
   filterCleanVariableSinks,
   filterSanitizedSinks,
   filterJavaArgvWrapperFlowsWithoutShellCaller,
@@ -488,6 +491,18 @@ export interface AnalyzerOptions {
    * removed — only flows.
    */
   speculativeParamSources?: boolean;
+
+  /**
+   * Java: some file of the project calls `getOutputStream()`, so a
+   * `PrintStream` in this file may be the servlet response handed in from
+   * another file. A print to a `PrintStream` or a logger is then kept as an
+   * xss sink, as it is in a file that calls `getOutputStream()` itself.
+   * `analyzeProject` sets it from its files when the caller leaves it unset;
+   * a caller that passes `analyzeFile` sets it itself, with
+   * `javaProjectOpensResponseStream(files)`. Omitted: only the file's own
+   * code decides.
+   */
+  javaOpensResponseStream?: boolean;
 
   /**
    * Enable the Tier 1/2/3 entry-point classifier gate that suppresses
@@ -1127,6 +1142,12 @@ async function analyzeFile(
     }
   };
 
+  // #1307: C and C++ are `SupportedLanguage` values with no bundled grammar.
+  // Report the file as unsupported instead of throwing ENOENT on the wasm.
+  if (!hasGrammar(parseGrammar)) {
+    return unsupportedLanguageIR(code, filePath, language);
+  }
+
   const tParse = phaseStart();
   const tree = await parse(code, parseGrammar);
   phaseEnd('parse', tParse);
@@ -1204,6 +1225,14 @@ async function analyzeFile(
     }
   } else {
     types = extractTypes(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
+  }
+  // cognium-dev#1307 — keep the declarations a partial parse folded into an
+  // ERROR node (JS / TS) or into an unclosed method body (Java).
+  if (parseStatus.has_errors) {
+    const { recoverPartialParseTypes } = await import('./core/partial-parse-recovery.js');
+    types = await recoverPartialParseTypes(tree, code, language, parseGrammar, types, {
+      navigationTypes: options.navigationTypes,
+    });
   }
   phaseEnd('extractTypes', tTypes);
   checkDeadline('extractTypes');
@@ -1284,7 +1313,7 @@ async function analyzeFile(
   // filter sees the added sinks. Java-only; no-op on other languages.
   if (!disabledPasses.has('mybatis-annotation-sql-sink'))
     pipeline.add(new MyBatisAnnotationSqlSinkPass());
-  pipeline.add(new SinkFilterPass());
+  pipeline.add(new SinkFilterPass(options.javaOpensResponseStream === true));
   // cognium-dev #139 Tier A: drops sinks whose SinkType label disagrees
   // with the curated <Class>#<method> registry (configs/sink-semantics.json).
   // Runs after SinkFilterPass so upstream FP suppressions have already fired,
@@ -1525,6 +1554,11 @@ async function analyzeFile(
     }
   }
 
+  // A Java path-traversal flow from the tool's own arguments (`main`'s
+  // `String[]`, a commons-cli option, a Mojo `@Parameter`) is tagged and
+  // reported at half its confidence.
+  if (language === 'java') markToolArgumentFlows({ meta, types, calls, imports, taint });
+
   const unresolved = detectUnresolved(calls, types, dfg);
   const enriched   = buildEnriched(types, calls, taint.sources, taint.sinks);
 
@@ -1616,6 +1650,34 @@ async function analyzeFile(
   } finally {
     disposeTree(tree);
   }
+}
+
+/**
+ * Empty IR for a file whose language has no grammar (#1307), with
+ * `parse_status.state: 'unsupported'` so callers can tell it apart from a
+ * clean file with no findings.
+ */
+function unsupportedLanguageIR(code: string, filePath: string, language: SupportedLanguage): CircleIR {
+  return {
+    meta: extractMeta(code, null, filePath, language),
+    types: [],
+    calls: [],
+    cfg: { blocks: [], edges: [] },
+    dfg: { defs: [], uses: [] },
+    taint: { sources: [], sinks: [] },
+    imports: [],
+    exports: [],
+    unresolved: [],
+    enriched: {},
+    parse_status: {
+      state: 'unsupported',
+      reason: `no ${language} grammar is available`,
+      success: false,
+      has_errors: false,
+      error_count: 0,
+      error_locations: [],
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -2024,6 +2086,8 @@ export async function analyzeProject(
   const failedFiles: Array<{ file: string; message: string }> = [];
   const projectGraph = new ProjectGraph();
   const sourceLinesByFile = new Map<string, string[]>();
+  // Page → its <script src> values, so a script only a page loads is in use.
+  const scriptSrcsByPage = new Map<string, string[]>();
 
   // 1. Per-file analysis
   //    #366 — optional wall-clock bound. The check is between files, which is
@@ -2041,6 +2105,13 @@ export async function analyzeProject(
   const maxProjectFiles = options.maxProjectFiles ?? 0;
   let projectSourceChars = 0;
   let projectSizeBudgetExceeded = false;
+  // A servlet can wrap the response in a `PrintStream` and pass it to a helper
+  // in another file, so whether a Java print to a `PrintStream` is xss is
+  // decided for the whole project, not per file (sink filter Stage 15e).
+  const fileOptions: AnalyzerOptions =
+    options.javaOpensResponseStream === undefined && javaProjectOpensResponseStream(files)
+      ? { ...options, javaOpensResponseStream: true }
+      : options;
   for (const { code, filePath, language } of files) {
     if (maxProjectFiles > 0 && fileAnalyses.length >= maxProjectFiles) {
       projectSizeBudgetExceeded = true;
@@ -2074,7 +2145,7 @@ export async function analyzeProject(
     try {
       ir = options.analyzeFile
         ? await options.analyzeFile(code, filePath, language)
-        : await analyze(code, filePath, language, options);
+        : await analyze(code, filePath, language, fileOptions);
     } catch (err) {
       if (err instanceof AnalysisTimeoutError) {
         timedOutFiles.push({ file: filePath, elapsed_ms: err.elapsedMs, phase: err.phase });
@@ -2094,6 +2165,10 @@ export async function analyzeProject(
     projectGraph.addFile(filePath, new CodeGraph(ir));
     sourceLinesByFile.set(filePath, code.split('\n'));
     projectSourceChars += code.length;
+    if (language === 'html' || language === 'vue') {
+      const srcs = extractScriptSrcs(code);
+      if (srcs.length > 0) scriptSrcsByPage.set(filePath, srcs);
+    }
   }
 
   // 1.5 (#637) — a C# call that resolves to a method in another project file
@@ -2115,6 +2190,7 @@ export async function analyzeProject(
 
   // 2.4 (#684) — per-file flows on sink files for cross-file paths (gate parity).
   promoteCrossFilePathsToSinkFlows(fileAnalyses, crossFileResult.taintPaths);
+  markCrossFileToolArgumentPaths(fileAnalyses, crossFileResult.taintPaths);
 
   synthesizeCrossFileArgvWrapperFlows(
     fileAnalyses,
@@ -2140,7 +2216,7 @@ export async function analyzeProject(
   }
 
   // 3. Import-graph analysis (circular deps + orphan modules)
-  const importGraph = new ImportGraph(projectGraph);
+  const importGraph = new ImportGraph(projectGraph, scriptSrcsByPage);
   const circularFindings = disabledPasses.includes('circular-dependency')
     ? []
     : new CircularDependencyPass().run(projectGraph, importGraph);

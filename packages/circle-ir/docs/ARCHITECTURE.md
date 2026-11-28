@@ -629,7 +629,10 @@ uniform downgrade hook so the profile transform has a value to restore.
   4. `<packaging>maven-plugin</packaging>` OR Gradle `java-gradle-plugin` plugin → `plugin`
   5. multiple `main()` methods AND no application/server plugin → `cli`
   6. otherwise → `unknown`
-  Higher-precedence rules short-circuit lower ones.
+  Higher-precedence rules short-circuit lower ones. A Maven module's own
+  `<packaging>` decides before all of them: `pom` → `unknown` (aggregator),
+  `maven-plugin` → `plugin`, `war` / `ear` → `server`, `jar` → the list
+  above; a parent's packaging-type tags are not inherited.
 
 - **Env axis precedence** (path-based, applied per file within a module):
   1. file path matches `**/test/**` or `**/*Test.java` → `test`

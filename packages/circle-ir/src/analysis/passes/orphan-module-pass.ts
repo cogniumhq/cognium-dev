@@ -9,7 +9,12 @@
  * It is invoked from analyzeProject() after all per-file analyses are complete.
  *
  * Entry points (excluded from flagging): filename base matches
- * /^(index|main|app|server|mod)$/i
+ * /^(index|main|app|server|mod|cli|bin|start|run|entry|init)$/i
+ *
+ * Only JS/TS files are judged: the import graph resolves relative import
+ * paths, and other languages reference modules in ways it does not see.
+ * A page's <script src> counts as an import. Minified files (`x.min.js`,
+ * `x-min.js`) and a script beside its own minified build are not judged.
  *
  * Category: architecture | Severity: low | Level: note | CWE: none
  */

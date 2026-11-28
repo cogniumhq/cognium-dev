@@ -73,7 +73,11 @@ export interface ModuleSignals {
    */
   plugins: string[];
 
-  /** Maven `<packaging>` element value, when present. */
+  /**
+   * Maven packaging, lowercased. Always set for a Maven module: the
+   * `<packaging>` element's value, or Maven's default `jar` when it is
+   * absent. Unset for other build systems.
+   */
   packaging?: string;
 
   /**

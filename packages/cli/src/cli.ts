@@ -18,6 +18,8 @@ import {
   type ProjectProfile,
   type AnalyzerOptions as CircleAnalyzerOptions,
   type CircleIR,
+  javaProjectOpensResponseStream,
+  TOOL_ARGUMENTS_TAG,
   parseNpmDependencies, parseNpmLockDependencies,
   parsePnpmLockDependencies, parseYarnLockDependencies, pnpmLockImporters,
   parsePypiDependencies, parsePyprojectDependencies, parsePoetryLockDependencies,
@@ -37,7 +39,7 @@ import {
   formatResults, formatJSON, formatSARIF,
   scanNotifications,
   SINK_SEVERITY, SINK_CWE,
-  applyTagSeverityDowngrade, termSafe,
+  applyTagSeverityDowngrade, taintFlowMessage, termSafe,
   type ScanResult, type CrossFileData, type ProjectProfileSummary,
 } from './formatters.js';
 import { spinnerFileLabel } from './utils/term-safe.js';
@@ -465,6 +467,10 @@ interface MetricsOptions {
  * twice. Collapse by `(type, line)`, keeping the highest-severity entry and
  * preserving order. Pure dedup: never drops the last entry for a key, so it
  * cannot hide a finding.
+ *
+ * At equal severity an entry not from the tool's own arguments wins over one
+ * that is, so a sink reads "input from the tool's own arguments" only when
+ * every flow into it does.
  */
 const VULN_SEVERITY_RANK: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
 export function dedupeVulnerabilities(
@@ -472,14 +478,19 @@ export function dedupeVulnerabilities(
 ): ScanResult['vulnerabilities'] {
   const best = new Map<string, ScanResult['vulnerabilities'][number]>();
   const order: string[] = [];
+  const fromToolArguments = (v: ScanResult['vulnerabilities'][number]) => v.tags?.includes(TOOL_ARGUMENTS_TAG) === true;
   for (const v of vulns) {
     const key = `${v.type}:${v.line}`;
     const current = best.get(key);
     if (current === undefined) {
       best.set(key, v);
       order.push(key);
-    } else if ((VULN_SEVERITY_RANK[v.severity] ?? -1) > (VULN_SEVERITY_RANK[current.severity] ?? -1)) {
-      best.set(key, v);
+    } else {
+      const rank = VULN_SEVERITY_RANK[v.severity] ?? -1;
+      const currentRank = VULN_SEVERITY_RANK[current.severity] ?? -1;
+      if (rank > currentRank || (rank === currentRank && fromToolArguments(current) && !fromToolArguments(v))) {
+        best.set(key, v);
+      }
     }
   }
   return order.map(k => best.get(k)!);
@@ -866,7 +877,7 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
     const vulnerabilities: ScanResult['vulnerabilities'] = (result.taint.flows || []).map(flow => ({
       type: flow.sink_type,
       severity: applyTagSeverityDowngrade(SINK_SEVERITY[flow.sink_type] ?? 'high', flow.tags),
-      message: `${flow.sink_type} vulnerability: tainted data flows from line ${flow.source_line} to line ${flow.sink_line}`,
+      message: taintFlowMessage(flow),
       line: flow.sink_line,
       cwe: SINK_CWE[flow.sink_type],
       category: 'security',
@@ -1056,8 +1067,18 @@ async function scanProject(
   const filesWithCode: Array<{ code: string; filePath: string; language: SupportedLanguage }> = [];
   let sourceChars = 0;
   let readTruncated = false;
+  // #1306: a file that cannot be read (EACCES, removed since the walk) is
+  // reported as not analysed; it no longer ends the scan with no report.
+  const unreadable: ScanResult[] = [];
   for (const f of files) {
-    const code = readFileSync(f, 'utf-8');
+    let code: string;
+    try {
+      code = readFileSync(f, 'utf-8');
+    } catch (e) {
+      const why = (e as NodeJS.ErrnoException).code ?? (e instanceof Error ? e.message : String(e));
+      unreadable.push({ file: f, vulnerabilities: [], error: `could not read the file (${why}); file skipped` });
+      continue;
+    }
     // A first file that alone exceeds the cap is KEPT, so a scan is never
     // silently empty. `maxProjectSourceChars` is therefore not passed to
     // `analyzeProject` below: its own check has no such exemption and would
@@ -1090,6 +1111,10 @@ async function scanProject(
     ...(analyzeOpts?.fileTimeoutMs ? { fileTimeoutMs: analyzeOpts.fileTimeoutMs } : {}),
     ...(analyzeOpts?.watchdog ? { onFileStart: analyzeOpts.watchdog.onFileStart, onFileEnd: analyzeOpts.watchdog.onFileEnd } : {}),
     ...(analyzeOpts?.dependencyContext ? { dependencyContext: analyzeOpts.dependencyContext } : {}),
+    // A Java helper can print to a response-backed PrintStream opened in
+    // another file. `analyzeProject` decides this for its own per-file loop;
+    // the worker pool below analyses each file without it, so pass it here.
+    ...(javaProjectOpensResponseStream(filesWithCode) ? { javaOpensResponseStream: true } : {}),
   };
   // #1324: with more than one thread, the per-file phase runs on a worker pool.
   // At one thread this is the in-process loop, unchanged.
@@ -1105,7 +1130,7 @@ async function scanProject(
     const vulnerabilities: ScanResult['vulnerabilities'] = (analysis.taint.flows || []).map(flow => ({
       type: flow.sink_type,
       severity: applyTagSeverityDowngrade(SINK_SEVERITY[flow.sink_type] ?? 'high', flow.tags),
-      message: `${flow.sink_type} vulnerability: tainted data flows from line ${flow.source_line} to line ${flow.sink_line}`,
+      message: taintFlowMessage(flow),
       line: flow.sink_line,
       cwe: SINK_CWE[flow.sink_type],
       category: 'security',
@@ -1126,6 +1151,7 @@ async function scanProject(
     const parseErrors = parseErrorsOf(analysis);
     return { file, vulnerabilities: dedupeVulnerabilities(vulnerabilities), ...(parseErrors ? { parseErrors } : {}) };
   });
+  results.push(...unreadable);
   // #1311: findings in resource files (`*.plist`), which have no per-file analysis.
   const resourceResults = new Map<string, ScanResult>();
   for (const finding of projectResult.resource_findings ?? []) {
@@ -2036,7 +2062,7 @@ export const PASS_REGISTRY: PassInfo[] = [
   // Architecture
   { rule_id: 'dependency-fan-out', category: 'architecture', severity: 'low', description: 'Module imports 20+ other modules' },
   { rule_id: 'circular-dependency', category: 'architecture', cwe: 'CWE-1047', severity: 'medium', description: 'Cycle in module import graph' },
-  { rule_id: 'orphan-module', category: 'architecture', severity: 'low', description: 'File with no incoming imports, not an entry point' },
+  { rule_id: 'orphan-module', category: 'architecture', severity: 'low', description: 'JS/TS file with no incoming imports, not an entry point' },
   { rule_id: 'deep-inheritance', category: 'architecture', cwe: 'CWE-1086', severity: 'low', description: 'Inheritance depth > 5 levels' },
   { rule_id: 'missing-override', category: 'architecture', severity: 'low', description: 'Method matches supertype signature, lacks @Override' },
   { rule_id: 'unused-interface-method', category: 'architecture', severity: 'low', description: 'Interface method never called through that interface' },

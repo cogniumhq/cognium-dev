@@ -5,7 +5,7 @@
 import { colors } from './utils/colors.js';
 import { termSafe } from './utils/term-safe.js';
 import { version } from './version.js';
-import type { TaintPath, CrossFileCall, SinkType } from 'circle-ir';
+import { ruleTitle, TOOL_ARGUMENTS_NOTE, TOOL_ARGUMENTS_TAG, type TaintPath, type CrossFileCall, type SinkType } from 'circle-ir';
 
 // ─── Shared types (canonical definitions, imported by cli.ts) ────────────────
 
@@ -86,6 +86,15 @@ export function applyTagSeverityDowngrade(severity: string, tags: string[] | und
   if (!tags || !(tags.includes(LIBRARY_API_SURFACE_TAG) || tags.includes(ARGV_NO_SHELL_TAG))) return severity;
   if (severity === 'critical' || severity === 'high') return 'medium';
   return severity;
+}
+
+/**
+ * The message of a finding built from a taint flow. A flow whose source is
+ * the tool's own arguments (`tool-arguments:local-input`) says so.
+ */
+export function taintFlowMessage(flow: { sink_type: string; source_line: number; sink_line: number; tags?: string[] }): string {
+  const message = `${flow.sink_type} vulnerability: tainted data flows from line ${flow.source_line} to line ${flow.sink_line}`;
+  return flow.tags?.includes(TOOL_ARGUMENTS_TAG) ? `${message} — ${TOOL_ARGUMENTS_NOTE}` : message;
 }
 
 export interface ScanResult {
@@ -617,6 +626,7 @@ function formatCrossFilePaths(taintPaths: TaintPath[]): string {
     lines.push(`      Source: ${p.source.type} at ${termSafe(p.source.file)}:${p.source.line}`);
     lines.push(`      Sink:   ${p.sink.type} at ${termSafe(p.sink.file)}:${p.sink.line}`);
     lines.push(`      Confidence: ${p.confidence.toFixed(2)}`);
+    if (p.tags?.includes(TOOL_ARGUMENTS_TAG)) lines.push(`      Note: ${TOOL_ARGUMENTS_NOTE}`);
 
     const help = VULNERABILITY_HELP[p.sink.type];
     if (help?.fix) {
@@ -655,7 +665,7 @@ export function formatResults(
 
   for (const result of results) {
     if (result.error) {
-      lines.push(colors.red(`[ERROR] ${termSafe(result.file)}: ${result.error}`));
+      lines.push(colors.red(`[ERROR] ${termSafe(result.file)}: ${termSafe(result.error)}`));
       continue;
     }
 
@@ -687,12 +697,17 @@ export function formatResults(
       const libraryApiTag = vuln.tags?.includes(LIBRARY_API_SURFACE_TAG)
         ? ` ${colors.cyan('[library-api-surface]')}`
         : '';
+      // A quality finding leads with its rule's title in plain words; the rule
+      // id stays beside it, as JSON and SARIF give it.
+      const label = vuln.category && vuln.category !== 'security'
+        ? `${ruleTitle(vuln.type)} [${ruleIdOf(vuln.type)}]`
+        : vuln.type;
       lines.push(
-        `  ${colorFn(`[${icon}]`)} ${colorFn(vuln.type)} (${severityUpper})${cweTag}${categoryTag}${libraryApiTag}`
+        `  ${colorFn(`[${icon}]`)} ${colorFn(label)} (${severityUpper})${cweTag}${categoryTag}${libraryApiTag}`
       );
 
-      // Line number and taint flow message
-      lines.push(`      Line ${vuln.line}: ${vuln.message}`);
+      // Line number and taint flow message (escaped: it can quote a file name or scanned text)
+      lines.push(`      Line ${vuln.line}: ${termSafe(vuln.message)}`);
 
       // Add help text for the vulnerability
       const help = VULNERABILITY_HELP[vuln.type];
@@ -754,6 +769,15 @@ export function formatResults(
   return lines.join('\n');
 }
 
+/**
+ * The rule id of a finding: its `type` as the SARIF `ruleId` writes it. For
+ * a taint flow that is the sink type (`sql_injection`), for a pass finding
+ * circle-ir's `rule_id` (`variable-shadowing`).
+ */
+function ruleIdOf(type: string): string {
+  return type.replace(/\s+/g, '-').toLowerCase();
+}
+
 export function formatJSON(
   results: ScanResult[],
   crossFileData?: CrossFileData,
@@ -764,11 +788,17 @@ export function formatJSON(
     timestamp: new Date().toISOString(),
     results: results.map(r => ({
       file: r.file,
-      vulnerabilities: r.vulnerabilities,
+      // Each finding names its rule (`rule_id`, the SARIF ruleId) and the
+      // rule's short title, so a consumer can group findings by rule.
+      vulnerabilities: r.vulnerabilities.map(v => ({ ...v, rule_id: ruleIdOf(v.type), rule_title: ruleTitle(v.type) })),
       error: r.error,
       ...(r.parseErrors ? { parse_errors: r.parseErrors } : {}),
     })),
-    cross_file_taint_paths: crossFileData?.taintPaths ?? [],
+    cross_file_taint_paths: (crossFileData?.taintPaths ?? []).map(p => ({
+      ...p,
+      rule_id: `cross-file-${p.sink.type}`,
+      rule_title: ruleTitle(`cross-file-${p.sink.type}`),
+    })),
     cross_file_calls: crossFileData?.crossFileCalls ?? [],
     // 3.89.0 (#141): partial-result marker for cross-file phase. `true` →
     // budget exceeded mid-phase, paths above may be incomplete.
@@ -888,9 +918,9 @@ function generateRules(results: ScanResult[], crossFileData?: CrossFileData): an
     for (const vuln of result.vulnerabilities) {
       if (!ruleSet.has(vuln.type)) {
         ruleSet.set(vuln.type, {
-          id: vuln.type.replace(/\s+/g, '-').toLowerCase(),
+          id: ruleIdOf(vuln.type),
           name: vuln.type,
-          shortDescription: { text: vuln.type },
+          shortDescription: { text: ruleTitle(vuln.type) },
           defaultConfiguration: {
             level: vuln.severity === 'critical' || vuln.severity === 'high' ? 'error' : 'warning',
           },
@@ -911,7 +941,7 @@ function generateRules(results: ScanResult[], crossFileData?: CrossFileData): an
       ruleSet.set(ruleId, {
         id: ruleId,
         name: `cross-file-${p.sink.type}`,
-        shortDescription: { text: `Cross-file ${p.sink.type}` },
+        shortDescription: { text: ruleTitle(ruleId) },
         defaultConfiguration: {
           level: severity === 'critical' || severity === 'high' ? 'error' : 'warning',
         },
@@ -933,7 +963,7 @@ function generateSarifResults(results: ScanResult[], crossFileData?: CrossFileDa
   for (const result of results) {
     for (const vuln of result.vulnerabilities) {
       sarifResults.push({
-        ruleId: vuln.type.replace(/\s+/g, '-').toLowerCase(),
+        ruleId: ruleIdOf(vuln.type),
         level: vuln.severity === 'critical' || vuln.severity === 'high' ? 'error' : 'warning',
         message: { text: vuln.message },
         locations: [physicalLocation(result.file, vuln.line)],
@@ -957,7 +987,8 @@ function generateSarifResults(results: ScanResult[], crossFileData?: CrossFileDa
       ruleId: `cross-file-${p.sink.type}`,
       level: severity === 'critical' || severity === 'high' ? 'error' : 'warning',
       message: {
-        text: `Cross-file taint flow from ${p.source.file}:${p.source.line} to ${p.sink.file}:${p.sink.line}`,
+        text: `Cross-file taint flow from ${p.source.file}:${p.source.line} to ${p.sink.file}:${p.sink.line}`
+          + (p.tags?.includes(TOOL_ARGUMENTS_TAG) ? ` — ${TOOL_ARGUMENTS_NOTE}` : ''),
       },
       locations: [physicalLocation(p.sink.file, p.sink.line)],
       relatedLocations: [
@@ -971,6 +1002,7 @@ function generateSarifResults(results: ScanResult[], crossFileData?: CrossFileDa
         cwe: p.sink.cwe,
         severity,
         confidence: p.confidence,
+        ...(p.tags && p.tags.length > 0 ? { tags: p.tags } : {}),
       },
     });
   }

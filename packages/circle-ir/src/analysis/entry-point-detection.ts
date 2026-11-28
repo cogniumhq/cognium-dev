@@ -247,6 +247,28 @@ const TIER_1_CLASS_ANNOTATIONS = new Set([
 ]);
 
 /**
+ * Class-level annotations that make only the named methods of the class
+ * Tier 1: the framework constructs the class and calls those methods by
+ * name, and the class's other public methods are ordinary code.
+ *
+ * - `@Mojo` (`org.apache.maven.plugins.annotations`): a Maven plugin goal;
+ *   Maven injects its `@Parameter` fields and runs `execute()`.
+ *
+ * The named methods are called with no arguments: only a zero-parameter
+ * overload is Tier 1.
+ */
+const TIER_1_CLASS_ANNOTATED_METHODS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['Mojo', new Set(['execute'])],
+]);
+
+/**
+ * Supertypes in `TIER_1_BY_SUPERTYPE` whose lifecycle methods take no
+ * arguments: Maven calls `execute()`, so an overload `execute(Foo)` is
+ * ordinary code.
+ */
+const TIER_1_NO_ARG_SUPERTYPES: ReadonlySet<string> = new Set(['AbstractMojo', 'Mojo']);
+
+/**
  * Class names (matched via `implements` or `extends`) whose lifecycle
  * methods are Tier 1. For each, the set of lifecycle method names that
  * qualify.
@@ -262,6 +284,10 @@ const TIER_1_BY_SUPERTYPE: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   // Spring boot CLI entry points
   ['CommandLineRunner', new Set(['run'])],
   ['ApplicationRunner', new Set(['run'])],
+  // Maven plugin goals declared by javadoc tag (`@goal`): Maven runs
+  // `execute()`. The annotated form is `TIER_1_CLASS_ANNOTATED_METHODS`.
+  ['AbstractMojo', new Set(['execute'])],
+  ['Mojo', new Set(['execute'])],
   // Netty channel handlers (#154 — CVE-2022-26884 dolphinscheduler).
   // `SimpleChannelInboundHandler<T>.channelRead0(ctx, msg)` is the
   // standard typed read entry; `ChannelInboundHandler.channelRead(ctx,
@@ -432,6 +458,27 @@ function annotationsInclude(
 }
 
 /**
+ * True when a class annotation in `TIER_1_CLASS_ANNOTATED_METHODS` names the
+ * method. The framework calls those methods with no arguments, so an
+ * overload that takes parameters (`execute(Foo)`) is not named.
+ */
+function classAnnotationNamesMethod(
+  annotations: ReadonlyArray<string> | undefined,
+  method: MethodInfo,
+): boolean {
+  if (!method.name || method.parameters.length > 0) return false;
+  const methodName = method.name;
+  for (const raw of annotations ?? []) {
+    const bare = raw.startsWith('@') ? raw.slice(1) : raw;
+    const cut = bare.search(/[<(]/);
+    const written = (cut >= 0 ? bare.slice(0, cut) : bare).trim();
+    const simple = written.slice(written.lastIndexOf('.') + 1);
+    if (TIER_1_CLASS_ANNOTATED_METHODS.get(simple)?.has(methodName)) return true;
+  }
+  return false;
+}
+
+/**
  * Strip generic parameters from a type reference (`Foo<Bar>` → `Foo`).
  */
 function simpleTypeName(ref: string): string {
@@ -480,7 +527,9 @@ function methodIsSupertypeLifecycleEntryPoint(
   for (const i of enclosingType.implements ?? []) candidates.push(simpleTypeName(i));
   for (const supertype of candidates) {
     const lifecycleMethods = TIER_1_BY_SUPERTYPE.get(supertype);
-    if (lifecycleMethods?.has(method.name)) return true;
+    if (!lifecycleMethods?.has(method.name)) continue;
+    if (TIER_1_NO_ARG_SUPERTYPES.has(supertype) && method.parameters.length > 0) continue;
+    return true;
   }
   return false;
 }
@@ -545,6 +594,7 @@ export function classifyEntryPointTier(
  *   1. Library-facade short-circuit (#128 step 2).
  *   2. Method-level annotation → TIER_1.
  *   3. Class-level annotation → TIER_1.
+ *   3b. Class-level annotation naming the method (`@Mojo` + `execute`) → TIER_1.
  *   4. Supertype lifecycle method → TIER_1.
  *   5. `main(String[])` → TIER_1.
  *   6. Fallback → TIER_3_LIBRARY_API.
@@ -565,6 +615,11 @@ function classifyJavaEntryPoint(
 
   // 3. Class-level annotation (every public method of a controller is TIER_1)
   if (enclosingType && annotationsInclude(enclosingType.annotations, TIER_1_CLASS_ANNOTATIONS)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 3b. Class-level annotation naming the methods the framework calls
+  if (enclosingType && classAnnotationNamesMethod(enclosingType.annotations, method)) {
     return 'TIER_1_ENTRY_POINT';
   }
 

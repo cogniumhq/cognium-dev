@@ -943,7 +943,22 @@ export interface FileMetrics {
 // =============================================================================
 
 export interface Finding {
+  /**
+   * Stable id: a digest of {@link Finding.key}, so it carries no line and no
+   * per-file ordinal. Unchanged when lines move or another finding comes or
+   * goes. Findings that share a key are told apart by sink line order; only
+   * those can renumber each other. Before #1443 this was `vuln<N>`, a per-file
+   * counter in emit order.
+   */
   id: string;
+  /**
+   * `CWE|file|declaration|rule` — the identity `cognium-dev recheck` keys a
+   * finding by. The declaration is the enclosing method's `ids@0.1` id when
+   * the caller passed stable ids to `generateFindings`, else its
+   * `qualified@0.1` id; the rule is the sink type. Optional for findings built
+   * outside `generateFindings`.
+   */
+  key?: string;
   type: SinkType;
   cwe: string;
   severity: Severity;
@@ -1143,6 +1158,11 @@ export interface TaintPath {
   sanitizers_in_path: string[];
   path_exists: boolean;
   confidence: number;
+  /**
+   * Optional metadata tags, as on `TaintFlowInfo.tags`. For example
+   * `'tool-arguments:local-input'`: the source is the tool's own arguments.
+   */
+  tags?: string[];
 }
 
 export interface ProjectAnalysis {
@@ -1280,6 +1300,16 @@ export interface CircleIR {
  */
 export interface ParseStatus {
   /**
+   * `complete`: parsed without ERROR or MISSING nodes. `partial`: parsed with
+   * recovered errors, so IR may be incomplete. `unsupported`: not parsed at
+   * all because no grammar is available for the language (#1307); every IR
+   * field is empty and `reason` says why. Set on every `analyze()` result;
+   * optional only so hand-built statuses stay valid.
+   */
+  state?: 'complete' | 'partial' | 'unsupported';
+  /** Why the file was not fully parsed. Set when `state` is `unsupported`. */
+  reason?: string;
+  /**
    * `true` when tree-sitter parsed the file without any ERROR or MISSING
    * nodes. Equivalent to `!tree.rootNode.hasError`.
    */
@@ -1298,10 +1328,25 @@ export interface ParseStatus {
   error_count: number;
   /**
    * 1-based line / 0-based column of each ERROR or MISSING node, in
-   * tree-walk order, capped at 50 entries to bound memory. Lets consumers
+   * source order, capped at the first 50 to bound memory. Lets consumers
    * highlight specific lines without re-walking the tree.
    */
-  error_locations: Array<{ line: number; column: number }>;
+  error_locations: ParseErrorLocation[];
+}
+
+/**
+ * Where one ERROR or MISSING node sits. `end_line` / `end_column` give the
+ * node's span (cognium-dev#1307); a MISSING node has an empty span.
+ */
+export interface ParseErrorLocation {
+  /** 1-based start line. */
+  line: number;
+  /** 0-based start column. */
+  column: number;
+  /** 1-based end line. */
+  end_line?: number;
+  /** 0-based end column (exclusive). */
+  end_column?: number;
 }
 
 /**
