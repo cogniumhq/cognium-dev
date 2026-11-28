@@ -35,13 +35,31 @@
  * (a constructor-injected or `@Autowired` field, a constructor parameter
  * property) that the resolver binds to the receiver's declared type: a Spring
  * controller's `repo.find(q)` into a repository that runs the query itself.
- * Other Java and TypeScript calls keep their escapes.
+ * JavaScript and TypeScript also use it for a call made through an import of a
+ * relative module that the resolver binds to the function the module exports
+ * (`const { ping } = require('./ping'); ping(host)`).
+ * Other Java, JavaScript and TypeScript calls keep their escapes.
  */
 
 import type { CircleIR, CallInfo, DFGDef, MethodInfo } from '../types/index.js';
 import type { ProjectGraph } from '../graph/project-graph.js';
+import type { ResolvedCall } from '../resolution/cross-file.js';
 
 const ESCAPE = 'external_taint_escape';
+
+/**
+ * Which resolved calls the gate may decide, per language: C# any exact
+ * resolution; Java a call through an injected receiver, whose target is taken
+ * from the receiver's declared type; JavaScript a call through an import of a
+ * relative module to the function it exports; TypeScript either of the last
+ * two. Other calls keep their escapes.
+ */
+const GATE_BY_LANGUAGE: Readonly<Record<string, (r: ResolvedCall) => boolean>> = {
+  csharp: r => r.resolution === 'exact',
+  java: r => r.injected === true,
+  javascript: r => r.moduleExport === true,
+  typescript: r => r.injected === true || r.moduleExport === true,
+};
 
 /**
  * Blank string literals but keep the contents of `{...}` holes in interpolated
@@ -220,11 +238,8 @@ export function dropEscapesToProjectCallees(
   const resolver = projectGraph.resolver;
   for (const fa of fileAnalyses) {
     const ir = fa.analysis;
-    const language = ir.meta.language;
-    // Java / TypeScript: only a call through an injected receiver, whose target
-    // is taken from the receiver's declared type.
-    const injectedOnly = language === 'java' || language === 'typescript';
-    if (language !== 'csharp' && !injectedOnly) continue;
+    const gate = GATE_BY_LANGUAGE[ir.meta.language];
+    if (!gate) continue;
     const sinks = ir.taint?.sinks ?? [];
     if (!sinks.some(s => s.type === ESCAPE)) continue;
 
@@ -235,7 +250,7 @@ export function dropEscapesToProjectCallees(
       if (calls.length === 0) continue;
       const projectCall = calls.every(call => {
         const r = resolver.resolveCall(call, fa.file);
-        return !!r && (injectedOnly ? r.injected === true : r.resolution === 'exact') && r.targetFile !== fa.file
+        return !!r && gate(r) && r.targetFile !== fa.file
           && receiverMatchesTarget(call, r.targetClass)
           && calleeDecidedBySinks(projectGraph, r.targetFile, r.targetMethod);
       });

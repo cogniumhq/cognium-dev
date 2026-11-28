@@ -175,6 +175,8 @@ export class CrossFilePass {
       logger.debug('cross-file: phase 2/4 starting (findInterproceduralTaintPaths)');
       const phase2 = resolver.findInterproceduralTaintPaths(budgetExceeded);
       ipPaths.push(...phase2);
+      // JS/TS: values a module function hands back through a callback.
+      ipPaths.push(...(resolver.findJsCallbackTaintPaths?.(budgetExceeded) ?? []));
       logger.info('cross-file: phase 2/4 done', {
         paths: phase2.length, elapsedMs: Date.now() - phase2Start,
       });

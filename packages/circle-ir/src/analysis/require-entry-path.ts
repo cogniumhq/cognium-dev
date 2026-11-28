@@ -72,6 +72,7 @@ import type {
   SinkType,
   TaintFlowInfo,
   TaintHop,
+  TaintPath,
   TypeInfo,
 } from '../types/index.js';
 import { classifyEntryPointTier, isSupertypeLifecycleMethod } from './entry-point-detection.js';
@@ -181,6 +182,14 @@ export interface ApplyRequireEntryPathOptions {
    * (no annotation, no drop).
    */
   disabledPasses?: ReadonlySet<string> | ReadonlyArray<string>;
+  /**
+   * The project's cross-file taint paths. A JS/TS flow that mirrors one of
+   * them on its sink file (see `promoteCrossFilePathsToSinkFlows`) is decided
+   * at the path's source: the value came from that source, so the sink is
+   * reachable when the source is. An inline route handler or other code
+   * outside any method cannot be classified, and keeps the flow.
+   */
+  crossFileTaintPaths?: ReadonlyArray<TaintPath>;
 }
 
 /**
@@ -227,6 +236,14 @@ export function applyRequireEntryPath(
   const entryPointKeysByLanguage = countEntryPointKeysByLanguage(graph, entryPointKeys);
 
   const profileResolver = makeProfileResolver(options.projectProfile);
+  const byFile = new Map(fileAnalyses.map(fa => [fa.file, fa.analysis]));
+  const pathsBySink = new Map<string, TaintPath[]>();
+  for (const tp of options.crossFileTaintPaths ?? []) {
+    const key = `${tp.sink.file}:${tp.sink.line}`;
+    const list = pathsBySink.get(key);
+    if (list) list.push(tp);
+    else pathsBySink.set(key, [tp]);
+  }
 
   for (const fa of fileAnalyses) {
     const profile = profileResolver(fa.file);
@@ -290,14 +307,26 @@ export function applyRequireEntryPath(
           keptFlows.push(flow);
           continue;
         }
-        const decision = classifyFinding(
-          pseudo,
-          fa.analysis,
-          graph,
-          entryPointKeys,
-          entryPointKeysByLanguage,
-          profile,
-        );
+        // A JS/TS flow mirrored from a cross-file path is decided at the
+        // path's source (see `crossFileTaintPaths`).
+        const origin = crossFileOrigin(fa, flow, pathsBySink.get(`${fa.file}:${flow.sink_line}`), byFile);
+        const decision = origin
+          ? classifyFinding(
+            { ...pseudo, file: origin.file, line: origin.line },
+            origin.analysis,
+            graph,
+            entryPointKeys,
+            entryPointKeysByLanguage,
+            profileResolver(origin.file),
+          )
+          : classifyFinding(
+            pseudo,
+            fa.analysis,
+            graph,
+            entryPointKeys,
+            entryPointKeysByLanguage,
+            profile,
+          );
         if (decision.action !== 'drop') keptFlows.push(flow);
         else dropped++;
       }
@@ -305,6 +334,32 @@ export function applyRequireEntryPath(
     }
   }
   return dropped;
+}
+
+/**
+ * The source end of the cross-file path a JS/TS flow on `fa` mirrors, when
+ * it mirrors one that passes through another scanned file (its source is
+ * there, or it returns to `fa` through a callback).
+ */
+function crossFileOrigin(
+  fa: { file: string; analysis: CircleIR },
+  flow: TaintFlowInfo,
+  /** The cross-file paths whose sink is at the flow's sink line in `fa`. */
+  paths: ReadonlyArray<TaintPath> | undefined,
+  byFile: ReadonlyMap<string, CircleIR>,
+): { file: string; line: number; analysis: CircleIR } | null {
+  if (!paths || paths.length === 0) return null;
+  const language = (fa.analysis.meta.language ?? '').toLowerCase();
+  if (language !== 'javascript' && language !== 'typescript') return null;
+  for (const tp of paths) {
+    if (tp.sink.file !== fa.file) continue;
+    if (tp.source.file === fa.file && tp.hops.every(h => h.file === fa.file)) continue;
+    if (tp.sink.line !== flow.sink_line || tp.sink.type !== flow.sink_type) continue;
+    if (tp.source.line !== flow.source_line || tp.source.type !== flow.source_type) continue;
+    const analysis = byFile.get(tp.source.file);
+    if (analysis) return { file: tp.source.file, line: tp.source.line, analysis };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

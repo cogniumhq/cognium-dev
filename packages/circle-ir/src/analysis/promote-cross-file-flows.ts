@@ -5,17 +5,28 @@
  */
 import type { TaintFlowInfo, TaintFlowStep, TaintPath } from '../types/index.js';
 
-type FileTaint = { file: string; analysis: { taint: { flows?: TaintFlowInfo[] } } };
+type FileTaint = {
+  file: string;
+  analysis: { meta?: { language?: string }; taint: { flows?: TaintFlowInfo[] } };
+};
 
 export function promoteCrossFilePathsToSinkFlows(
   fileAnalyses: FileTaint[],
   taintPaths: TaintPath[],
 ): void {
   for (const tp of taintPaths) {
-    if (!tp.path_exists || tp.source.file === tp.sink.file) continue;
+    if (!tp.path_exists) continue;
 
     const fa = fileAnalyses.find(f => f.file === tp.sink.file);
     if (!fa) continue;
+    // A path that never leaves its file is the per-file analysis' to report.
+    // A JS/TS one that returns to its file through another (a value a module
+    // function hands to the caller's callback) is not.
+    if (tp.source.file === tp.sink.file) {
+      const lang = fa.analysis.meta?.language;
+      if (lang !== 'javascript' && lang !== 'typescript') continue;
+      if (tp.hops.every(h => h.file === tp.sink.file)) continue;
+    }
 
     const flows = fa.analysis.taint.flows ?? [];
     const exists = flows.some(
