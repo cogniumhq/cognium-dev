@@ -34,7 +34,7 @@ describe('Sprint 16 — cognium-dev v3.66.0 Java CVE sinks + OOP r2 + Java cross
   // B — #52 FreeMarker SSTI filename variant
   // ===========================================================================
 
-  it('B.1: FreeMarker Configuration.getTemplate(taintedFilename) FIRES code_injection', async () => {
+  it('B.1: FreeMarker Configuration.getTemplate(taintedFilename) FIRES template_injection', async () => {
     const code = `import javax.servlet.http.*;
 import freemarker.template.*;
 public class FmGetTemplate {
@@ -46,8 +46,8 @@ public class FmGetTemplate {
 }
 `;
     const r = await analyze(code, 'FmGetTemplate.java', 'java');
-    const ci = (r.taint.flows ?? []).filter((f) => f.sink_type === 'code_injection');
-    expect(ci.length, 'expected at least one code_injection flow').toBeGreaterThanOrEqual(1);
+    const ci = (r.taint.flows ?? []).filter((f) => f.sink_type === 'template_injection');
+    expect(ci.length, 'expected at least one template_injection flow').toBeGreaterThanOrEqual(1);
   });
 
   // ===========================================================================

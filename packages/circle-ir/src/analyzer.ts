@@ -95,6 +95,8 @@ import { promoteCrossFilePathsToSinkFlows } from './analysis/promote-cross-file-
 import { markCrossFileToolArgumentPaths, markToolArgumentFlows } from './analysis/tool-arguments.js';
 import { dropJsTestToProductionTaintPaths } from './analysis/test-to-production-taint-gate.js';
 import { dropEscapesToProjectCallees } from './analysis/project-callee-escape-gate.js';
+import { dropEscapesExplainedByTaintPaths } from './analysis/explained-escape-gate.js';
+import { reportTemplateInjection, ruleSinkType } from './analysis/template-injection.js';
 import { applyProjectProfileTransform, type ProfileResolver } from './analysis/project-profile-transform.js';
 import { registerBuiltinPlugins } from './languages/index.js';
 import { logger } from './utils/logger.js';
@@ -1554,6 +1556,10 @@ async function analyzeFile(
     }
   }
 
+  // Template-engine sinks ran through the code-injection rules above; report
+  // them, and the flows into them, as `template_injection` (CWE-1336).
+  reportTemplateInjection(taint);
+
   // A Java path-traversal flow from the tool's own arguments (`main`'s
   // `String[]`, a commons-cli option, a Mojo `@Parameter`) is tagged and
   // reported at half its confidence.
@@ -1957,7 +1963,7 @@ function findVulnerabilities(
     const potentialSinks = sourceToSinkMapping[source.type] ?? [];
 
     for (const sink of sinks) {
-      if (potentialSinks.includes(sink.type)) {
+      if (potentialSinks.includes(ruleSinkType(sink.type))) {
         // Check if we have constant propagation data to verify actual taint flow
         if (calls && constPropResult) {
           const sinkCall = calls.find(c => c.location.line === sink.line);
@@ -2173,7 +2179,10 @@ export async function analyzeProject(
 
   // 1.5 (#637) — a C# call that resolves to a method in another project file
   //     is not an `external_taint_escape`; drop it before the cross-file phase
-  //     so the callee-reach check decides what is reported.
+  //     so the callee-reach check decides what is reported. Java and TypeScript
+  //     do the same for a call through an injected receiver, which the resolver
+  //     reads from source text for TypeScript, so it gets the lines first.
+  projectGraph.resolver.setSourceLines(sourceLinesByFile);
   dropEscapesToProjectCallees(fileAnalyses, projectGraph);
 
   // 2. Cross-file analysis
@@ -2247,6 +2256,11 @@ export async function analyzeProject(
   // 3.6 (#636 / #614) — constant-caller gate. Drops a C#/Java parameter-seeded sink flow
   // when every in-project caller passes a constant at that parameter.
   applyConstantCallerGate(fileAnalyses, projectGraph, sourceLinesByFile);
+
+  // 3.7 — an `external_taint_escape` at a call that a resolved path from the
+  //       same source follows into another file, to a real sink, is the same
+  //       defect told twice: drop the escape (explained-escape-gate.ts).
+  crossFileResult.taintPaths = dropEscapesExplainedByTaintPaths(fileAnalyses, crossFileResult.taintPaths);
 
   // 4. Assemble ProjectMeta
   const filePaths = files.map(f => f.filePath);

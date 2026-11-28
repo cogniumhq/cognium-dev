@@ -137,7 +137,7 @@ class LdapClient:
     expect(flowsByType(r.taint.flows, 'nosql_injection').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('#104 PY.ssti — Template(self.tmpl).render() → code_injection', async () => {
+  it('#104 PY.ssti — Template(self.tmpl).render() → template_injection', async () => {
     const code = `from jinja2 import Template
 class Renderer:
     def __init__(self, tmpl):
@@ -146,7 +146,7 @@ class Renderer:
         return Template(self.tmpl).render()
 `;
     const r = await analyze(code, 'oop_ssti.py', 'python', { speculativeParamSources: true });
-    expect(flowsByType(r.taint.flows, 'code_injection').length).toBeGreaterThanOrEqual(1);
+    expect(flowsByType(r.taint.flows, 'template_injection').length).toBeGreaterThanOrEqual(1);
   });
 
   it('#104 PY.deserialization — pickle.loads(self.data) → deserialization', async () => {
@@ -229,7 +229,7 @@ class XmlParser {
     expect(flowsByType(r.taint.flows, 'xxe').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('#104 JS.ssti — ejs.render(this.tmpl) → code_injection', async () => {
+  it('#104 JS.ssti — ejs.render(this.tmpl) → template_injection', async () => {
     const code = `const ejs = require('ejs');
 class Renderer {
   constructor(tmpl) { this.tmpl = tmpl; }
@@ -237,6 +237,6 @@ class Renderer {
 }
 `;
     const r = await analyze(code, 'oop_ssti.js', 'javascript', { speculativeParamSources: true });
-    expect(flowsByType(r.taint.flows, 'code_injection').length).toBeGreaterThanOrEqual(1);
+    expect(flowsByType(r.taint.flows, 'template_injection').length).toBeGreaterThanOrEqual(1);
   });
 });

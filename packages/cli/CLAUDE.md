@@ -90,6 +90,7 @@ internals. Both are picked up by `bun test`; name either `*.test.ts`.
 | `tests/dedupe-vulnerabilities.test.ts` | finding deduplication |
 | `tests/registry.test.ts` | rule registry |
 | `tests/e2e.test.ts` | CLI end-to-end, real scans |
+| `tests/scan-report.test.ts` | reports with no supported files, unsupported-file counts, taint traces (JSON `source`, SARIF `codeFlows`) |
 | `tests/graph-facts.test.ts` | `deadcode` / `reach` / `entries` on fixtures |
 | `tests/skip-dirs.test.ts` | default-skipped directories in every walker, `include` opt-in |
 | `src/sbom.test.ts` | SBOM generation |

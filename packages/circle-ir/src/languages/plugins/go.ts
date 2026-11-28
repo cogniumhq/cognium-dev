@@ -644,12 +644,13 @@ export class GoPlugin extends BaseLanguagePlugin {
       // Server-Side Template Injection — `text/template` and `html/template`
       // template parse-time injection. When the *template source itself*
       // is tainted (not the data), the rendered output can execute
-      // arbitrary template directives. CWE-94. (cognium-dev #108)
+      // arbitrary template directives. (cognium-dev #108) CWE-1336, reported
+      // as `template_injection` (template-injection.ts).
       {
         method: 'Parse',
         class: 'Template',
         type: 'code_injection',
-        cwe: 'CWE-94',
+        cwe: 'CWE-1336',
         severity: 'high',
         argPositions: [0],
       },
@@ -657,7 +658,7 @@ export class GoPlugin extends BaseLanguagePlugin {
         method: 'ParseFiles',
         class: 'template',
         type: 'code_injection',
-        cwe: 'CWE-94',
+        cwe: 'CWE-1336',
         severity: 'high',
         argPositions: [],
       },
@@ -665,7 +666,7 @@ export class GoPlugin extends BaseLanguagePlugin {
         method: 'ParseGlob',
         class: 'template',
         type: 'code_injection',
-        cwe: 'CWE-94',
+        cwe: 'CWE-1336',
         severity: 'high',
         argPositions: [0],
       },
@@ -673,7 +674,7 @@ export class GoPlugin extends BaseLanguagePlugin {
         method: 'ParseFS',
         class: 'template',
         type: 'code_injection',
-        cwe: 'CWE-94',
+        cwe: 'CWE-1336',
         severity: 'high',
         argPositions: [],
       },

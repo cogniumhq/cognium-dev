@@ -20,6 +20,12 @@ export interface Vulnerability {
   /** ISO 25010 category: security | reliability | performance | maintainability | architecture */
   category: string;
   /**
+   * Where the tainted value comes from, for a finding built from a taint
+   * flow. `file` is the finding's own file unless the flow is a cross-file
+   * path reported at its sink.
+   */
+  source?: { file: string; line: number };
+  /**
    * Optional metadata tags forwarded from `TaintFlowInfo.tags` /
    * `SastFinding.tags` (added in 3.105.0). Used to render a CLI badge
    * (e.g. `[library-api-surface]`) and to include `properties.tags` in
@@ -97,6 +103,29 @@ export function taintFlowMessage(flow: { sink_type: string; source_line: number;
   return flow.tags?.includes(TOOL_ARGUMENTS_TAG) ? `${message} — ${TOOL_ARGUMENTS_NOTE}` : message;
 }
 
+/** The finding for one taint flow reported in `file`. */
+export function flowVulnerability(
+  flow: {
+    sink_type: SinkType;
+    source_line: number;
+    source_file?: string;
+    sink_line: number;
+    tags?: string[];
+  },
+  file: string,
+): Vulnerability {
+  return {
+    type: flow.sink_type,
+    severity: applyTagSeverityDowngrade(SINK_SEVERITY[flow.sink_type] ?? 'high', flow.tags),
+    message: taintFlowMessage(flow),
+    line: flow.sink_line,
+    cwe: SINK_CWE[flow.sink_type],
+    category: 'security',
+    source: { file: flow.source_file ?? file, line: flow.source_line },
+    ...(flow.tags && flow.tags.length > 0 ? { tags: [...flow.tags] } : {}),
+  };
+}
+
 export interface ScanResult {
   file: string;
   vulnerabilities: Vulnerability[];
@@ -121,10 +150,12 @@ export interface ScanResult {
 export interface ScanNotification {
   level: 'error' | 'warning' | 'note';
   /** Stable reason id, emitted as SARIF `properties.reason`. */
-  reason: 'analysis-error' | 'file-timeout' | 'parse-error' | 'cross-file-budget' | 'project-size-ceiling' | 'entry-path-gate' | 'no-files';
+  reason: 'analysis-error' | 'file-timeout' | 'parse-error' | 'cross-file-budget' | 'project-size-ceiling' | 'entry-path-gate' | 'no-files' | 'unsupported-files';
   message: string;
   file?: string;
   line?: number;
+  /** Extra SARIF `properties`, beside `reason`. */
+  properties?: Record<string, unknown>;
 }
 
 /**
@@ -149,12 +180,32 @@ export function entryPathDroppedText(n: number): string {
     + 'Rerun with --disable-pass require-entry-path to report them.';
 }
 
+/** `.md: 2, .vue: 1` */
+export function unsupportedFilesText(byExtension: Readonly<Record<string, number>>): string {
+  return Object.entries(byExtension).map(([ext, n]) => `${ext}: ${n}`).join(', ');
+}
+
+/** Number of files counted in `CrossFileData.unsupportedFiles`. */
+export function unsupportedFileTotal(byExtension: Readonly<Record<string, number>> | undefined): number {
+  return Object.values(byExtension ?? {}).reduce((sum, n) => sum + n, 0);
+}
+
 /** Every notification for a scan, run-level conditions first, then per file in result order. */
 export function scanNotifications(results: ScanResult[], crossFileData?: CrossFileData): ScanNotification[] {
   const out: ScanNotification[] = [];
-  // An empty run says why it is empty (cross-file data exists only when files were read).
-  if (results.length === 0 && !crossFileData) {
+  // An empty run says why it is empty. Cross-file data exists only when files
+  // were read, or, with `filesTotal: 0`, to carry the files that were skipped.
+  if (results.length === 0 && (!crossFileData || crossFileData.filesTotal === 0)) {
     out.push({ level: 'warning', reason: 'no-files', message: 'No supported files found; nothing was analysed.' });
+  }
+  const unsupported = unsupportedFileTotal(crossFileData?.unsupportedFiles);
+  if (unsupported > 0) {
+    out.push({
+      level: 'note',
+      reason: 'unsupported-files',
+      message: `${unsupported} file(s) not analysed: no analyser for their type (${unsupportedFilesText(crossFileData?.unsupportedFiles ?? {})}).`,
+      properties: { unsupportedFilesByExtension: crossFileData?.unsupportedFiles },
+    });
   }
   if (crossFileData?.projectSizeBudgetExceeded) {
     out.push({
@@ -255,6 +306,12 @@ export interface CrossFileData {
    * gate removed (circle-ir `entry_path_dropped`). Reported, never silent.
    */
   entryPathDropped?: number;
+  /**
+   * Files the walk found and left out because no analyser handles their
+   * type, counted by extension (`{ ".vue": 1 }`). JSON `summary` and a SARIF
+   * note report them, so a skipped file never reads as a clean one.
+   */
+  unsupportedFiles?: Record<string, number>;
 }
 
 export const SINK_SEVERITY: Record<SinkType, string> = {
@@ -270,6 +327,7 @@ export const SINK_SEVERITY: Record<SinkType, string> = {
   ssrf: 'high',
   open_redirect: 'medium',
   code_injection: 'critical',
+  template_injection: 'critical',
   log_injection: 'medium',
   weak_random: 'low',
   weak_hash: 'low',
@@ -303,6 +361,7 @@ export const SINK_CWE: Record<SinkType, string> = {
   ssrf: 'CWE-918',
   open_redirect: 'CWE-601',
   code_injection: 'CWE-94',
+  template_injection: 'CWE-1336',
   log_injection: 'CWE-117',
   weak_random: 'CWE-330',
   weak_hash: 'CWE-328',    // Use of Weak Hash (MD5, SHA-1, etc.)
@@ -372,6 +431,10 @@ const VULNERABILITY_HELP: Record<string, { description: string; fix: string }> =
   code_injection: {
     description: 'User input is evaluated as code (eval, script execution, etc.)',
     fix: 'Never execute user input as code. Use safe alternatives like JSON parsing'
+  },
+  template_injection: {
+    description: 'User input is used as the source text of a server-side template, so template directives in it run in the template engine',
+    fix: 'Load templates from fixed files or constants and pass user input only as data to the rendering context'
   },
   log_injection: {
     description: 'User input in logs can inject fake log entries or exploit log viewers',
@@ -819,6 +882,9 @@ export function formatJSON(
       errors: results.filter(r => r.error).length,
       filesWithParseErrors: results.filter(r => !r.error && r.parseErrors).length,
       entryPathDropped: crossFileData?.entryPathDropped ?? 0,
+      // Files left out because no analyser handles their type.
+      unsupportedFiles: unsupportedFileTotal(crossFileData?.unsupportedFiles),
+      unsupportedFilesByExtension: crossFileData?.unsupportedFiles ?? {},
       // Same rule as SARIF `invocations[0].executionSuccessful`.
       executionSuccessful: executionSuccessful(scanNotifications(results, crossFileData)),
     },
@@ -846,6 +912,36 @@ function physicalLocation(file: string, line: number | undefined) {
       ...(hasLine ? { region: { startLine: line } } : {}),
     },
   };
+}
+
+/** One step of a taint trace: where it is and what happens there. */
+interface TraceStep {
+  file: string;
+  line: number | undefined;
+  text: string;
+}
+
+/**
+ * SARIF `codeFlows` for a taint result: one thread flow whose locations run
+ * source → steps → sink, each with its artifact, line and a short message.
+ * A step at the same place as the one before it, or as the sink, is left out,
+ * so a path's own source and sink hops are not repeated.
+ */
+function taintCodeFlows(source: TraceStep, steps: readonly TraceStep[], sink: TraceStep) {
+  const same = (a: TraceStep, b: TraceStep): boolean => a.file === b.file && a.line === b.line;
+  const ordered: TraceStep[] = [source];
+  for (const step of steps) {
+    if (same(step, ordered[ordered.length - 1]) || same(step, sink)) continue;
+    ordered.push(step);
+  }
+  ordered.push(sink);
+  return [{
+    threadFlows: [{
+      locations: ordered.map(step => ({
+        location: { ...physicalLocation(step.file, step.line), message: { text: step.text } },
+      })),
+    }],
+  }];
 }
 
 export function formatSARIF(
@@ -887,7 +983,7 @@ export function formatSARIF(
                       level: n.level,
                       message: { text: n.message },
                       ...(n.file ? { locations: [physicalLocation(n.file, n.line)] } : {}),
-                      properties: { reason: n.reason },
+                      properties: { reason: n.reason, ...n.properties },
                     })),
                     ...(crossFileData?.skippedPaths ?? []).map(p => ({
                       level: (p.reason === 'symlink inside the scan root' ? 'note' : 'warning') as 'note' | 'warning',
@@ -967,6 +1063,15 @@ function generateSarifResults(results: ScanResult[], crossFileData?: CrossFileDa
         level: vuln.severity === 'critical' || vuln.severity === 'high' ? 'error' : 'warning',
         message: { text: vuln.message },
         locations: [physicalLocation(result.file, vuln.line)],
+        ...(vuln.source
+          ? {
+              codeFlows: taintCodeFlows(
+                { file: vuln.source.file, line: vuln.source.line, text: 'Source of the tainted value' },
+                [],
+                { file: result.file, line: vuln.line, text: `Sink: ${vuln.type}` },
+              ),
+            }
+          : {}),
         properties: {
           cwe: vuln.cwe,
           severity: vuln.severity,
@@ -998,6 +1103,11 @@ function generateSarifResults(results: ScanResult[], crossFileData?: CrossFileDa
           ...physicalLocation(p.source.file, p.source.line),
         },
       ],
+      codeFlows: taintCodeFlows(
+        { file: p.source.file, line: p.source.line, text: `Source: ${p.source.type}` },
+        (p.hops ?? []).map(h => ({ file: h.file, line: h.line, text: h.method ? `Step in ${h.method}` : 'Step' })),
+        { file: p.sink.file, line: p.sink.line, text: `Sink: ${p.sink.type}` },
+      ),
       properties: {
         cwe: p.sink.cwe,
         severity,
