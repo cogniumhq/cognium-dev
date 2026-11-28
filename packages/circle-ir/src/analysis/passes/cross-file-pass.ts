@@ -123,6 +123,17 @@ export class CrossFilePass {
             code:     srcLines[flow.sourceLine - 1] ?? '',
             variable: '',
           },
+          // The call that hands the value to the other file, when it is not on
+          // the source line: the path reads source → call → sink.
+          ...(flow.callLine !== undefined && flow.callLine !== flow.sourceLine
+            ? [{
+                file:     flow.sourceFile,
+                method:   flow.callMethod ?? '',
+                line:     flow.callLine,
+                code:     srcLines[flow.callLine - 1] ?? '',
+                variable: '',
+              }]
+            : []),
           {
             file:     flow.targetFile,
             method:   flow.targetMethod,

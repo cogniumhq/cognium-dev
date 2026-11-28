@@ -46,6 +46,7 @@ export function promoteCrossFilePathsToSinkFlows(
 
     flows.push({
       source_line: tp.source.line,
+      source_file: tp.source.file,
       sink_line: tp.sink.line,
       source_type: tp.source.type,
       sink_type: tp.sink.type,

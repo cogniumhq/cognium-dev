@@ -32,7 +32,6 @@ export const RELATED_CWE: Readonly<Record<string, string>> = Object.freeze({
   'CWE-564': 'CWE-89',  // SQL injection: Hibernate
   'CWE-95': 'CWE-94',   // eval injection
   'CWE-917': 'CWE-94',  // expression language injection
-  'CWE-1336': 'CWE-94', // template engine injection
   'CWE-93': 'CWE-113',  // CRLF injection -> HTTP response splitting
   'CWE-91': 'CWE-643',  // XML injection -> XPath injection
   'CWE-776': 'CWE-611', // entity expansion -> external entities (same parser config)

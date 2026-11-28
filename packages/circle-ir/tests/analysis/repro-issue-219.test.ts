@@ -24,10 +24,10 @@ describe('#219 Jinja autoescape safe mirror', () => {
   async function countTaintSignals(code: string, file = 'x.py') {
     const ir = await analyze(code, file, 'python');
     const sinks = ir.taint.sinks.filter(
-      s => s.type === 'code_injection' || s.type === 'xss',
+      s => s.type === 'code_injection' || s.type === 'template_injection' || s.type === 'xss',
     );
     const flows = ((ir.taint.flows ?? []) as Array<{ sink_type: string }>).filter(
-      f => f.sink_type === 'code_injection' || f.sink_type === 'xss',
+      f => f.sink_type === 'code_injection' || f.sink_type === 'template_injection' || f.sink_type === 'xss',
     );
     return { sinks: sinks.length, flows: flows.length };
   }

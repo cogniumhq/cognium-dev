@@ -1,6 +1,5 @@
 /**
- * Project-callee escape gate (cognium-dev#637, C#; also JS/TS calls resolved
- * through an import to a function another module exports).
+ * Project-callee escape gate (cognium-dev#637, C#).
  *
  * A file analysed on its own cannot see a method defined in another file, so
  * a tainted argument passed to it is reported as an `external_taint_escape`
@@ -31,18 +30,36 @@
  * depth of four hops with a visited set (so a loop stops). Any hop that does not
  * resolve, ends without a sink, forwards elsewhere as well, stores or returns the
  * value, or lies beyond the depth keeps the escape.
+ *
+ * Java and TypeScript use the same rule for a call through an injected receiver
+ * (a constructor-injected or `@Autowired` field, a constructor parameter
+ * property) that the resolver binds to the receiver's declared type: a Spring
+ * controller's `repo.find(q)` into a repository that runs the query itself.
+ * JavaScript and TypeScript also use it for a call made through an import of a
+ * relative module that the resolver binds to the function the module exports
+ * (`const { ping } = require('./ping'); ping(host)`).
+ * Other Java, JavaScript and TypeScript calls keep their escapes.
  */
 
 import type { CircleIR, CallInfo, DFGDef, MethodInfo } from '../types/index.js';
 import type { ProjectGraph } from '../graph/project-graph.js';
+import type { ResolvedCall } from '../resolution/cross-file.js';
 
 const ESCAPE = 'external_taint_escape';
 
 /**
- * C#, and JS/TS, where a call through an import of a relative module resolves
- * exactly to the function that module exports.
+ * Which resolved calls the gate may decide, per language: C# any exact
+ * resolution; Java a call through an injected receiver, whose target is taken
+ * from the receiver's declared type; JavaScript a call through an import of a
+ * relative module to the function it exports; TypeScript either of the last
+ * two. Other calls keep their escapes.
  */
-const GATED_LANGUAGES: ReadonlySet<string> = new Set(['csharp', 'javascript', 'typescript']);
+const GATE_BY_LANGUAGE: Readonly<Record<string, (r: ResolvedCall) => boolean>> = {
+  csharp: r => r.resolution === 'exact',
+  java: r => r.injected === true,
+  javascript: r => r.moduleExport === true,
+  typescript: r => r.injected === true || r.moduleExport === true,
+};
 
 /**
  * Blank string literals but keep the contents of `{...}` holes in interpolated
@@ -169,7 +186,7 @@ function calleeDecidedBySinks(
       const resolver = projectGraph.resolver;
       const chained = forwards.every(call => {
         const r = resolver.resolveCall(call, file);
-        return !!r && r.resolution === 'exact' && r.targetFile !== file
+        return !!r && (r.resolution === 'exact' || r.injected === true) && r.targetFile !== file
           && receiverMatchesTarget(call, r.targetClass)
           && calleeDecidedBySinks(projectGraph, r.targetFile, r.targetMethod, depth + 1, new Set(visited));
       });
@@ -221,7 +238,8 @@ export function dropEscapesToProjectCallees(
   const resolver = projectGraph.resolver;
   for (const fa of fileAnalyses) {
     const ir = fa.analysis;
-    if (!GATED_LANGUAGES.has(ir.meta.language)) continue;
+    const gate = GATE_BY_LANGUAGE[ir.meta.language];
+    if (!gate) continue;
     const sinks = ir.taint?.sinks ?? [];
     if (!sinks.some(s => s.type === ESCAPE)) continue;
 
@@ -232,7 +250,7 @@ export function dropEscapesToProjectCallees(
       if (calls.length === 0) continue;
       const projectCall = calls.every(call => {
         const r = resolver.resolveCall(call, fa.file);
-        return !!r && r.resolution === 'exact' && r.targetFile !== fa.file
+        return !!r && gate(r) && r.targetFile !== fa.file
           && receiverMatchesTarget(call, r.targetClass)
           && calleeDecidedBySinks(projectGraph, r.targetFile, r.targetMethod);
       });
