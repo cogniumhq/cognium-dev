@@ -312,6 +312,12 @@ export interface MethodTaintFlow {
 
 export interface TaintFlowInfo {
   source_line: number;
+  /**
+   * File of the source when it is not the file this flow is reported in: a
+   * cross-file path mirrored onto its sink file by `analyzeProject`. Absent
+   * when the source is in the same file.
+   */
+  source_file?: string;
   sink_line: number;
   source_type: SourceType;
   sink_type: SinkType;

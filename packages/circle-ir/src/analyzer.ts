@@ -95,6 +95,7 @@ import { promoteCrossFilePathsToSinkFlows } from './analysis/promote-cross-file-
 import { markCrossFileToolArgumentPaths, markToolArgumentFlows } from './analysis/tool-arguments.js';
 import { dropJsTestToProductionTaintPaths } from './analysis/test-to-production-taint-gate.js';
 import { dropEscapesToProjectCallees } from './analysis/project-callee-escape-gate.js';
+import { dropEscapesExplainedByTaintPaths } from './analysis/explained-escape-gate.js';
 import { reportTemplateInjection, ruleSinkType } from './analysis/template-injection.js';
 import { applyProjectProfileTransform, type ProfileResolver } from './analysis/project-profile-transform.js';
 import { registerBuiltinPlugins } from './languages/index.js';
@@ -2252,6 +2253,11 @@ export async function analyzeProject(
   // 3.6 (#636 / #614) — constant-caller gate. Drops a C#/Java parameter-seeded sink flow
   // when every in-project caller passes a constant at that parameter.
   applyConstantCallerGate(fileAnalyses, projectGraph, sourceLinesByFile);
+
+  // 3.7 — an `external_taint_escape` at a call that a resolved path from the
+  //       same source follows into another file, to a real sink, is the same
+  //       defect told twice: drop the escape (explained-escape-gate.ts).
+  crossFileResult.taintPaths = dropEscapesExplainedByTaintPaths(fileAnalyses, crossFileResult.taintPaths);
 
   // 4. Assemble ProjectMeta
   const filePaths = files.map(f => f.filePath);
