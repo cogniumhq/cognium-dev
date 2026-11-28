@@ -257,7 +257,7 @@ function splitAnnotated(annotation: string): { inner: string; metadata: string[]
 function markerOf(expr: string): string | undefined {
   const m = /^(?:fastapi\s*\.\s*|params\s*\.\s*)?([A-Z]\w*)\s*\(/.exec(expr.trim());
   if (!m) return undefined;
-  return m[1] in FASTAPI_MARKERS ? m[1] : undefined;
+  return Object.hasOwn(FASTAPI_MARKERS, m[1]) ? m[1] : undefined;
 }
 
 /** Peel `Optional[T]`, `T | None`, `Union[T, None]`, `list[T]`, `List[T]` down to the base names. */
@@ -408,7 +408,7 @@ function findWebargsFunctions(code: string, lines: string[], types: TypeInfo[]):
       const close = closeBracket(d.text, open);
       const args = close > 0 ? splitTopLevel(d.text.slice(open + 1, close), ',').map(a => a.text.trim()) : [];
       const loc = args.map(a => /^location\s*=\s*(['"])(\w+)\1$/.exec(a)).find(x => x);
-      if (loc && WEBARGS_LOCATIONS[loc[2]]) type = WEBARGS_LOCATIONS[loc[2]];
+      if (loc && Object.hasOwn(WEBARGS_LOCATIONS, loc[2])) type = WEBARGS_LOCATIONS[loc[2]];
       const first = args[0] ?? '';
       if (d.m[1] === 'use_kwargs' && first.startsWith('{') && kwargNames) {
         for (const entry of splitTopLevel(first.slice(1, -1), ',')) {
