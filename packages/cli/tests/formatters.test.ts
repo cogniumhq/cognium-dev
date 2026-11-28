@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { formatResults, formatJSON, formatSARIF, applyTagSeverityDowngrade, ARGV_NO_SHELL_TAG, termSafe, type ScanResult, type CrossFileData } from '../src/formatters.js';
+import { formatResults, formatJSON, formatSARIF, applyTagSeverityDowngrade, flowVulnerability, ARGV_NO_SHELL_TAG, termSafe, type ScanResult, type CrossFileData } from '../src/formatters.js';
 import { version } from '../src/version.js';
 
 function makeResult(file: string, vulns: ScanResult['vulnerabilities'], error?: string): ScanResult {
@@ -196,6 +196,48 @@ describe('formatJSON', () => {
     ]);
     // the existing fields are unchanged
     expect(vulns[1]).toMatchObject(deadCodeVuln);
+  });
+
+  test('a taint finding names its source as a field; the message is unchanged', () => {
+    const v = flowVulnerability({ sink_type: 'sql_injection', source_line: 5, sink_line: 20 }, 'src/Foo.java');
+    expect(v.source).toEqual({ file: 'src/Foo.java', line: 5 });
+    expect(v.message).toBe('sql_injection vulnerability: tainted data flows from line 5 to line 20');
+    expect(v.cwe).toBe('CWE-89');
+    const parsed = JSON.parse(formatJSON([makeResult('src/Foo.java', [v])]));
+    expect(parsed.results[0].vulnerabilities[0].source).toEqual({ file: 'src/Foo.java', line: 5 });
+  });
+
+  test('a finding mirrored from a cross-file path names the file its source is in', () => {
+    const v = flowVulnerability(
+      { sink_type: 'open_redirect', source_line: 6, source_file: 'main.go', sink_line: 6 },
+      'redirect.go',
+    );
+    expect(v.source).toEqual({ file: 'main.go', line: 6 });
+  });
+
+  test('a template-engine finding is reported with CWE-1336', () => {
+    const v = flowVulnerability({ sink_type: 'template_injection', source_line: 9, sink_line: 10 }, 'main.go');
+    expect(v.cwe).toBe('CWE-1336');
+    expect(v.severity).toBe('critical');
+    const code = flowVulnerability({ sink_type: 'code_injection', source_line: 9, sink_line: 10 }, 'main.go');
+    expect(code.cwe).toBe('CWE-94');
+  });
+
+  test('a finding that is not a taint flow has no source field', () => {
+    const parsed = JSON.parse(formatJSON([makeResult('src/Foo.java', [deadCodeVuln])]));
+    expect(parsed.results[0].vulnerabilities[0].source).toBeUndefined();
+  });
+
+  test('the summary counts files skipped for want of an analyser, by extension', () => {
+    const none = JSON.parse(formatJSON([makeResult('src/Foo.java', [])]));
+    expect(none.summary.unsupportedFiles).toBe(0);
+    expect(none.summary.unsupportedFilesByExtension).toEqual({});
+    const some = JSON.parse(formatJSON([makeResult('src/Foo.java', [])], {
+      taintPaths: [], crossFileCalls: [], unsupportedFiles: { '.md': 2, '.vue': 1 },
+    }));
+    expect(some.summary.unsupportedFiles).toBe(3);
+    expect(some.summary.unsupportedFilesByExtension).toEqual({ '.md': 2, '.vue': 1 });
+    expect(some.summary.executionSuccessful).toBe(true);
   });
 
   test('a cross-file taint path carries the rule id SARIF gives it', () => {
