@@ -191,7 +191,7 @@ function handler(req: any, res: any) {
   // Issue #54 — Jinja2 render_template_string mislabel (xss → code_injection)
   // ─────────────────────────────────────────────────────────────────────────
 
-  it('#54 Python: render_template_string is code_injection (CWE-94), not xss', async () => {
+  it('#54 Python: render_template_string is template injection (CWE-1336), not xss', async () => {
     const code = `
 from flask import render_template_string, request
 def handler():
@@ -206,9 +206,11 @@ def handler():
 
     const sink = taint.sinks.find(s => s.location.includes('render_template_string'));
     expect(sink).toBeDefined();
-    // Closes #54: was previously xss/CWE-79; should now be code_injection/CWE-94.
+    // Closes #54: was previously xss/CWE-79. A template-engine sink is matched
+    // as `code_injection` with CWE-1336; `analyze()` reports it as
+    // `template_injection` (template-injection.ts).
     expect(sink!.type).toBe('code_injection');
-    expect(sink!.cwe).toBe('CWE-94');
+    expect(sink!.cwe).toBe('CWE-1336');
   });
 
   it('#54 Python: render_template_string emits no xss/CWE-79 sink on the same call', async () => {

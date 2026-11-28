@@ -39,7 +39,7 @@ import { initAnalyzer, analyze } from '../../../src/analyzer.js';
 
 const countCodeInjectionSinks = (
   sinks: Array<{ type?: string }> | undefined,
-) => (sinks ?? []).filter((s) => s.type === 'code_injection').length;
+) => (sinks ?? []).filter((s) => s.type === 'code_injection' || s.type === 'template_injection').length;
 
 describe('cognium-dev #155 + #156 + #159 + #160 — Java code_injection Stage 9 FP suppression', () => {
   beforeAll(async () => {

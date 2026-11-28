@@ -849,7 +849,7 @@ function propagateThroughChains(
 const KNOWN_SINK_TYPES = new Set<string>([
   'sql_injection', 'xss', 'path_traversal', 'command_injection',
   'ssrf', 'ldap_injection', 'xpath_injection', 'log_injection',
-  'xxe', 'deserialization', 'code_injection', 'mybatis_mapper_call',
+  'xxe', 'deserialization', 'code_injection', 'template_injection', 'mybatis_mapper_call',
   'redos', 'format_string', 'crlf', 'mass_assignment',
 ]);
 

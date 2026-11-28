@@ -299,7 +299,8 @@ describe('PythonPlugin.getBuiltinSinks()', () => {
   });
 
   it('includes compile() as code_injection', () => {
-    const s = sinks.find(x => x.method === 'compile' && x.type === 'code_injection');
+    // The builtin, not a class-qualified `compile` such as `Handlebars.compile`.
+    const s = sinks.find(x => x.method === 'compile' && x.type === 'code_injection' && !x.class);
     expect(s).toBeDefined();
     expect(s!.cwe).toBe('CWE-94');
   });

@@ -13,6 +13,7 @@ import type {
   TaintSink,
   DFGDef,
   DFGUse,
+  TypeInfo,
 } from '../types/index.js';
 import { SymbolTable, type ExportedSymbol } from './symbol-table.js';
 import { TypeHierarchyResolver } from './type-hierarchy.js';
@@ -28,6 +29,13 @@ export interface ResolvedCall {
   targetClass: string;            // FQN of containing class
   resolution: 'exact' | 'polymorphic' | 'inferred';
   candidates?: string[];          // For polymorphic calls
+  /**
+   * The receiver is an injected one (a constructor-injected or `@Autowired`
+   * field, a TypeScript constructor parameter property) and the target was
+   * taken from its declared type: the class itself, or the one project class
+   * that implements a declared interface.
+   */
+  injected?: true;
 }
 
 /**
@@ -60,6 +68,8 @@ export interface CrossFileTaintFlow {
   taintedArgPositions?: number[];
   /** Line of the call in `sourceFile` that passes the tainted argument. */
   callLine?: number;
+  /** Method in `sourceFile` that makes that call. */
+  callMethod?: string;
 }
 
 /**
@@ -288,6 +298,132 @@ function parseJavaStaticDelegateReturn(inner: string): { type: string; method: s
   return { type, method };
 }
 
+/** Field annotations that mark a framework-injected field (Spring, JSR-330, Jakarta). */
+const JAVA_INJECT_ANNOTATIONS = new Set(['Autowired', 'Inject', 'Resource']);
+
+/** A project class or interface, with the file that declares it. */
+interface ProjectType {
+  file: string;
+  type: TypeInfo;
+  fqn: string;
+}
+
+/** `GetMapping("/x")` → `GetMapping`; `lombok.RequiredArgsConstructor` → `RequiredArgsConstructor`. */
+function annotationName(annotation: string): string {
+  const paren = annotation.indexOf('(');
+  const bare = (paren >= 0 ? annotation.slice(0, paren) : annotation).trim();
+  return bare.slice(bare.lastIndexOf('.') + 1);
+}
+
+/**
+ * The type a declaration names, without type arguments: `Repo<User>` → `Repo`,
+ * `com.x.Repo` stays qualified. Null for arrays, unions, function types and
+ * anything else that is not one named type.
+ */
+function declaredTypeName(text: string): string | null {
+  const s = text.trim();
+  const lt = s.indexOf('<');
+  if (lt >= 0 && !s.endsWith('>')) return null;
+  const t = (lt >= 0 ? s.slice(0, lt) : s).trim();
+  return /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(t) ? t : null;
+}
+
+/**
+ * Java fields a class receives by dependency injection, as receiver
+ * expression (`repo`, `this.repo`) → declared type. A field counts when it is
+ * annotated `@Autowired` / `@Inject` / `@Resource`, when a constructor takes a
+ * parameter of its type (constructor injection, with or without
+ * `@Autowired`), or when Lombok generates that constructor
+ * (`@RequiredArgsConstructor` for final fields, `@AllArgsConstructor`).
+ */
+function javaInjectedFields(type: TypeInfo): Map<string, string> {
+  const out = new Map<string, string>();
+  const classAnnotations = new Set(type.annotations.map(annotationName));
+  const lombokRequired = classAnnotations.has('RequiredArgsConstructor');
+  const lombokAll = classAnnotations.has('AllArgsConstructor');
+  const ctorParamTypes = new Set<string>();
+  for (const m of type.methods) {
+    if (m.name !== type.name) continue;
+    for (const p of m.parameters) {
+      const t = p.type ? declaredTypeName(p.type) : null;
+      if (t) ctorParamTypes.add(t);
+    }
+  }
+  for (const f of type.fields) {
+    if (!f.type || f.modifiers.includes('static')) continue;
+    const t = declaredTypeName(f.type);
+    if (!t) continue;
+    const injected = f.annotations.some(a => JAVA_INJECT_ANNOTATIONS.has(annotationName(a)))
+      || ctorParamTypes.has(t)
+      || lombokAll
+      || (lombokRequired && f.modifiers.includes('final'));
+    if (!injected) continue;
+    out.set(f.name, f.type);
+    out.set(`this.${f.name}`, f.type);
+  }
+  return out;
+}
+
+/**
+ * TypeScript constructor parameters a class keeps as members, as receiver
+ * expression (`this.svc`) → declared type: parameter properties
+ * (`constructor(private svc: PingService)`, `private readonly`, `public`,
+ * `protected`, `readonly`) and parameters the constructor body assigns
+ * (`this.svc = svc`). The IR does not record parameter modifiers, so this reads
+ * the constructor's source text.
+ */
+function tsInjectedProperties(type: TypeInfo, lines: string[] | undefined): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!lines) return out;
+  const ctor = type.methods.find(m => m.name === 'constructor');
+  if (!ctor) return out;
+  const text = lines.slice(ctor.start_line - 1, ctor.end_line).join('\n');
+  for (const p of ctor.parameters) {
+    if (!p.type || !/^[A-Za-z_$][\w$]*$/.test(p.name)) continue;
+    const name = escapeRegExp(p.name);
+    const property = new RegExp(
+      `(?:^|[\\s(,])(?:public|private|protected|readonly)\\s+(?:readonly\\s+)?${name}\\s*\\??\\s*:`);
+    if (property.test(text)) out.set(`this.${p.name}`, p.type);
+    const assigned = new RegExp(`\\bthis\\.([A-Za-z_$][\\w$]*)\\s*=\\s*${name}\\s*(?=[;}\\n]|$)`, 'g');
+    for (const m of text.matchAll(assigned)) out.set(`this.${m[1]}`, p.type);
+  }
+  return out;
+}
+
+/** `a/b/./c/../d` → `a/b/d`, keeping a leading `/`. */
+function normalizeModulePath(p: string): string {
+  const parts: string[] = [];
+  for (const part of p.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') parts.pop();
+    else parts.push(part);
+  }
+  return (p.startsWith('/') ? '/' : '') + parts.join('/');
+}
+
+/** File path without a JS/TS extension. */
+function withoutScriptExtension(file: string): string {
+  return file.replace(/\.(?:d\.)?[cm]?[jt]sx?$/, '');
+}
+
+/**
+ * Can the module specifier `spec`, imported in `fromFile`, name `file`? A
+ * relative specifier must resolve to it (`./ping.service`, `./ping.service.js`,
+ * `./ping` for `ping/index.ts`); any other (a path alias such as
+ * `src/ping/ping.service` or `@app/ping.service`) must end in its base name.
+ */
+function moduleSpecifierNames(spec: string, fromFile: string, file: string): boolean {
+  const target = withoutScriptExtension(file);
+  const bare = withoutScriptExtension(spec);
+  if (spec.startsWith('.')) {
+    const slash = fromFile.lastIndexOf('/');
+    const base = normalizeModulePath(slash >= 0 ? `${fromFile.slice(0, slash)}/${bare}` : bare);
+    return target === base || target === `${base}/index`;
+  }
+  const last = bare.slice(bare.lastIndexOf('/') + 1);
+  return last !== '' && (target === last || target.endsWith(`/${last}`));
+}
+
 export class CrossFileResolver {
   // -- pre-3.89.0 pre-index cache (see FileIndex above) --
   private readonly fileIndexes: WeakMap<CircleIR, FileIndex> = new WeakMap();
@@ -334,6 +470,12 @@ export class CrossFileResolver {
   // Resolved calls cache
   private resolvedCalls: Map<string, ResolvedCall> = new Map();
 
+  /** Per file: class → injected receiver expression → declared type (see `injectedReceiverType`). */
+  private injectedReceivers: Map<string, Map<TypeInfo, Map<string, string>>> = new Map();
+
+  /** Project classes and interfaces by FQN and by simple name, built on first use. */
+  private projectTypeIndex?: { byFqn: Map<string, ProjectType[]>; byName: Map<string, ProjectType[]> };
+
   constructor(
     symbolTable: SymbolTable,
     typeHierarchy: TypeHierarchyResolver
@@ -351,6 +493,12 @@ export class CrossFileResolver {
    * values; without them the check still runs, only less precisely.
    */
   setSourceLines(lines: Map<string, string[]>): void {
+    if (this.sourceLines !== lines) {
+      // TypeScript injected receivers are read from source text: drop any
+      // binding resolved before it was available.
+      this.injectedReceivers.clear();
+      this.resolvedCalls.clear();
+    }
     this.sourceLines = lines;
     for (const [path, ir] of this.fileIRs) {
       this.analyzeJavaStaticFieldPairs(ir, path);
@@ -358,6 +506,8 @@ export class CrossFileResolver {
   }
 
   addFile(filePath: string, ir: CircleIR): void {
+    this.projectTypeIndex = undefined;
+    this.injectedReceivers.delete(filePath);
     this.fileIRs.set(filePath, ir);
     this.symbolTable.addFromIR(ir, filePath);
     this.typeHierarchy.addFromIR(ir, filePath);
@@ -401,6 +551,13 @@ export class CrossFileResolver {
    */
   private resolveWithReceiver(call: CallInfo, fromFile: string): ResolvedCall | undefined {
     const receiver = call.receiver!;
+
+    // An injected receiver (`repo.find(q)` on a constructor-injected field,
+    // `this.svc.ping(h)` on a parameter property) is typed by its declaration.
+    // When that type is known not to hold the method in the project, no other
+    // class's method of the same name is the target either.
+    const injected = this.resolveInjectedReceiver(call, fromFile);
+    if (injected !== undefined) return injected ?? undefined;
 
     // Preflight (#74 follow-up / Java cross-file E): the Java extractor
     // already populates `receiver_type_fqn` for invocations whose receiver
@@ -495,6 +652,204 @@ export class CrossFileResolver {
   private isImportBinding(file: string, name: string): boolean {
     const ir = this.fileIRs.get(file);
     return (ir?.imports ?? []).some(i => (i.alias ?? i.imported_name) === name);
+  }
+
+  /**
+   * Bind a call made through an injected receiver to the receiver's declared
+   * type (Java, TypeScript). The target is the declared class, the nearest
+   * project superclass declaring the method, or, for an interface or an
+   * abstract method, the one project class that implements it.
+   *
+   * Returns `undefined` when the receiver is not an injected one, or when the
+   * declared type cannot be decided (several project types share its name, an
+   * interface has several implementations): the general resolution then runs
+   * as before. Returns `null` when the declared type is known and does not
+   * hold the method in the project (a library type, an interface with no
+   * implementation, a method inherited from a library base class).
+   */
+  private resolveInjectedReceiver(call: CallInfo, fromFile: string): ResolvedCall | null | undefined {
+    const ir = this.fileIRs.get(fromFile);
+    if (!ir) return undefined;
+    const lang = ir.meta.language;
+    if (lang !== 'java' && lang !== 'typescript') return undefined;
+    const declared = this.injectedReceiverType(call, fromFile, ir);
+    if (!declared) return undefined;
+    const declaredType = this.resolveDeclaredType(declared, fromFile, ir);
+    if (declaredType === undefined || declaredType === null) return declaredType;
+
+    let owner = declaredType.type.kind === 'interface'
+      ? undefined
+      : this.typeDeclaringMethod(declaredType, call.method_name, 0);
+    const abstractMethod = owner?.type.methods.find(m => m.name === call.method_name)?.modifiers.includes('abstract');
+    let dispatched = false;
+    if (!owner || abstractMethod) {
+      if (owner === undefined && declaredType.type.kind !== 'interface') return null;
+      const lookup = declaredType.type.kind === 'interface'
+        ? this.typeHierarchy.getAllImplementations(declaredType.fqn)
+        : this.typeHierarchy.getAllSubtypes(declaredType.fqn);
+      const concrete = new Map<string, ProjectType>();
+      for (const fqn of lookup) {
+        const types = this.projectTypes().byFqn.get(fqn) ?? [];
+        if (types.length !== 1) return undefined;
+        const t = types[0];
+        if (t.type.kind !== 'class') continue;
+        const impl = this.typeDeclaringMethod(t, call.method_name, 0);
+        if (impl && !impl.type.methods.find(m => m.name === call.method_name)?.modifiers.includes('abstract')) {
+          concrete.set(impl.fqn, impl);
+        }
+      }
+      if (concrete.size === 0) return null;
+      if (concrete.size > 1) return undefined;
+      owner = [...concrete.values()][0];
+      dispatched = true;
+    }
+
+    const targetMethod = `${owner.fqn}.${call.method_name}`;
+    return {
+      call,
+      sourceFile: fromFile,
+      targetFile: owner.file,
+      targetMethod,
+      targetClass: owner.fqn,
+      resolution: dispatched ? 'polymorphic' : 'exact',
+      ...(dispatched ? { candidates: [targetMethod] } : {}),
+      injected: true,
+    };
+  }
+
+  /**
+   * The declared type of `call.receiver` when it is an injected member of the
+   * class the call is in (see `javaInjectedFields` / `tsInjectedProperties`).
+   * A bare Java name that a local or parameter of the enclosing method hides
+   * is not the field.
+   */
+  private injectedReceiverType(call: CallInfo, fromFile: string, ir: CircleIR): string | undefined {
+    const receiver = call.receiver;
+    if (!receiver) return undefined;
+    const line = call.location.line;
+    let owner: TypeInfo | undefined;
+    for (const t of ir.types) {
+      if (line < t.start_line || line > t.end_line) continue;
+      if (!owner || t.end_line - t.start_line < owner.end_line - owner.start_line) owner = t;
+    }
+    if (!owner) return undefined;
+
+    let byType = this.injectedReceivers.get(fromFile);
+    if (!byType) {
+      byType = new Map();
+      for (const t of ir.types) {
+        if (t.kind !== 'class') continue;
+        const receivers = ir.meta.language === 'java'
+          ? javaInjectedFields(t)
+          : tsInjectedProperties(t, this.sourceLines?.get(fromFile));
+        if (receivers.size > 0) byType.set(t, receivers);
+      }
+      this.injectedReceivers.set(fromFile, byType);
+    }
+    const declared = byType.get(owner)?.get(receiver);
+    if (!declared) return undefined;
+
+    if (ir.meta.language === 'java' && !receiver.startsWith('this.')) {
+      if (call.receiver_type && declaredTypeName(call.receiver_type) !== declaredTypeName(declared)) return undefined;
+      const method = owner.methods.find(m => line >= m.start_line && line <= m.end_line);
+      if (method && (this.getFileIndex(ir).defsByMethod.get(method) ?? [])
+        .some(d => d.variable === receiver && (d.kind === 'local' || d.kind === 'param'))) return undefined;
+    }
+    return declared;
+  }
+
+  /**
+   * The project type a declaration's type text names, seen from `fromFile`.
+   * `null` when it names a type outside the project; `undefined` when it
+   * cannot be decided.
+   *
+   * Java: an explicit import, then the file's own package, then wildcard
+   * imports; an explicitly imported or qualified name that is not a project
+   * type is a library type. Last, a simple name only one project type has.
+   * TypeScript: the class an import binding names, in the file its module
+   * specifier names; or a class the file declares itself. A name bound by an
+   * import of a module outside the project is a library type.
+   */
+  private resolveDeclaredType(typeText: string, fromFile: string, ir: CircleIR): ProjectType | null | undefined {
+    const name = declaredTypeName(typeText);
+    if (!name) return undefined;
+    const index = this.projectTypes();
+    const unique = (types: ProjectType[] | undefined): ProjectType | null | undefined =>
+      !types || types.length === 0 ? null : types.length === 1 ? types[0] : undefined;
+
+    if (ir.meta.language === 'java') {
+      const explicit = ir.imports.find(i => !i.is_wildcard && i.from_package && i.imported_name === name);
+      const candidates: string[] = [];
+      if (name.includes('.')) {
+        candidates.push(name);
+      } else if (explicit) {
+        candidates.push(`${explicit.from_package}.${name}`);
+      } else {
+        const pkg = ir.meta.package || '';
+        candidates.push(pkg ? `${pkg}.${name}` : name);
+        for (const i of ir.imports) {
+          if (i.is_wildcard && i.from_package) candidates.push(`${i.from_package}.${name}`);
+        }
+      }
+      for (const fqn of candidates) {
+        const found = index.byFqn.get(fqn);
+        if (found && found.length > 0) return found.length === 1 ? found[0] : undefined;
+      }
+      // A package-qualified or imported name that is not a project type is a
+      // library type. A nested type (`Outer.Inner`, `import a.Outer.Inner`) is
+      // not indexed under that name, so it stays undecided.
+      const qualifier = name.includes('.') ? name.slice(0, name.lastIndexOf('.')) : explicit?.from_package;
+      if (qualifier) return /(?:^|\.)[A-Z][\w$]*$/.test(qualifier) ? undefined : null;
+      return unique(index.byName.get(name));
+    }
+
+    const binding = ir.imports.find(i => (i.alias ?? i.imported_name) === name);
+    if (binding) {
+      const spec = binding.from_package ?? '';
+      const sameName = index.byName.get(binding.imported_name) ?? [];
+      const named = sameName.filter(t => moduleSpecifierNames(spec, fromFile, t.file));
+      if (named.length > 0) return unique(named);
+      if (sameName.length === 0) return null;
+      // The specifier names no file that declares the class: a re-exporting
+      // index module (relative) takes the one project class of that name; a
+      // path alias the scan cannot map stays undecided.
+      return spec.startsWith('.') && sameName.length === 1 ? sameName[0] : undefined;
+    }
+    const local = (index.byName.get(name) ?? []).filter(t => t.file === fromFile);
+    return local.length === 1 ? local[0] : local.length === 0 ? null : undefined;
+  }
+
+  /**
+   * `type` itself when it declares `methodName`, else the nearest project
+   * superclass that does (at most four levels up).
+   */
+  private typeDeclaringMethod(type: ProjectType, methodName: string, depth: number): ProjectType | undefined {
+    if (type.type.methods.some(m => m.name === methodName)) return type;
+    if (!type.type.extends || depth >= 4) return undefined;
+    const ir = this.fileIRs.get(type.file);
+    if (!ir) return undefined;
+    const parent = this.resolveDeclaredType(type.type.extends, type.file, ir);
+    return parent ? this.typeDeclaringMethod(parent, methodName, depth + 1) : undefined;
+  }
+
+  /** Project classes and interfaces, indexed by FQN and by simple name. */
+  private projectTypes(): { byFqn: Map<string, ProjectType[]>; byName: Map<string, ProjectType[]> } {
+    if (this.projectTypeIndex) return this.projectTypeIndex;
+    const byFqn = new Map<string, ProjectType[]>();
+    const byName = new Map<string, ProjectType[]>();
+    for (const [file, ir] of this.fileIRs) {
+      for (const type of ir.types) {
+        if (type.kind !== 'class' && type.kind !== 'interface') continue;
+        const pkg = type.package || ir.meta.package || '';
+        const entry: ProjectType = { file, type, fqn: pkg ? `${pkg}.${type.name}` : type.name };
+        for (const [map, key] of [[byFqn, entry.fqn], [byName, type.name]] as const) {
+          const list = map.get(key);
+          if (list) list.push(entry); else map.set(key, [entry]);
+        }
+      }
+    }
+    this.projectTypeIndex = { byFqn, byName };
+    return this.projectTypeIndex;
   }
 
   /**
@@ -791,11 +1146,10 @@ export class CrossFileResolver {
     //     as unconditionally tainted (writer is synthetic at the field's
     //     declaration line). Covers Spring `@Autowired`, JSR-330 `@Inject`,
     //     CDI `@Inject`, Micronaut `@Inject`, Quarkus `@Inject`.
-    const injectAnnotations = new Set(['Autowired', 'Inject', 'Resource']);
     for (const type of ir.types) {
       const typeFqn = pkg ? `${pkg}.${type.name}` : type.name;
       for (const field of type.fields ?? []) {
-        if (!field.annotations?.some(a => injectAnnotations.has(a))) continue;
+        if (!field.annotations?.some(a => JAVA_INJECT_ANNOTATIONS.has(a))) continue;
         const key = `${typeFqn}.${field.name}`;
         const writer = {
           methodFqn: `${typeFqn}.<injected>`,
@@ -1034,7 +1388,8 @@ export class CrossFileResolver {
         // When known, require the cross-file call's arguments to actually
         // reference it — otherwise the flow is at best speculative and at
         // worst a false positive when the value is sanitized in between.
-        const sourceVar = source.variable ?? this.getLocalDefVarAt(ir, source.line);
+        const sourceVar = source.variable ?? this.getLocalDefVarAt(ir, source.line)
+          ?? this.annotatedParamName(ir, source);
 
         // Expand the source variable to the set of locals DFG-derived from
         // it (cognium-dev #146). The variable-connectivity gate below then
@@ -1112,14 +1467,14 @@ export class CrossFileResolver {
             }
           }
 
-          // The method the value ends in: the callee itself, or, for C#, the methods
-          // at the end of a pure forwarder chain (cognium-dev#637).
+          // The method the value ends in: the callee itself, or, for C# and for a
+          // call through an injected receiver, the methods at the end of a pure
+          // forwarder chain (cognium-dev#637; a controller → service → repository).
           const startIR = this.fileIRs.get(resolved.targetFile);
           const startPositions = carriedPositions ?? call.arguments.map((_, i) => i);
           const terminals: Array<{ file: string; method: string; positions: number[] }> =
-            startIR?.meta.language === 'csharp'
-              ? this.csharpChainTerminals(resolved.targetFile, resolved.targetMethod,
-                  startPositions, 0, new Set())
+            startIR?.meta.language === 'csharp' || resolved.injected
+              ? this.forwarderChainTerminals(resolved.targetFile, resolved.targetMethod, startPositions, 0, new Set())
               : startIR?.meta.language === 'go'
                 ? this.goChainTerminals(resolved.targetFile, resolved.targetMethod, startPositions, 0, new Set())
                 : [{ file: resolved.targetFile, method: resolved.targetMethod, positions: startPositions }];
@@ -1159,6 +1514,11 @@ export class CrossFileResolver {
             // reported [1] only), and this check must not lose a flow on that.
             if ((targetIR.meta.language === 'javascript' || targetIR.meta.language === 'typescript')
                 && !this.jsParamReachesSinkArgs(targetIR, targetMethod, targetMethod.parameters.map((_, i) => i), sink, term.file)) continue;
+            // Java, through an injected receiver: the same check on the carried
+            // parameters, so a service method whose sink is fed by something
+            // else (a constant, a field) is not credited with the caller's value.
+            if (resolved.injected && targetIR.meta.language === 'java'
+                && !this.jsParamReachesSinkArgs(targetIR, targetMethod, term.positions, sink, term.file)) continue;
             const key = `${filePath}:${source.line}→${term.file}:${sink.line}`;
             if (seen.has(key)) continue;
             seen.add(key);
@@ -1173,6 +1533,7 @@ export class CrossFileResolver {
               flowType: 'call_arg',
               taintedArgPositions: term.positions,
               callLine: call.location.line,
+              ...(call.in_method ? { callMethod: call.in_method } : {}),
             });
           }
           }
@@ -1255,14 +1616,16 @@ export class CrossFileResolver {
   }
 
   /**
-   * C# (cognium-dev#637): the methods a value ends in after a chain of pure
-   * forwarders. A callee that holds a sink is its own terminal. One that holds no
+   * The methods a value ends in after a chain of pure forwarders (C#,
+   * cognium-dev#637; Java and TypeScript from a call through an injected
+   * receiver). A callee that holds a sink is its own terminal. One that holds no
    * sink only passes the tainted parameter, as a bare argument, to calls that each
-   * resolve exactly to a method in another file; those are followed (depth <= 4,
-   * a visited set stops loops). Anything else — a transformed argument, an
-   * unresolved call, a forwarder with no onward call — contributes no terminal.
+   * resolve exactly (or through an injected receiver) to a method in another
+   * file; those are followed (depth <= 4, a visited set stops cycles). Anything
+   * else — a transformed argument, an unresolved call, a forwarder with no
+   * onward call — contributes no terminal.
    */
-  private csharpChainTerminals(
+  private forwarderChainTerminals(
     file: string,
     methodFqn: string,
     positions: number[],
@@ -1290,8 +1653,8 @@ export class CrossFileResolver {
       if (carried.length === 0) continue;
       if (!carried.every(i => names.includes((call.arguments[i].expression ?? '').trim()))) continue;
       const r = this.resolveCall(call, file);
-      if (!r || r.resolution !== 'exact' || r.targetFile === file) continue;
-      out.push(...this.csharpChainTerminals(r.targetFile, r.targetMethod, carried, depth + 1, visited));
+      if (!r || (r.resolution !== 'exact' && !r.injected) || r.targetFile === file) continue;
+      out.push(...this.forwarderChainTerminals(r.targetFile, r.targetMethod, carried, depth + 1, visited));
     }
     visited.delete(key);
     return out;
@@ -2379,6 +2742,24 @@ export class CrossFileResolver {
       if (def.line === line && def.kind === 'local' && def.variable) return def.variable;
     }
     return undefined;
+  }
+
+  /**
+   * The parameter an annotated-parameter source binds (`@RequestParam q in
+   * search`, `@Query host in ping`). Such a source names no variable and sits
+   * on the signature line, which defines no local, so without it the source
+   * could reach only a call on that same line. Undefined unless the method
+   * the source names declares that parameter around the source line.
+   */
+  private annotatedParamName(ir: CircleIR, source: TaintSource): string | undefined {
+    const m = /^@[\w$.]+ ([A-Za-z_$][\w$]*) in ([A-Za-z_$][\w$]*)$/.exec(source.location ?? '');
+    if (!m) return undefined;
+    const [, param, methodName] = m;
+    const declared = ir.types.some(t => t.methods.some(method =>
+      method.name === methodName
+      && source.line >= method.start_line && source.line <= method.end_line
+      && method.parameters.some(p => p.name === param)));
+    return declared ? param : undefined;
   }
 
   /**

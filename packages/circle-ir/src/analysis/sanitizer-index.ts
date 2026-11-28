@@ -27,6 +27,8 @@ function getSanitizesSet(san: TaintSanitizer): Set<string> {
   let s = SANITIZER_SET_CACHE.get(san);
   if (!s) {
     s = new Set<string>(san.sanitizes as readonly string[]);
+    // Template-engine sinks follow the code-injection rules (template-injection.ts).
+    if (s.has('code_injection')) s.add('template_injection');
     SANITIZER_SET_CACHE.set(san, s);
   }
   return s;

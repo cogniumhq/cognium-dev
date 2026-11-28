@@ -31,6 +31,7 @@ import { ARGV_NO_SHELL_TAG } from './js-spawn-argv.js';
 import { sanitizerCoversSink } from './sanitizer-index.js';
 import { walkBackwardDefs } from './dfg-walk.js';
 import { isProvablyLiteralExpression } from './literal-expression.js';
+import { ruleSinkType } from './template-injection.js';
 import { declAt } from '../path-set/path-set.js';
 import { digest128 } from '../stable-ids/hash.js';
 import type { StableIdFile } from '../stable-ids/types.js';
@@ -705,7 +706,7 @@ export function canSourceReachSink(sourceType: string, sinkType: SinkType): bool
   };
 
   const validSinks = sourceToSinkMapping[sourceType];
-  return validSinks ? validSinks.includes(sinkType) : false;
+  return validSinks ? validSinks.includes(ruleSinkType(sinkType)) : false;
 }
 
 /**
@@ -749,7 +750,7 @@ export function sourceSemanticsAllowed(
     // attacker-controlled input. `code_injection` is preserved so
     // Stage 9f's library-API-surface downgrade remains the single
     // decision point for reflection-based RCE.
-    return sinkType === 'code_injection';
+    return ruleSinkType(sinkType) === 'code_injection';
   }
   return true;
 }

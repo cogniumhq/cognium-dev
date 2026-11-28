@@ -30,6 +30,12 @@
  * depth of four hops with a visited set (so a loop stops). Any hop that does not
  * resolve, ends without a sink, forwards elsewhere as well, stores or returns the
  * value, or lies beyond the depth keeps the escape.
+ *
+ * Java and TypeScript use the same rule for a call through an injected receiver
+ * (a constructor-injected or `@Autowired` field, a constructor parameter
+ * property) that the resolver binds to the receiver's declared type: a Spring
+ * controller's `repo.find(q)` into a repository that runs the query itself.
+ * Other Java and TypeScript calls keep their escapes.
  */
 
 import type { CircleIR, CallInfo, DFGDef, MethodInfo } from '../types/index.js';
@@ -162,7 +168,7 @@ function calleeDecidedBySinks(
       const resolver = projectGraph.resolver;
       const chained = forwards.every(call => {
         const r = resolver.resolveCall(call, file);
-        return !!r && r.resolution === 'exact' && r.targetFile !== file
+        return !!r && (r.resolution === 'exact' || r.injected === true) && r.targetFile !== file
           && receiverMatchesTarget(call, r.targetClass)
           && calleeDecidedBySinks(projectGraph, r.targetFile, r.targetMethod, depth + 1, new Set(visited));
       });
@@ -214,7 +220,11 @@ export function dropEscapesToProjectCallees(
   const resolver = projectGraph.resolver;
   for (const fa of fileAnalyses) {
     const ir = fa.analysis;
-    if (ir.meta.language !== 'csharp') continue;
+    const language = ir.meta.language;
+    // Java / TypeScript: only a call through an injected receiver, whose target
+    // is taken from the receiver's declared type.
+    const injectedOnly = language === 'java' || language === 'typescript';
+    if (language !== 'csharp' && !injectedOnly) continue;
     const sinks = ir.taint?.sinks ?? [];
     if (!sinks.some(s => s.type === ESCAPE)) continue;
 
@@ -225,7 +235,7 @@ export function dropEscapesToProjectCallees(
       if (calls.length === 0) continue;
       const projectCall = calls.every(call => {
         const r = resolver.resolveCall(call, fa.file);
-        return !!r && r.resolution === 'exact' && r.targetFile !== fa.file
+        return !!r && (injectedOnly ? r.injected === true : r.resolution === 'exact') && r.targetFile !== fa.file
           && receiverMatchesTarget(call, r.targetClass)
           && calleeDecidedBySinks(projectGraph, r.targetFile, r.targetMethod);
       });

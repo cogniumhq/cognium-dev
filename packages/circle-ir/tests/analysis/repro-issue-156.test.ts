@@ -52,7 +52,7 @@ public class SafeVelocityRender {
 `;
     const ir = await analyze(code, 'SafeVelocityRender.java', 'java');
     const codeInj = (ir.taint.sinks ?? []).filter(
-      s => s.type === 'code_injection',
+      s => s.type === 'code_injection' || s.type === 'template_injection',
     );
     expect(codeInj.length).toBe(0);
   });
@@ -77,7 +77,7 @@ public class SafeThymeleafRender {
 `;
     const ir = await analyze(code, 'SafeThymeleafRender.java', 'java');
     const codeInj = (ir.taint.sinks ?? []).filter(
-      s => s.type === 'code_injection',
+      s => s.type === 'code_injection' || s.type === 'template_injection',
     );
     expect(codeInj.length).toBe(0);
   });
@@ -102,7 +102,7 @@ public class UnsafeVelocityRender {
 `;
     const ir = await analyze(code, 'UnsafeVelocityRender.java', 'java');
     const codeInj = (ir.taint.sinks ?? []).filter(
-      s => s.type === 'code_injection',
+      s => s.type === 'code_injection' || s.type === 'template_injection',
     );
     expect(codeInj.length).toBeGreaterThan(0);
   });
@@ -125,7 +125,7 @@ public class UnsafeVelocityEvaluate {
 `;
     const ir = await analyze(code, 'UnsafeVelocityEvaluate.java', 'java');
     const codeInj = (ir.taint.sinks ?? []).filter(
-      s => s.type === 'code_injection',
+      s => s.type === 'code_injection' || s.type === 'template_injection',
     );
     expect(codeInj.length).toBeGreaterThan(0);
   });
@@ -150,7 +150,7 @@ public class UnsafeFreemarkerGetTemplate {
 `;
     const ir = await analyze(code, 'UnsafeFreemarkerGetTemplate.java', 'java');
     const codeInj = (ir.taint.sinks ?? []).filter(
-      s => s.type === 'code_injection',
+      s => s.type === 'code_injection' || s.type === 'template_injection',
     );
     expect(codeInj.length).toBeGreaterThan(0);
   });

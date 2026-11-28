@@ -17,6 +17,7 @@ export const CRITICAL_SINKS: SinkType[] = [
   'command_injection',
   'deserialization',
   'code_injection',
+  'template_injection',
 ];
 
 /** Sinks that warrant high severity. */
@@ -177,6 +178,15 @@ export const RULE_DEFINITIONS: Record<SinkType, RuleInfo> = {
     cvssScore: '9.8',
     severityLevel: 'critical',
     cwe: 'CWE-94',
+  },
+  template_injection: {
+    name: 'Template Injection',
+    shortDescription: 'User input used as the source of a server-side template',
+    fullDescription: 'The application compiles or renders a template whose source text comes from user input. Template directives in that text run inside the template engine, which in most engines reaches arbitrary code execution.',
+    remediation: 'Load templates from fixed files or constants and pass user input only as data to the rendering context. Never compile user-supplied text as a template.',
+    cvssScore: '9.8',
+    severityLevel: 'critical',
+    cwe: 'CWE-1336',
   },
   weak_random: {
     name: 'Weak Random Number Generator',
