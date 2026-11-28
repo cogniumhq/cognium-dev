@@ -1,0 +1,78 @@
+name: Review gate
+
+# Sets the `review-gate` commit status on a PR's head SHA. It is green only
+# when the independent review (REVIEW GREEN @ <head sha>) is in, nobody has
+# changes requested, someone other than the author approved this head and all
+# CI on this head passed. Any new push resets it, because the verdict must
+# name the new head. See scripts/review-gate.mjs.
+#
+# Every trigger here runs the workflow and script from the default branch
+# (pull_request_target, issue_comment, workflow_run, workflow_dispatch), so a
+# PR cannot change the gate that judges it. PR code is never checked out.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  issue_comment:
+    types: [created, edited, deleted]
+  workflow_run:
+    # Every workflow that reports checks on a PR head, so the status is
+    # re-evaluated when the last of them finishes.
+    workflows: ["CI", "Public content check", "cognium-ai PR scan", "engine bench", "Conformis"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  statuses: write
+
+concurrency:
+  group: review-gate-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr || github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: review-gate
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: scripts/review-gate.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Evaluate and set the review-gate status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_GATE_REVIEWERS: ${{ vars.REVIEW_GATE_REVIEWERS || 'elarasu' }}
+          EVENT: ${{ github.event_name }}
+          PR_FROM_PR: ${{ github.event.pull_request.number }}
+          PR_FROM_ISSUE: ${{ github.event.issue.number }}
+          PR_FROM_INPUT: ${{ inputs.pr }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -u
+          if [ "$EVENT" = "workflow_run" ]; then
+            prs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RUN_HEAD_SHA/pulls" --jq '.[] | select(.state=="open") | .number')
+          else
+            prs="${PR_FROM_PR}${PR_FROM_ISSUE}${PR_FROM_INPUT}"
+          fi
+          rc=0
+          for pr in $prs; do
+            # A non-pass is reported through the status, not a red job.
+            node scripts/review-gate.mjs "$pr" --status || rc=$?
+          done
+          echo "gate exit: $rc (status set on the head SHA)"
