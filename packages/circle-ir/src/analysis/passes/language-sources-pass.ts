@@ -32,6 +32,7 @@ import { findRustLiteralEqualityGuardSanitizers } from '../rust-literal-guard.js
 import { constLookupTables, isConstTableLookup } from '../const-table-lookup.js';
 import { jsReplaceChainVerdict } from '../js-crlf-strip.js';
 import { jsHelperReturnsNoParam } from '../js-helper-return.js';
+import { findPythonWebParamSources } from '../python-web-params.js';
 
 // ---------------------------------------------------------------------------
 // Pattern tables (moved from analyzer.ts)
@@ -312,6 +313,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
 
     // -- Python: assignment sources, trust-boundary sinks, return-XSS sinks --
     additionalSources.push(...findPythonAssignmentSources(code, language));
+    // -- Python: FastAPI route / webargs parameters bound from the request --
+    if (language === 'python') additionalSources.push(...findPythonWebParamSources(code, types));
 
     const pyTaintedVars = language === 'python' ? buildPythonTaintedVars(code) : new Map<string, number>();
     const pySanitizedVars = language === 'python' ? buildPythonSanitizedVars(code, pyTaintedVars) : new Set<string>();
@@ -3721,8 +3724,18 @@ export function computeDeadJavaBranchLines(lines: string[]): Set<number> {
   return dead;
 }
 
-export function buildPythonTaintedVars(sourceCode: string): Map<string, number> {
-  const tainted = new Map<string, number>();
+/**
+ * Python forward-taint map: variable name → line it became tainted.
+ *
+ * `seeds` are names tainted before the first line (a handler's request-bound
+ * parameters); a caller that passes them scans one function body at a time,
+ * so the names stay local to that function.
+ */
+export function buildPythonTaintedVars(
+  sourceCode: string,
+  seeds?: ReadonlyMap<string, number>,
+): Map<string, number> {
+  const tainted = new Map<string, number>(seeds ?? []);
   const containerTainted = new Map<string, number>();
   const lines = sourceCode.split('\n');
   const deadBranchLines = computeDeadPythonBranchLines(lines);

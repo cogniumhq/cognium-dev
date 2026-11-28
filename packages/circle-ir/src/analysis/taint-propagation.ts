@@ -20,6 +20,7 @@ import { CodeGraph } from '../graph/index.js';
 import { walkBackwardDefs } from './dfg-walk.js';
 import { sanitizerCoversSink } from './sanitizer-index.js';
 import { HTML_CONTEXT_ENCODER_METHODS, HTML_CONTEXT_ENCODER_UNCOVERED_SINKS } from './constant-propagation/patterns.js';
+import { isPythonWebParamSource } from './python-web-params.js';
 
 /**
  * Optional context used by checkSanitized to widen its search from a single
@@ -586,7 +587,9 @@ function findInitialTaint(
       // `args`, Express destructured request keys) also name exactly one
       // binding; `parent` / `context` / `res` share the signature line.
       if (
-        (source.type === 'interprocedural_param' || PARAM_SCOPED_SOURCE_RE.test(source.location ?? '')) &&
+        (source.type === 'interprocedural_param' ||
+          PARAM_SCOPED_SOURCE_RE.test(source.location ?? '') ||
+          isPythonWebParamSource(source)) &&
         source.variable &&
         def.kind === 'param' &&
         def.variable !== source.variable
