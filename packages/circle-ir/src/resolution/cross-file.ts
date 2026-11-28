@@ -68,6 +68,8 @@ export interface CrossFileTaintFlow {
   taintedArgPositions?: number[];
   /** Line of the call in `sourceFile` that passes the tainted argument. */
   callLine?: number;
+  /** Method in `sourceFile` that makes that call. */
+  callMethod?: string;
 }
 
 /**
@@ -1524,6 +1526,7 @@ export class CrossFileResolver {
               flowType: 'call_arg',
               taintedArgPositions: term.positions,
               callLine: call.location.line,
+              ...(call.in_method ? { callMethod: call.in_method } : {}),
             });
           }
           }

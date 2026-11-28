@@ -69,7 +69,7 @@ public class T4S2 {
   // 2) FreeMarker SSTI — new Template(name, reader, cfg)
   // -----------------------------------------------------------------------
 
-  it('Java FreeMarker: new Template(name, new StringReader(taint), cfg) FIRES code_injection', async () => {
+  it('Java FreeMarker: new Template(name, new StringReader(taint), cfg) FIRES template_injection', async () => {
     const code = `
 import javax.servlet.http.*;
 import freemarker.template.*;
@@ -82,7 +82,7 @@ public class FmSSTI {
 }
 `;
     const r = await analyze(code, 'FmSSTI.java', 'java');
-    const ci = (r.taint.flows ?? []).filter((f) => f.sink_type === 'code_injection');
+    const ci = (r.taint.flows ?? []).filter((f) => f.sink_type === 'template_injection');
     expect(ci.length).toBeGreaterThanOrEqual(1);
   });
 

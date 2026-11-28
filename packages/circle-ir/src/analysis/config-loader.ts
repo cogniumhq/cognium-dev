@@ -1802,10 +1802,12 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Reflection-based invocation
   { method: 'invoke', class: 'Method', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0, 1] },
   { method: 'newInstance', class: 'Constructor', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
-  // Template engines
-  { method: 'merge', class: 'VelocityEngine', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0, 1] },
-  { method: 'evaluate', class: 'Velocity', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [1] },
-  { method: 'process', class: 'Template', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
+  // Template engines: CWE-1336, reported as `template_injection`
+  // (template-injection.ts) after the code-injection rules have run.
+  { method: 'merge', class: 'VelocityEngine', type: 'code_injection', cwe: 'CWE-1336', severity: 'high', arg_positions: [0, 1] },
+  // `Velocity.evaluate(context, writer, logTag, templateText)`: the text is argument 3.
+  { method: 'evaluate', class: 'Velocity', type: 'code_injection', cwe: 'CWE-1336', severity: 'high', arg_positions: [3] },
+  { method: 'process', class: 'Template', type: 'code_injection', cwe: 'CWE-1336', severity: 'high', arg_positions: [0] },
   // Configuration update (common RCE vector)
   { method: 'update', class: 'Configuration', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
   // Jenkins/CI Pipeline execution
@@ -1829,12 +1831,12 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Struts OGNL
   { method: 'setValue', class: 'OgnlValueStack', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'findValue', class: 'OgnlValueStack', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
-  // Additional template engines
-  { method: 'render', class: 'Template', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
-  { method: 'render', class: 'Pebble', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
-  { method: 'render', class: 'Freemarker', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
-  { method: 'compile', class: 'Handlebars', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
-  { method: 'process', class: 'TemplateEngine', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
+  // Additional template engines (CWE-1336, as above)
+  { method: 'render', class: 'Template', type: 'code_injection', cwe: 'CWE-1336', severity: 'high', arg_positions: [0] },
+  { method: 'render', class: 'Pebble', type: 'code_injection', cwe: 'CWE-1336', severity: 'high', arg_positions: [0] },
+  { method: 'render', class: 'Freemarker', type: 'code_injection', cwe: 'CWE-1336', severity: 'high', arg_positions: [0] },
+  { method: 'compile', class: 'Handlebars', type: 'code_injection', cwe: 'CWE-1336', severity: 'high', arg_positions: [0] },
+  { method: 'process', class: 'TemplateEngine', type: 'code_injection', cwe: 'CWE-1336', severity: 'high', arg_positions: [0] },
   // Nashorn/GraalJS
   { method: 'getEngineByName', class: 'ScriptEngineManager', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
   // Spring Security OAuth expression
@@ -1879,12 +1881,13 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Thymeleaf StandardExpression (CVE-2023-38286 and similar)
   { method: 'parseExpression', class: 'StandardExpressionParser', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [1] },
   { method: 'getValue', class: 'StandardExpression', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
-  // FreeMarker direct template construction (CVE-2022-26336 and similar)
-  { method: 'Template', class: 'Template', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [1] },  // new Template(name, tainted)
-  { method: 'getTemplate', class: 'Configuration', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
+  // FreeMarker direct template construction (CVE-2022-26336 and similar).
+  // Template engines: CWE-1336, as above.
+  { method: 'Template', class: 'Template', type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [1] },  // new Template(name, tainted)
+  { method: 'getTemplate', class: 'Configuration', type: 'code_injection', cwe: 'CWE-1336', severity: 'high', arg_positions: [0] },
   // Jinjava (Java Jinja template engine)
-  { method: 'render', class: 'Jinjava', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
-  { method: 'renderForResult', class: 'Jinjava', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
+  { method: 'render', class: 'Jinjava', type: 'code_injection', cwe: 'CWE-1336', severity: 'high', arg_positions: [0] },
+  { method: 'renderForResult', class: 'Jinjava', type: 'code_injection', cwe: 'CWE-1336', severity: 'high', arg_positions: [0] },
   // Spring Cloud Function RoutingFunction (CVE-2022-22963)
   { method: 'getRequestedBeanName', class: 'RoutingFunction', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
   // Kotlin reflection (RCE via reflective construction)
@@ -2453,19 +2456,23 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'parseFromString', class: 'DOMParser', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
   { method: 'parseFromString', class: 'xmldom',    type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
 
-  // Node.js Server-Side Template Injection (SSTI) — CWE-94
+  // Node.js Server-Side Template Injection (SSTI)
   // cognium-dev#104 Sprint 22: ejs/handlebars/pug template render with
-  // tainted templates → arbitrary JS execution. Uses `code_injection`
-  // SinkType to mirror the Python Jinja2/Mako pattern above.
-  { method: 'render',   class: 'ejs',        type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
-  { method: 'compile',  class: 'ejs',        type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
-  { method: 'render',   class: 'handlebars', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
-  { method: 'compile',  class: 'handlebars', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
-  { method: 'render',   class: 'pug',        type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
-  { method: 'compile',  class: 'pug',        type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
-  { method: 'render',   class: 'mustache',   type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
-  { method: 'render',   class: 'nunjucks',   type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
-  { method: 'renderString', class: 'nunjucks', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  // tainted templates → arbitrary JS execution. Template-engine sinks carry
+  // CWE-1336: they run through the code-injection rules and are reported as
+  // `template_injection` (template-injection.ts).
+  { method: 'render',   class: 'ejs',        type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'compile',  class: 'ejs',        type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'render',   class: 'handlebars', type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'compile',  class: 'handlebars', type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'render',   class: 'pug',        type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'compile',  class: 'pug',        type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'render',   class: 'mustache',   type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'render',   class: 'nunjucks',   type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'renderString', class: 'nunjucks', type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  // doT (`require('dot')`): `doT.template(text)` compiles the text to a function.
+  { method: 'template',     class: 'doT',      type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'template',     class: 'dot',      type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
 
   // =========================================================================
   // Python Sinks
@@ -2527,10 +2534,10 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Python XSS / SSTI
   // Issue #54: Flask's `render_template_string(template_str)` with an
   // attacker-controlled template string is Server-Side Template Injection
-  // (Jinja2 SSTI → RCE), not reflected XSS. Classify as code_injection
-  // (CWE-94) with critical severity to match `jinja2.Template().render()`
-  // and `Template.from_string()` entries above.
-  { method: 'render_template_string', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  // (Jinja2 SSTI → RCE), not reflected XSS. CWE-1336 with critical severity,
+  // like `jinja2.Template()` and `Template.from_string()`: reported as
+  // `template_injection` (template-injection.ts).
+  { method: 'render_template_string', type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['python'] },
   { method: 'Markup', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['python'] },
   { method: 'mark_safe', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['python'] },
 
@@ -2614,10 +2621,17 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'replace_one', type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0, 1], languages: ['python'] },
   { method: 'count_documents', type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0], languages: ['python'] },
 
-  // Python Template Injection (Jinja2, Mako)
-  { method: 'from_string', class: 'Template', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
-  { method: 'Template', class: 'jinja2', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
-  { method: 'Template', class: 'mako', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
+  // Python Template Injection (Jinja2, Mako): the template's source text.
+  // CWE-1336 — reported as `template_injection` (template-injection.ts).
+  { method: 'from_string', class: 'Template', type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0] },
+  { method: 'Template', class: 'jinja2', type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0] },
+  { method: 'Template', class: 'mako', type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0] },
+  // `Environment(...).from_string(text)` and the classes imported by name
+  // (`from mako.template import Template`, `from django.template import
+  // Template`). `string.Template` only substitutes `$names` and is not one.
+  { method: 'from_string', class: 'Environment', type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'Template', class: 'mako.template', type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'Template', class: 'django.template', type: 'code_injection', cwe: 'CWE-1336', severity: 'critical', arg_positions: [0], languages: ['python'] },
 
   // Python Log Injection — cognium-dev #193: positions [0, 1, 2, 3, 4]
   // cover both the format string (arg 0) and Python `logging`'s positional

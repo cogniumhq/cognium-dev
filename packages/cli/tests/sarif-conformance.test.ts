@@ -315,3 +315,116 @@ describe('GitHub code scanning requirements', () => {
     expect(JSON.parse(formatSARIF([])).version).toBe('2.1.0');
   });
 });
+
+// A taint result says where the value came from and how it got to the sink,
+// as SARIF codeFlows (rendered as a step list by code scanning).
+describe('taint traces as code flows', () => {
+  const locationsOf = (result: { codeFlows: Array<{ threadFlows: Array<{ locations: unknown[] }> }> }) =>
+    result.codeFlows[0].threadFlows[0].locations.map(l => {
+      const loc = (l as { location: { physicalLocation: { artifactLocation: { uri: string }; region?: { startLine: number } }; message: { text: string } } }).location;
+      return [loc.physicalLocation.artifactLocation.uri, loc.physicalLocation.region?.startLine, loc.message.text];
+    });
+
+  test('a per-file taint finding runs from its source line to its sink line', () => {
+    const doc = JSON.parse(formatSARIF([
+      { file: 'src/Vuln.java', vulnerabilities: [vuln({ type: 'sql_injection', source: { file: 'src/Vuln.java', line: 12 } })] },
+    ]));
+    expect(validate(doc)).toEqual([]);
+    expect(locationsOf(doc.runs[0].results[0])).toEqual([
+      ['src/Vuln.java', 12, 'Source of the tainted value'],
+      ['src/Vuln.java', 42, 'Sink: sql_injection'],
+    ]);
+  });
+
+  test('a per-file finding whose source is in another file starts there', () => {
+    const doc = JSON.parse(formatSARIF([
+      { file: 'src/Repo.java', vulnerabilities: [vuln({ type: 'sql_injection', line: 9, source: { file: 'src/Controller.java', line: 4 } })] },
+    ]));
+    expect(validate(doc)).toEqual([]);
+    expect(locationsOf(doc.runs[0].results[0])).toEqual([
+      ['src/Controller.java', 4, 'Source of the tainted value'],
+      ['src/Repo.java', 9, 'Sink: sql_injection'],
+    ]);
+  });
+
+  test('a finding that is not a taint flow has no code flow', () => {
+    const doc = JSON.parse(formatSARIF([
+      { file: 'src/A.java', vulnerabilities: [vuln({ type: 'weak-hash', category: 'security' })] },
+    ]));
+    expect(doc.runs[0].results[0].codeFlows).toBeUndefined();
+    expect(validate(doc)).toEqual([]);
+  });
+
+  test('a cross-file path runs source → hops → sink, without repeating its own end hops', () => {
+    const crossFile = {
+      taintPaths: [{
+        id: 'cf-0',
+        source: { file: 'main.go', line: 6, type: 'http_param', code: '' },
+        sink: { file: 'redirect.go', line: 6, type: 'open_redirect', cwe: 'CWE-601', code: '' },
+        hops: [
+          { file: 'main.go', method: '', line: 6, code: '', variable: '' },
+          { file: 'main.go', method: 'next', line: 7, code: '', variable: '' },
+          { file: 'redirect.go', method: 'redirectTo', line: 6, code: '', variable: '' },
+        ],
+        sanitizers_in_path: [],
+        path_exists: true,
+        confidence: 0.7,
+      }],
+      crossFileCalls: [],
+    } as unknown as CrossFileData;
+    const doc = JSON.parse(formatSARIF([], crossFile));
+    expect(validate(doc)).toEqual([]);
+    expect(locationsOf(doc.runs[0].results[0])).toEqual([
+      ['main.go', 6, 'Source: http_param'],
+      ['main.go', 7, 'Step in next'],
+      ['redirect.go', 6, 'Sink: open_redirect'],
+    ]);
+  });
+
+  test('a cross-file path with no hops still has its source and sink', () => {
+    const crossFile = {
+      taintPaths: [{
+        source: { file: 'src/Controller.java', line: 10, type: 'http_param' },
+        sink: { file: 'src/Repo.java', line: 88, type: 'sql_injection', cwe: 'CWE-89' },
+        confidence: 0.9,
+      }],
+      crossFileCalls: [],
+    } as unknown as CrossFileData;
+    const doc = JSON.parse(formatSARIF([], crossFile));
+    expect(validate(doc)).toEqual([]);
+    expect(locationsOf(doc.runs[0].results[0])).toEqual([
+      ['src/Controller.java', 10, 'Source: http_param'],
+      ['src/Repo.java', 88, 'Sink: sql_injection'],
+    ]);
+  });
+});
+
+describe('files with no analyser for their type', () => {
+  test('are a note with counts by extension; the run is still complete', () => {
+    const doc = JSON.parse(formatSARIF([{ file: 'src/A.java', vulnerabilities: [] }], {
+      taintPaths: [],
+      crossFileCalls: [],
+      unsupportedFiles: { '.md': 2, '.vue': 1 },
+    }));
+    const invocation = doc.runs[0].invocations[0];
+    expect(invocation.executionSuccessful).toBe(true);
+    expect(invocation.toolExecutionNotifications).toEqual([
+      {
+        level: 'note',
+        message: { text: '3 file(s) not analysed: no analyser for their type (.md: 2, .vue: 1).' },
+        properties: { reason: 'unsupported-files', unsupportedFilesByExtension: { '.md': 2, '.vue': 1 } },
+      },
+    ]);
+    expect(validate(doc)).toEqual([]);
+  });
+
+  test('an empty run that skipped files says both that nothing was analysed and what was skipped', () => {
+    const doc = JSON.parse(formatSARIF([], {
+      taintPaths: [], crossFileCalls: [], filesTotal: 0, filesAnalysed: 0, unsupportedFiles: { '.vue': 1 },
+    }));
+    expect(doc.runs[0].results).toEqual([]);
+    expect(doc.runs[0].invocations[0].toolExecutionNotifications.map((n: { properties: { reason: string } }) => n.properties.reason))
+      .toEqual(['no-files', 'unsupported-files']);
+    expect(validate(doc)).toEqual([]);
+  });
+});
