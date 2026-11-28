@@ -95,6 +95,14 @@ export const JS_TAINTED_PATTERNS = [
   { pattern: /\bdocument\.URL\b/, type: 'http_path' as const },
   { pattern: /\bdocument\.documentURI\b/, type: 'http_path' as const },
   { pattern: /\blocation\.pathname\b/, type: 'http_path' as const },
+  // Vue Router: the current route's query string and path parameters, read as
+  // `this.$route.query` / `$route.params` (Options API and templates) or
+  // `useRoute().query` (Composition API; a `route = useRoute()` binding is a
+  // source through `useRoute` itself).
+  { pattern: /\$route\s*\.\s*(?:query|hash|fullPath)\b/, type: 'http_param' as const },
+  { pattern: /\$route\s*\.\s*params\b/, type: 'http_path' as const },
+  { pattern: /\buseRoute\s*\(\s*\)\s*\.\s*(?:query|hash|fullPath)\b/, type: 'http_param' as const },
+  { pattern: /\buseRoute\s*\(\s*\)\s*\.\s*params\b/, type: 'http_path' as const },
   // DOM propagation globals - deprecated/obscure but still exploitable as taint conduits.
   // Writing attacker-controlled data here and reading it back preserves taint (DOMPropagation pattern).
   { pattern: /\bwindow\.status\b/, type: 'dom_input' as const },
@@ -136,6 +144,10 @@ export const JS_TAINTED_PATTERNS = [
   { pattern: /\broute\.snapshot\.queryParams\b/, type: 'http_param' as const },
   { pattern: /\broute\.paramMap\b/, type: 'http_path' as const },
   { pattern: /\broute\.queryParamMap\b/, type: 'http_param' as const },
+  // Angular snapshot maps: `route.snapshot.queryParamMap.get('q')`,
+  // `route.snapshot.paramMap.get('id')`, `route.snapshot.fragment`.
+  { pattern: /\broute\.snapshot\.(?:queryParamMap|fragment)\b/, type: 'http_param' as const },
+  { pattern: /\broute\.snapshot\.paramMap\b/, type: 'http_path' as const },
 ];
 
 const PYTHON_TAINTED_PATTERNS = [

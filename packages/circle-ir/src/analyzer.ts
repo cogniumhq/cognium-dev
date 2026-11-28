@@ -54,7 +54,7 @@
  *  – FeatureEnvyPass      — fires on legitimate delegation patterns (see pass file)
  */
 
-import type { CircleIR, TypeInfo, AnalysisResponse, Vulnerability, Enriched, ProjectAnalysis, ProjectMeta, ProjectProfile, ProjectProfileSummary, ProjectShape, ProjectEnv, SastFinding } from './types/index.js';
+import type { CircleIR, TypeInfo, AnalysisResponse, Vulnerability, Enriched, ProjectAnalysis, ProjectMeta, ProjectProfile, ProjectProfileSummary, ProjectShape, ProjectEnv, SastFinding, TaintFlowInfo, TaintSink, TaintSource } from './types/index.js';
 import type { TaintConfig } from './types/config.js';
 import {
   initParser,
@@ -106,8 +106,14 @@ import { CrossFilePass } from './analysis/passes/cross-file-pass.js';
 // HTML preprocessor
 import { extractHtmlContent, extractScriptSrcs } from './analysis/html/html-extractor.js';
 import { runHtmlAttributeSecurityChecks } from './analysis/html/html-attribute-security-pass.js';
-import { runVueTemplateXssChecks } from './analysis/html/vue-template-xss-pass.js';
+import {
+  collectVueHtmlBindings,
+  buildVueTemplateProbes,
+  mapVueProbeFlows,
+  vueTemplateText,
+} from './analysis/html/vue-template-xss-pass.js';
 import { mergeHtmlResults } from './analysis/html/html-merge.js';
+import { gateJsxUrlAttributeFlows } from './analysis/jsx-url-attribute-gate.js';
 import type { ScriptBlockResult } from './analysis/html/html-merge.js';
 
 // Pass classes
@@ -1538,6 +1544,10 @@ async function analyzeFile(
     taint.flows = taint.flows.filter(f => !isCommentOnlyLine(f.sink_line) && !isCommentOnlyLine(f.source_line));
   }
 
+  // `<a href={x}>` / `<iframe src={x}>` / `<script src={x}>` are sinks for
+  // browser and URL input only, and not where the URL is checked.
+  if (language === 'javascript' || language === 'typescript') gateJsxUrlAttributeFlows(taint, types, code);
+
   // 3.105.0 — propagate tags from `TaintSink.tags` onto every emitted
   // `TaintFlowInfo.tags` so downstream consumers (CLI, SARIF) can apply
   // policy-aware rendering. Matched by (sink_line, sink_type). Sinks
@@ -1733,6 +1743,7 @@ async function analyzeMarkupFile(
 
   // Analyze each inline script block via standard JS pipeline
   const scriptResults: ScriptBlockResult[] = [];
+  const analyzedBlocks: Array<{ code: string; lang: SupportedLanguage; lineOffset: number; ir: CircleIR }> = [];
 
   for (const block of scriptBlocks) {
     if (block.kind !== 'inline' || !block.code.trim()) continue;
@@ -1747,6 +1758,7 @@ async function analyzeMarkupFile(
     try {
       const ir = await analyze(block.code, filePath, scriptLang, options);
       scriptResults.push({ ir, lineOffset: block.lineOffset });
+      analyzedBlocks.push({ code: block.code, lang: scriptLang, lineOffset: block.lineOffset, ir });
     } catch (e) {
       logger.warn('Failed to analyze script block', {
         filePath,
@@ -1775,17 +1787,58 @@ async function analyzeMarkupFile(
   // Run attribute-level security checks
   const attributeFindings = runHtmlAttributeSecurityChecks(tree.rootNode, filePath);
 
-  // Vue-only: walk the <template> subtree for dangerous attribute
-  // bindings (v-html / :innerHTML / etc.) that reference identifiers
-  // tainted in the file's script blocks. Sprint 64 / cognium-dev #184.
+  // Vue-only: a `<template>` binding that writes raw HTML (`v-html`,
+  // `:innerHTML`, …) is a DOM sink for its expression. Each script block is
+  // re-analysed as a probe in which those bindings are sinks, and the flows
+  // that reach them are reported at the template line.
+  const templateFlows: TaintFlowInfo[] = [];
+  const templateSinks: TaintSink[] = [];
+  const templateSources: TaintSource[] = [];
   if (language === 'vue') {
-    const vueXss = runVueTemplateXssChecks(tree.rootNode, filePath, scriptResults);
-    if (vueXss.length > 0) attributeFindings.push(...vueXss);
+    const bindings = collectVueHtmlBindings(tree.rootNode);
+    for (const block of bindings.length > 0 ? analyzedBlocks : []) {
+      let scriptTree: Awaited<ReturnType<typeof parse>> | null = null;
+      try {
+        scriptTree = await parse(block.code, block.lang);
+        for (const probe of buildVueTemplateProbes(block.code, scriptTree.rootNode, bindings)) {
+          const probeIr = await analyze(probe.code, filePath, block.lang, options);
+          const mapped = mapVueProbeFlows(probeIr, probe, block.lineOffset, block.ir);
+          templateFlows.push(...mapped.flows);
+          templateSinks.push(...mapped.sinks.filter(s => !templateSinks.some(t => t.line === s.line)));
+          templateSources.push(...mapped.sources);
+        }
+      } catch (e) {
+        logger.warn('Failed to analyze Vue template bindings', {
+          filePath,
+          lineOffset: block.lineOffset,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      } finally {
+        disposeTree(scriptTree);
+      }
+    }
   }
 
   // Merge everything
   const result = mergeHtmlResults(meta, scriptResults, attributeFindings);
   result.parse_status = htmlParseStatus;
+  // A `<script setup>` binding the template reads is used, not unused.
+  if (language === 'vue' && result.findings) {
+    const template = vueTemplateText(tree.rootNode, code);
+    result.findings = result.findings.filter(f => {
+      const name = f.rule_id === 'unused-variable' ? f.evidence?.variable : undefined;
+      if (typeof name !== 'string' || !/^[A-Za-z_$][\w$]*$/.test(name)) return true;
+      return !new RegExp(`(?<![\\w$.])${name.replace(/\$/g, '\\$')}(?![\\w$])`).test(template);
+    });
+    if (result.findings.length === 0) result.findings = undefined;
+  }
+  if (templateFlows.length > 0) {
+    result.taint.flows = [...(result.taint.flows ?? []), ...templateFlows];
+    result.taint.sinks.push(...templateSinks);
+    for (const src of templateSources) {
+      if (!result.taint.sources.some(s => s.line === src.line && s.type === src.type)) result.taint.sources.push(src);
+    }
+  }
 
   logger.debug('HTML analysis complete', {
     filePath,

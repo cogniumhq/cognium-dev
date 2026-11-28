@@ -233,10 +233,10 @@ describe('formatJSON', () => {
     expect(none.summary.unsupportedFiles).toBe(0);
     expect(none.summary.unsupportedFilesByExtension).toEqual({});
     const some = JSON.parse(formatJSON([makeResult('src/Foo.java', [])], {
-      taintPaths: [], crossFileCalls: [], unsupportedFiles: { '.md': 2, '.vue': 1 },
+      taintPaths: [], crossFileCalls: [], unsupportedFiles: { '.md': 2, '.svelte': 1 },
     }));
     expect(some.summary.unsupportedFiles).toBe(3);
-    expect(some.summary.unsupportedFilesByExtension).toEqual({ '.md': 2, '.vue': 1 });
+    expect(some.summary.unsupportedFilesByExtension).toEqual({ '.md': 2, '.svelte': 1 });
     expect(some.summary.executionSuccessful).toBe(true);
   });
 

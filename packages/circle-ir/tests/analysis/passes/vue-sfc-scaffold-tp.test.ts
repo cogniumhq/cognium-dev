@@ -5,12 +5,11 @@
  * existing JS pipeline picks up `<script>` / `<script setup>` /
  * `<script lang="ts">` blocks (TP-1..TP-4 below).
  *
- * Sprint 64 added the `vue-template-xss` synthetic-emission pass that
- * walks the template subtree for dangerous attribute bindings
- * (`v-html`, `v-bind:innerHTML`, `:innerHTML`, `v-bind:outerHTML`,
- * `:outerHTML`) and emits a CWE-79 finding when the RHS expression
- * references an identifier tainted in the same file's script blocks
- * (TP-5..TP-7 + TN-1..TN-2 below).
+ * Sprint 64 added template-attribute sinks: `v-html`, `v-bind:innerHTML`,
+ * `:innerHTML`, `v-bind:outerHTML` and `:outerHTML` bindings whose
+ * expression carries taint from the file's script blocks (TP-5..TP-7 +
+ * TN-1..TN-2 below). They are reported as `xss` taint flows ending at the
+ * binding's template line.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -86,10 +85,12 @@ eval(userInput);
   // Sprint 64 — vue-template-xss pass (template attribute bindings)
   // -------------------------------------------------------------------------
 
-  const vueXssFindings = (r: { findings?: Array<{ rule_id: string }> }) =>
-    (r.findings ?? []).filter((f) => f.rule_id === 'vue-template-xss');
+  // A raw-HTML template binding is reported as an `xss` taint flow whose
+  // sink is the binding's line in the `.vue` file (line 2 in every case).
+  const vueXssFindings = (r: { taint: { flows?: Array<{ sink_type: string; sink_line: number }> } }) =>
+    (r.taint.flows ?? []).filter((f) => f.sink_type === 'xss' && f.sink_line === 2);
 
-  it('#184 TP-5 — Vue SFC <template v-html="taint">: fires vue-template-xss', async () => {
+  it('#184 TP-5 — Vue SFC <template v-html="taint">: reports an xss flow to the binding', async () => {
     // Sprint 63 locked this at zero; Sprint 64 flips it to a real TP.
     const code = `<template>
   <div v-html="userInput"></div>
@@ -131,8 +132,8 @@ const userInput = req.body.payload;
 
   it('#184 TN-1 — Vue SFC v-text with taint does NOT fire (textContent is safe)', async () => {
     // v-text writes via textContent which the browser escapes.
-    // Even with a tainted RHS this must produce zero vue-template-xss
-    // findings — locks the v-text-is-safe contract.
+    // Even with a tainted RHS this must produce no template xss flow —
+    // locks the v-text-is-safe contract.
     const code = `<template>
   <div v-text="userInput"></div>
 </template>

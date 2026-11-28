@@ -9,9 +9,9 @@
  * blocks are extracted by the same machinery as HTML inline scripts and
  * routed to the JS / TS pipeline.
  *
- * Sprint 63 (cognium-dev #184): JS-side detection only. Template-attribute
- * sinks like `v-html`, `v-text`, `:innerHTML` are not detected by this
- * plugin and land in Sprint 64 via a dedicated vue-template-xss pass.
+ * Template bindings that write raw HTML (`v-html`, `:innerHTML`, …) are
+ * sinks too; `analysis/html/vue-template-xss-pass.ts` turns them into DOM
+ * sinks of the script block they read from.
  */
 
 import type { Node as SyntaxNode } from 'web-tree-sitter';

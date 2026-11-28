@@ -389,6 +389,7 @@ const LANG_MAP: Record<string, string> = {
   '.bash': 'bash',
   '.html': 'html',
   '.htm': 'html',
+  '.vue': 'vue',
 };
 
 interface ScanOptions {

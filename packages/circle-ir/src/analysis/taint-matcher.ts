@@ -3156,14 +3156,18 @@ function compileJsSourcePatterns(sourcePatterns: SourcePattern[]): CompiledJsSou
 
   const exact: CompiledJsSourcePatterns['exact'] = [];
   const contained: CompiledJsSourcePatterns['contained'] = [];
+  // Names are matched literally, and `(?<![\w$])` stands in for `\b` so an object
+  // that starts with `$` (Vue's `$route`) still matches after `this.`.
+  const escape = (name: string): string => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   for (const sp of sourcePatterns) {
     if (sp.property && sp.object && sp.property_tainted) {
+      const member = `${escape(sp.object)}\\.${escape(sp.property)}\\b`;
       exact.push({
-        pattern: new RegExp(`^${sp.object}\\.${sp.property}\\b`),
+        pattern: new RegExp(`^${member}`),
         sourceType: sp.type,
       });
       contained.push({
-        pattern: new RegExp(`\\b${sp.object}\\.${sp.property}\\b`),
+        pattern: new RegExp(`(?<![\\w$])${member}`),
         sourceType: sp.type,
       });
     }

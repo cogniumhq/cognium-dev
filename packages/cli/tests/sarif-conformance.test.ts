@@ -404,15 +404,15 @@ describe('files with no analyser for their type', () => {
     const doc = JSON.parse(formatSARIF([{ file: 'src/A.java', vulnerabilities: [] }], {
       taintPaths: [],
       crossFileCalls: [],
-      unsupportedFiles: { '.md': 2, '.vue': 1 },
+      unsupportedFiles: { '.md': 2, '.svelte': 1 },
     }));
     const invocation = doc.runs[0].invocations[0];
     expect(invocation.executionSuccessful).toBe(true);
     expect(invocation.toolExecutionNotifications).toEqual([
       {
         level: 'note',
-        message: { text: '3 file(s) not analysed: no analyser for their type (.md: 2, .vue: 1).' },
-        properties: { reason: 'unsupported-files', unsupportedFilesByExtension: { '.md': 2, '.vue': 1 } },
+        message: { text: '3 file(s) not analysed: no analyser for their type (.md: 2, .svelte: 1).' },
+        properties: { reason: 'unsupported-files', unsupportedFilesByExtension: { '.md': 2, '.svelte': 1 } },
       },
     ]);
     expect(validate(doc)).toEqual([]);
@@ -420,7 +420,7 @@ describe('files with no analyser for their type', () => {
 
   test('an empty run that skipped files says both that nothing was analysed and what was skipped', () => {
     const doc = JSON.parse(formatSARIF([], {
-      taintPaths: [], crossFileCalls: [], filesTotal: 0, filesAnalysed: 0, unsupportedFiles: { '.vue': 1 },
+      taintPaths: [], crossFileCalls: [], filesTotal: 0, filesAnalysed: 0, unsupportedFiles: { '.svelte': 1 },
     }));
     expect(doc.runs[0].results).toEqual([]);
     expect(doc.runs[0].invocations[0].toolExecutionNotifications.map((n: { properties: { reason: string } }) => n.properties.reason))

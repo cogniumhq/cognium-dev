@@ -180,7 +180,7 @@ export function entryPathDroppedText(n: number): string {
     + 'Rerun with --disable-pass require-entry-path to report them.';
 }
 
-/** `.md: 2, .vue: 1` */
+/** `.md: 2, .svelte: 1` */
 export function unsupportedFilesText(byExtension: Readonly<Record<string, number>>): string {
   return Object.entries(byExtension).map(([ext, n]) => `${ext}: ${n}`).join(', ');
 }
@@ -308,7 +308,7 @@ export interface CrossFileData {
   entryPathDropped?: number;
   /**
    * Files the walk found and left out because no analyser handles their
-   * type, counted by extension (`{ ".vue": 1 }`). JSON `summary` and a SARIF
+   * type, counted by extension (`{ ".svelte": 1 }`). JSON `summary` and a SARIF
    * note report them, so a skipped file never reads as a clean one.
    */
   unsupportedFiles?: Record<string, number>;

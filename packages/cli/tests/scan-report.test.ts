@@ -55,7 +55,7 @@ describe('a folder with no supported files', () => {
   let dir: string;
   beforeAll(() => {
     dir = project('markup-only', {
-      'Banner.vue': '<template>\n  <div v-html="msg"></div>\n</template>\n',
+      'Card.svelte': '<div>{@html msg}</div>\n',
       'notes.md': '# notes\n',
     });
   });
@@ -65,13 +65,13 @@ describe('a folder with no supported files', () => {
     const { exitCode, stderr } = await run(dir, 'scan', '.', '-f', 'json', '-o', out);
     expect(exitCode).toBe(0);
     expect(stderr).toContain('No supported files found');
-    expect(stderr).toContain('2 file(s) skipped: no analyser for their type (.md: 1, .vue: 1)');
+    expect(stderr).toContain('2 file(s) skipped: no analyser for their type (.md: 1, .svelte: 1)');
     expect(existsSync(out)).toBe(true);
     const doc = JSON.parse(readFileSync(out, 'utf8'));
     expect(doc.results).toEqual([]);
     expect(doc.summary.filesScanned).toBe(0);
     expect(doc.summary.unsupportedFiles).toBe(2);
-    expect(doc.summary.unsupportedFilesByExtension).toEqual({ '.md': 1, '.vue': 1 });
+    expect(doc.summary.unsupportedFilesByExtension).toEqual({ '.md': 1, '.svelte': 1 });
   }, 30_000);
 
   test('-f sarif -o writes a valid empty run that says why it is empty and what was skipped', async () => {
@@ -83,13 +83,13 @@ describe('a folder with no supported files', () => {
     expect(doc.runs[0].results).toEqual([]);
     const notes = doc.runs[0].invocations[0].toolExecutionNotifications;
     expect(notes.map((n: { properties: { reason: string } }) => n.properties.reason)).toEqual(['no-files', 'unsupported-files']);
-    expect(notes[1].properties.unsupportedFilesByExtension).toEqual({ '.md': 1, '.vue': 1 });
+    expect(notes[1].properties.unsupportedFilesByExtension).toEqual({ '.md': 1, '.svelte': 1 });
   }, 30_000);
 
   test('a single unsupported file given by name is counted too', async () => {
-    const { stdout, exitCode } = await run(dir, 'scan', 'Banner.vue', '-f', 'json', '-q');
+    const { stdout, exitCode } = await run(dir, 'scan', 'Card.svelte', '-f', 'json', '-q');
     expect(exitCode).toBe(0);
-    expect(JSON.parse(stdout).summary.unsupportedFilesByExtension).toEqual({ '.vue': 1 });
+    expect(JSON.parse(stdout).summary.unsupportedFilesByExtension).toEqual({ '.svelte': 1 });
   }, 30_000);
 });
 
