@@ -52,13 +52,13 @@ jobs:
       security-events: write   # SARIF upload; GitHub downgrades this to read on fork PRs
     steps:
       - name: Check out PR head
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           path: head
           persist-credentials: false
 
       - name: Check out PR base
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: base
@@ -170,9 +170,9 @@ jobs:
   #   timeout-minutes: 40
   #   continue-on-error: true
   #   steps:
-  #     - uses: actions/checkout@v7
+  #     - uses: actions/checkout@v7.0.1
   #       with: { path: head, persist-credentials: false }
-  #     - uses: actions/checkout@v7
+  #     - uses: actions/checkout@v7.0.1
   #       with: { ref: '${{ github.event.pull_request.base.sha }}', path: base, persist-credentials: false }
   #     - uses: actions/setup-node@v7
   #       with: { node-version: '22' }
