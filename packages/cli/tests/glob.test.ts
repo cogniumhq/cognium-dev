@@ -154,6 +154,10 @@ describe('detectLanguage', () => {
     expect(detectLanguage('init.bash')).toBe('bash');
   });
 
+  test('detects Vue single-file components', () => {
+    expect(detectLanguage('Banner.vue')).toBe('vue');
+  });
+
   test('returns null for unknown extension', () => {
     expect(detectLanguage('README.md')).toBeNull();
     expect(detectLanguage('data.csv')).toBeNull();
@@ -171,7 +175,7 @@ describe('detectLanguage', () => {
 describe('resolveScanLanguage', () => {
   test('accepts every language that LANG_MAP can detect', () => {
     expect(SUPPORTED_SCAN_LANGUAGES).toEqual([
-      'bash', 'csharp', 'go', 'html', 'java', 'javascript', 'python', 'rust', 'typescript',
+      'bash', 'csharp', 'go', 'html', 'java', 'javascript', 'python', 'rust', 'typescript', 'vue',
     ]);
     for (const lang of SUPPORTED_SCAN_LANGUAGES) {
       expect(resolveScanLanguage(lang)).toBe(lang);

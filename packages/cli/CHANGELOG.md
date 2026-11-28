@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`scan` reads Vue single-file components (`.vue`).** A folder of `.vue` files no longer reports "No supported files found"; `--language vue` selects them. circle-ir analyses their `<script>` / `<script setup>` blocks and reports a raw-HTML template binding (`v-html`, `:innerHTML`) fed by the script's input as XSS at the binding's line.
 - **`scan`: a Java path-traversal finding from the tool's own arguments says so.** When circle-ir tags a flow `tool-arguments:local-input` (`main`'s `String[]`, a commons-cli option, a Mojo `@Parameter`), its message ends with "— input from the tool's own arguments (lower risk for a local tool)" in text, JSON and SARIF, and it carries the tag. Severity is unchanged. A cross-file path from such a source shows the same note in text and SARIF, and the tag in JSON and SARIF `properties.tags`. Where flows from other sources reach the same sink, the finding keeps the plain message.
 
 ## [4.24.0] - 2026-11-26
