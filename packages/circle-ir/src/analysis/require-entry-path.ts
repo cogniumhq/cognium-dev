@@ -336,6 +336,7 @@ const SINK_HC_SEVERITY: Partial<Record<SinkType, 'high' | 'critical'>> = {
   xpath_injection: 'high',
   ssrf: 'high',
   code_injection: 'critical',
+  template_injection: 'critical',
   format_string: 'high',
   mass_assignment: 'high',
 };

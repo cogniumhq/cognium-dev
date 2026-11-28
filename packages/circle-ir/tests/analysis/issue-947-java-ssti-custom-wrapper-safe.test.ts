@@ -8,10 +8,10 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
 
 const codeInjFlows = (ir: Awaited<ReturnType<typeof analyze>>) =>
-  (ir.taint.flows ?? []).filter((f) => f.sink_type === 'code_injection' && !f.sanitized);
+  (ir.taint.flows ?? []).filter((f) => f.sink_type === 'template_injection' && !f.sanitized);
 
 const codeInjSinks = (ir: Awaited<ReturnType<typeof analyze>>) =>
-  (ir.taint.sinks ?? []).filter((s) => s.type === 'code_injection');
+  (ir.taint.sinks ?? []).filter((s) => s.type === 'template_injection');
 
 const safeMirror = [
   'import org.apache.velocity.app.Velocity;',
@@ -57,17 +57,17 @@ describe('#947 Java custom_wrapper ssti safe mirror', () => {
     await initAnalyzer();
   });
 
-  it('custom_wrapper brace strip stays clean for code_injection', async () => {
+  it('custom_wrapper brace strip stays clean for template_injection', async () => {
     const ir = await analyze(safeMirror, 'V06CustomWrapperSafe.java', 'java');
     expect(codeInjFlows(ir)).toEqual([]);
   });
 
-  it('helper that only strips open brace still fires code_injection', async () => {
+  it('helper that only strips open brace still fires template_injection', async () => {
     const ir = await analyze(partialStrip, 'V06PartialWrapper.java', 'java');
     expect(codeInjFlows(ir).length).toBeGreaterThan(0);
   });
 
-  it('recall: raw parameter in template still emits code_injection', async () => {
+  it('recall: raw parameter in template still emits template_injection', async () => {
     const ir = await analyze(tpMirror, 'V01BaselineTp.java', 'java');
     expect(codeInjSinks(ir).length).toBeGreaterThan(0);
   });

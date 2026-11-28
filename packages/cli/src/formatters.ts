@@ -270,6 +270,7 @@ export const SINK_SEVERITY: Record<SinkType, string> = {
   ssrf: 'high',
   open_redirect: 'medium',
   code_injection: 'critical',
+  template_injection: 'critical',
   log_injection: 'medium',
   weak_random: 'low',
   weak_hash: 'low',
@@ -303,6 +304,7 @@ export const SINK_CWE: Record<SinkType, string> = {
   ssrf: 'CWE-918',
   open_redirect: 'CWE-601',
   code_injection: 'CWE-94',
+  template_injection: 'CWE-1336',
   log_injection: 'CWE-117',
   weak_random: 'CWE-330',
   weak_hash: 'CWE-328',    // Use of Weak Hash (MD5, SHA-1, etc.)
@@ -372,6 +374,10 @@ const VULNERABILITY_HELP: Record<string, { description: string; fix: string }> =
   code_injection: {
     description: 'User input is evaluated as code (eval, script execution, etc.)',
     fix: 'Never execute user input as code. Use safe alternatives like JSON parsing'
+  },
+  template_injection: {
+    description: 'User input is used as the source text of a server-side template, so template directives in it run in the template engine',
+    fix: 'Load templates from fixed files or constants and pass user input only as data to the rendering context'
   },
   log_injection: {
     description: 'User input in logs can inject fake log entries or exploit log viewers',

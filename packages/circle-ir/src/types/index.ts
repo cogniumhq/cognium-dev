@@ -396,6 +396,7 @@ export const SINK_TYPES = [
   "ssrf",
   "open_redirect",
   "code_injection",
+  "template_injection",
   "log_injection",
   "redos",
   "format_string",

@@ -95,6 +95,7 @@ import { promoteCrossFilePathsToSinkFlows } from './analysis/promote-cross-file-
 import { markCrossFileToolArgumentPaths, markToolArgumentFlows } from './analysis/tool-arguments.js';
 import { dropJsTestToProductionTaintPaths } from './analysis/test-to-production-taint-gate.js';
 import { dropEscapesToProjectCallees } from './analysis/project-callee-escape-gate.js';
+import { reportTemplateInjection, ruleSinkType } from './analysis/template-injection.js';
 import { applyProjectProfileTransform, type ProfileResolver } from './analysis/project-profile-transform.js';
 import { registerBuiltinPlugins } from './languages/index.js';
 import { logger } from './utils/logger.js';
@@ -1554,6 +1555,10 @@ async function analyzeFile(
     }
   }
 
+  // Template-engine sinks ran through the code-injection rules above; report
+  // them, and the flows into them, as `template_injection` (CWE-1336).
+  reportTemplateInjection(taint);
+
   // A Java path-traversal flow from the tool's own arguments (`main`'s
   // `String[]`, a commons-cli option, a Mojo `@Parameter`) is tagged and
   // reported at half its confidence.
@@ -1957,7 +1962,7 @@ function findVulnerabilities(
     const potentialSinks = sourceToSinkMapping[source.type] ?? [];
 
     for (const sink of sinks) {
-      if (potentialSinks.includes(sink.type)) {
+      if (potentialSinks.includes(ruleSinkType(sink.type))) {
         // Check if we have constant propagation data to verify actual taint flow
         if (calls && constPropResult) {
           const sinkCall = calls.find(c => c.location.line === sink.line);
