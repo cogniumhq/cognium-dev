@@ -609,6 +609,8 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { annotation: 'Session',      type: 'http_cookie',  severity: 'high', param_tainted: true },
   { annotation: 'Ip',           type: 'network_input', severity: 'high', param_tainted: true },
   { annotation: 'HostParam',    type: 'http_path',    severity: 'high', param_tainted: true },
+  // `@Headers('x-name') name` / `@Headers() headers` (FastAPI's is the singular `Header`).
+  { annotation: 'Headers',      type: 'http_header',  severity: 'high', param_tainted: true, languages: ['javascript', 'typescript'] },
   { annotation: 'UploadedFile', type: 'file_input',   severity: 'high', param_tainted: true },
   { annotation: 'UploadedFiles', type: 'file_input',  severity: 'high', param_tainted: true },
   // FastAPI Request object

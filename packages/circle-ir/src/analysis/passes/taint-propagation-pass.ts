@@ -17,6 +17,7 @@ import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import { findJavaSpringReturnXSSSinks } from './language-sources-pass.js';
+import { findJsNestReturnSinks } from '../js-nest-return-sinks.js';
 import { expressionFullyWrappedBySanitizer, identifierOutsideSanitizerCalls, identifierOutsideSanitizerCallsInText, propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP, constPropScopedVar } from '../constant-propagation.js';
 import { buildJavaTaintedVars, buildJavaScriptTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks, findJavaWikiPluginReturnXSSSinks } from './language-sources-pass.js';
@@ -803,6 +804,32 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
           path: [
             { variable: src.variable ?? 'response', line: src.line, type: 'source' as const },
             { variable: src.variable ?? 'response', line: rx.sinkLine, type: 'sink' as const },
+          ],
+          confidence: (src.confidence ?? 1) * (sink.confidence ?? 1),
+          sanitized: false,
+        });
+      }
+    }
+
+    // Supplement: NestJS handler return-as-body XSS and `@Redirect()` url
+    // flows. As for Spring above, the sink LanguageSourcesPass synthesises at
+    // the `return` has no call to match arguments against.
+    if ((ctx.language === 'javascript' || ctx.language === 'typescript') && typeof ctx.code === 'string') {
+      for (const rx of findJsNestReturnSinks(ctx.code, ctx.language, types, sources)) {
+        if (constProp.unreachableLines.has(rx.sinkLine)) continue;
+        const sink = sinks.find(sk => sk.line === rx.sinkLine && sk.type === rx.type);
+        if (!sink) continue;
+        const src = sources.find(sc => sc.line === rx.sourceLine && sc.type !== 'interprocedural_param');
+        if (!src) continue;
+        const variable = rx.carriers[0] ?? src.variable ?? 'request';
+        pushIfNew({
+          source_line: src.line,
+          sink_line: rx.sinkLine,
+          source_type: src.type,
+          sink_type: rx.type,
+          path: [
+            { variable, line: src.line, type: 'source' as const },
+            { variable, line: rx.sinkLine, type: 'sink' as const },
           ],
           confidence: (src.confidence ?? 1) * (sink.confidence ?? 1),
           sanitized: false,
