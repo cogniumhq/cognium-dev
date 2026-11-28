@@ -16,6 +16,7 @@ import type {
 } from '../types/index.js';
 import { SymbolTable, type ExportedSymbol } from './symbol-table.js';
 import { TypeHierarchyResolver } from './type-hierarchy.js';
+import { constLookupTables, isConstTableLookup } from '../analysis/const-table-lookup.js';
 
 /**
  * Resolved call with target information
@@ -72,7 +73,7 @@ export interface CrossFileTaintFlow {
 export interface InterproceduralTaintPath {
   source: { file: string; line: number; type: string };
   sink:   { file: string; line: number; type: string; cwe: string };
-  hops:   Array<{ file: string; line: number; method: string; kind: 'source' | 'wrapper_return' | 'field_write' | 'field_read' | 'sink_call' | 'sink' }>;
+  hops:   Array<{ file: string; line: number; method: string; kind: 'source' | 'wrapper_return' | 'field_write' | 'field_read' | 'sink_call' | 'callback' | 'sink' }>;
   confidence: number;
   /**
    * The callee argument position the tainted value enters through, when the
@@ -304,6 +305,13 @@ export class CrossFileResolver {
   // Cache: method FQN -> taint info
   private methodTaintInfo: Map<string, MethodTaintInfo> = new Map();
 
+  /**
+   * The same summaries keyed `${file}#${methodFqn}`. JS/TS module functions
+   * share the FQN `<module>.<name>` across files, so a lookup by FQN alone can
+   * return another file's function of the same name.
+   */
+  private methodTaintInfoByFile: Map<string, MethodTaintInfo> = new Map();
+
   // Cache: `${typeFqn}.${fieldName}` -> field taint info
   private fieldTaintInfo: Map<string, FieldTaintInfo> = new Map();
 
@@ -328,6 +336,9 @@ export class CrossFileResolver {
   // Resolved calls cache
   private resolvedCalls: Map<string, ResolvedCall> = new Map();
 
+  /** JS/TS file → the `<module>` method it exports as default (null: none found). */
+  private jsDefaultExportNames: Map<string, string | null> = new Map();
+
   constructor(
     symbolTable: SymbolTable,
     typeHierarchy: TypeHierarchyResolver
@@ -346,6 +357,7 @@ export class CrossFileResolver {
    */
   setSourceLines(lines: Map<string, string[]>): void {
     this.sourceLines = lines;
+    this.jsDefaultExportNames.clear();
     for (const [path, ir] of this.fileIRs) {
       this.analyzeJavaStaticFieldPairs(ir, path);
     }
@@ -375,12 +387,18 @@ export class CrossFileResolver {
 
     let resolved: ResolvedCall | undefined;
 
-    // Try to resolve based on receiver type
-    if (call.receiver) {
-      resolved = this.resolveWithReceiver(call, fromFile);
-    } else {
-      // Static call or same-class call
-      resolved = this.resolveStaticOrLocal(call, fromFile);
+    // JS/TS: a call made through an import of a relative module resolves to
+    // the function that module exports, before any name-based guess.
+    const lang = this.fileIRs.get(fromFile)?.meta.language;
+    if (lang === 'javascript' || lang === 'typescript') {
+      resolved = this.resolveJsImportedCall(call, fromFile);
+    }
+
+    if (!resolved) {
+      // Try to resolve based on receiver type; else a static or same-class call.
+      resolved = call.receiver
+        ? this.resolveWithReceiver(call, fromFile)
+        : this.resolveStaticOrLocal(call, fromFile);
     }
 
     if (resolved) {
@@ -489,6 +507,146 @@ export class CrossFileResolver {
   private isImportBinding(file: string, name: string): boolean {
     const ir = this.fileIRs.get(file);
     return (ir?.imports ?? []).some(i => (i.alias ?? i.imported_name) === name);
+  }
+
+  /**
+   * JS/TS: resolve a call made through the caller's import of a relative
+   * module to the function that module exports:
+   *   - `const { fn } = require('./h')` / `import { fn as go } from './h'`,
+   *     then `fn(…)` / `go(…)`: the export `fn`;
+   *   - `const ping = require('./h')` / `import ping from './h'`, then
+   *     `ping(…)`: the module's default export (`module.exports = function`,
+   *     `export default function`);
+   *   - `const h = require('./h')`, `import * as h from './h'` or
+   *     `import h from './h'`, then `h.fn(…)`: the export `fn`.
+   * Re-exports (`export * from`, `export { fn } from`) are followed up to
+   * three hops. Undefined when the call is not made through such an import
+   * or the function is not found; resolution then falls back to the
+   * name-based search.
+   */
+  private resolveJsImportedCall(call: CallInfo, fromFile: string): ResolvedCall | undefined {
+    const ir = this.fileIRs.get(fromFile);
+    if (!ir) return undefined;
+    const receiver = call.receiver ?? null;
+    if (receiver !== null && !/^[A-Za-z_$][\w$]*$/.test(receiver)) return undefined;
+    const binding = receiver ?? call.method_name;
+    const imp = (ir.imports ?? []).find(i =>
+      !i.is_type_only && !!i.from_package && i.from_package.startsWith('.')
+      && (i.alias ?? i.imported_name) === binding);
+    if (!imp?.from_package) return undefined;
+    const wholeModule = imp.is_wildcard || imp.imported_name === 'default';
+    let symbol: string;
+    if (receiver === null) symbol = wholeModule ? 'default' : imp.imported_name;
+    else if (wholeModule) symbol = call.method_name;
+    else return undefined; // a named import used as an object: left to the type-based paths
+    const targetFile = this.resolveJsModuleFile(fromFile, imp.from_package);
+    if (!targetFile) return undefined;
+    const found = this.findJsExportedFunction(targetFile, symbol, 0, new Set());
+    if (!found) return undefined;
+    const pkg = found.ir.meta.package || '';
+    const typeFqn = pkg ? `${pkg}.<module>` : '<module>';
+    return {
+      call,
+      sourceFile: fromFile,
+      targetFile: found.file,
+      targetMethod: `${typeFqn}.${found.method.name}`,
+      targetClass: typeFqn,
+      resolution: 'exact',
+    };
+  }
+
+  /**
+   * The project file a relative JS/TS module specifier names, trying the
+   * TypeScript and JavaScript extensions and `index` files. A `.js` / `.mjs`
+   * / `.cjs` / `.jsx` specifier may name its TypeScript source.
+   */
+  private resolveJsModuleFile(fromFile: string, spec: string): string | undefined {
+    const parts = fromFile.split('/');
+    parts.pop();
+    for (const seg of spec.split('/')) {
+      if (seg === '' || seg === '.') continue;
+      if (seg === '..') {
+        if (parts.length > 1 || (parts.length === 1 && parts[0] !== '')) parts.pop();
+      } else {
+        parts.push(seg);
+      }
+    }
+    const base = parts.join('/');
+    const stem = base.replace(/\.(?:[mc]?js|jsx)$/, '');
+    const exts = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
+    const candidates = [base, ...exts.map(e => stem + e), ...exts.map(e => `${base}/index${e}`)];
+    return candidates.find(c => this.fileIRs.has(c));
+  }
+
+  /**
+   * The module-level function `file` exports as `symbol` (`default` for the
+   * default export), following re-exports and re-exported imports.
+   */
+  private findJsExportedFunction(
+    file: string,
+    symbol: string,
+    depth: number,
+    visited: Set<string>,
+  ): { file: string; ir: CircleIR; method: MethodInfo } | undefined {
+    const ir = this.fileIRs.get(file);
+    const key = `${file}#${symbol}`;
+    if (!ir || visited.has(key)) return undefined;
+    visited.add(key);
+    const lang = ir.meta.language;
+    if (lang !== 'javascript' && lang !== 'typescript') return undefined;
+    const name = symbol === 'default' ? this.jsDefaultExportName(file, ir) : symbol;
+    const method = name
+      ? ir.types.find(t => t.name === '<module>')?.methods.find(m => m.name === name)
+      : undefined;
+    if (method) return { file, ir, method };
+    if (depth >= 3) return undefined;
+    for (const imp of ir.imports ?? []) {
+      if (!imp.from_package?.startsWith('.') || imp.is_type_only) continue;
+      const reExport = imp.is_wildcard && imp.alias === null;
+      if (!reExport && (name === undefined || (imp.alias ?? imp.imported_name) !== name)) continue;
+      const next = this.resolveJsModuleFile(file, imp.from_package);
+      if (!next || next === file) continue;
+      const nextSymbol = reExport ? symbol : imp.is_wildcard ? 'default' : imp.imported_name;
+      const found = this.findJsExportedFunction(next, nextSymbol, depth + 1, visited);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  /**
+   * Name of the `<module>` method a JS/TS file exports as its default:
+   * `default` for an anonymous one, else the name given by
+   * `export default function f` / `export default f` /
+   * `module.exports = function f` / `module.exports = f` /
+   * `export { f as default }`.
+   */
+  private jsDefaultExportName(file: string, ir: CircleIR): string | undefined {
+    const methods = ir.types.find(t => t.name === '<module>')?.methods ?? [];
+    if (methods.some(m => m.name === 'default')) return 'default';
+    const lines = this.sourceLines?.get(file);
+    if (!lines) return undefined;
+    if (this.jsDefaultExportNames.has(file)) return this.jsDefaultExportNames.get(file) ?? undefined;
+    const name = this.readJsDefaultExportName(lines, methods);
+    this.jsDefaultExportNames.set(file, name ?? null);
+    return name;
+  }
+
+  /** The default export named by a top-level statement of `lines`, among `methods`. */
+  private readJsDefaultExportName(lines: readonly string[], methods: readonly MethodInfo[]): string | undefined {
+    const known = (name: string | undefined): name is string => !!name && methods.some(x => x.name === name);
+    for (const raw of lines) {
+      const line = raw.trim().replace(/;$/, '');
+      const fn = /^(?:export\s+default|module\.exports\s*=)\s*(?:async\s+)?function[\s*]*([A-Za-z_$][\w$]*)/.exec(line)?.[1];
+      if (known(fn)) return fn;
+      const bare = /^(?:export\s+default|module\.exports\s*=)\s*([A-Za-z_$][\w$]*)$/.exec(line)?.[1];
+      if (known(bare)) return bare;
+      const list = /^export\s*\{([^}]*)\}$/.exec(line)?.[1];
+      for (const entry of list?.split(',') ?? []) {
+        const alias = /^([A-Za-z_$][\w$]*)\s+as\s+default$/.exec(entry.trim())?.[1];
+        if (known(alias)) return alias;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -670,6 +828,7 @@ export class CrossFileResolver {
         };
 
         this.methodTaintInfo.set(methodFqn, taintInfo);
+        this.methodTaintInfoByFile.set(`${filePath}#${methodFqn}`, taintInfo);
       }
     }
   }
@@ -1064,46 +1223,8 @@ export class CrossFileResolver {
           // call's arguments must reference it — or a variable DFG-derived
           // from it (#146) — directly or by expression.
           if (reachable) {
-            // Name-based acceptance (#146): find which reachable variable
-            // name the call carries (bare arg or inside an expression like
-            // `&a` / `"p" + a`), so the #266 clobber check can key on it.
-            let matchedName: string | undefined;
-            for (const arg of call.arguments) {
-              if (arg.variable && reachable.names.has(arg.variable)) {
-                matchedName = arg.variable;
-                break;
-              }
-              if (arg.expression) {
-                for (const v of reachable.names) {
-                  if (new RegExp(`\\b${escapeRegExp(v)}\\b`).test(arg.expression)) {
-                    matchedName = v;
-                    break;
-                  }
-                }
-                if (matchedName) break;
-              }
-            }
-            if (!matchedName) continue;
-            // The arguments that carry the source (cognium-dev#637): the
-            // callee reach check follows only those parameters.
-            const names = [...reachable.names];
-            carriedPositions = call.arguments.flatMap((arg, i) =>
-              (arg.variable && reachable.names.has(arg.variable)) ||
-              names.some(v => arg.expression && new RegExp(`\\b${escapeRegExp(v)}\\b`).test(arg.expression))
-                ? [i] : []);
-
-            // Redefinition override (cognium-dev #266): the name-based gate
-            // cannot distinguish a source-named variable from a later
-            // same-named redefinition to an untainted value
-            // (`a = req.getParameter(); a = "safe"; helper.run(a)`). When
-            // the DFG *positively* proves the matched variable's reaching
-            // def at the call line is such a redefinition — a known def_id
-            // NOT in the source's reachable def set — reject the flow.
-            // Fires only when the DFG can prove it; empty/imprecise DFG
-            // (e.g. Python) → no rejection, #146 name decision stands.
-            if (this.taintClobbered(ir, call.location.line, matchedName, reachable.defIds)) {
-              continue;
-            }
+            carriedPositions = this.carriedArgPositions(ir, call, reachable);
+            if (!carriedPositions) continue;
           }
 
           // The method the value ends in: the callee itself, or, for C#, the methods
@@ -1176,6 +1297,58 @@ export class CrossFileResolver {
   }
 
   /**
+   * The argument positions of `call` that carry a value of `reachable` (the
+   * source variable and the locals DFG-derived from it), or undefined when
+   * none does or the DFG proves the carried variable was reassigned away from
+   * the source before the call.
+   */
+  private carriedArgPositions(
+    ir: CircleIR,
+    call: CallInfo,
+    reachable: { names: Set<string>; defIds: Set<number> },
+  ): number[] | undefined {
+    // Name-based acceptance (#146): find which reachable variable
+    // name the call carries (bare arg or inside an expression like
+    // `&a` / `"p" + a`), so the #266 clobber check can key on it.
+    let matchedName: string | undefined;
+    for (const arg of call.arguments) {
+      if (arg.variable && reachable.names.has(arg.variable)) {
+        matchedName = arg.variable;
+        break;
+      }
+      if (arg.expression) {
+        for (const v of reachable.names) {
+          if (new RegExp(`\\b${escapeRegExp(v)}\\b`).test(arg.expression)) {
+            matchedName = v;
+            break;
+          }
+        }
+        if (matchedName) break;
+      }
+    }
+    if (!matchedName) return undefined;
+    // The arguments that carry the source (cognium-dev#637): the
+    // callee reach check follows only those parameters.
+    const names = [...reachable.names];
+    const carried = call.arguments.flatMap((arg, i) =>
+      (arg.variable && reachable.names.has(arg.variable)) ||
+      names.some(v => arg.expression && new RegExp(`\\b${escapeRegExp(v)}\\b`).test(arg.expression))
+        ? [i] : []);
+
+    // Redefinition override (cognium-dev #266): the name-based gate
+    // cannot distinguish a source-named variable from a later
+    // same-named redefinition to an untainted value
+    // (`a = req.getParameter(); a = "safe"; helper.run(a)`). When
+    // the DFG *positively* proves the matched variable's reaching
+    // def at the call line is such a redefinition — a known def_id
+    // NOT in the source's reachable def set — reject the flow.
+    // Fires only when the DFG can prove it; empty/imprecise DFG
+    // (e.g. Python) → no rejection, #146 name decision stands.
+    if (this.taintClobbered(ir, call.location.line, matchedName, reachable.defIds)) return undefined;
+    return carried;
+  }
+
+  /**
    * JS/TS: does a value in one of the parameters at `positions` of `method` reach the
    * arguments of `sink`? Names derived from those parameters by def-use chains are matched
    * against the sink call's dangerous arguments (`argPositions`, else all). Conservative:
@@ -1195,34 +1368,46 @@ export class CrossFileResolver {
       .filter(c => c.method_name === sink.method
         && (sink.callColumn === undefined || c.location.column === undefined || c.location.column === sink.callColumn));
     if (calls.length === 0) return true;
-    const seeds = ir.dfg.defs
-      .filter(d => params.includes(d.variable) && d.line >= method.start_line && d.line <= method.end_line)
-      .map(d => d.id);
-    const names = new Set<string>(params);
-    if (seeds.length > 0) {
-      // Def-use walk from the parameters that does not pass through a def whose value is
-      // literal-only (`const where = options.id ? 'WHERE id = ?' : ''`): the parameter
-      // decides which literal, but the value carries none of it.
-      const lines = this.sourceLines?.get(file);
-      const defById = new Map(ir.dfg.defs.map(d => [d.id, d]));
-      const visited = new Set<number>(seeds);
-      const frontier = [...seeds];
-      while (frontier.length > 0) {
-        const cur = frontier.shift()!;
-        for (const ch of ir.dfg.chains ?? []) {
-          if (ch.from_def !== cur || visited.has(ch.to_def)) continue;
-          visited.add(ch.to_def);
-          const d = defById.get(ch.to_def);
-          if (!d || (lines && literalOnlyAssignment(lines[d.line - 1] ?? '', d.variable))) continue;
-          if (d.variable) names.add(d.variable);
-          frontier.push(ch.to_def);
-        }
-      }
-    }
+    const names = this.jsNamesFromParams(ir, method, params, file);
     const res = [...names].map(n => new RegExp(`(?<![\\w$.])${escapeRegExp(n)}(?![\\w$])`));
     return calls.some(c => c.arguments
       .filter(a => !sink.argPositions || sink.argPositions.length === 0 || sink.argPositions.includes(a.position))
       .some(a => (a.variable && names.has(a.variable)) || res.some(re => re.test(a.expression ?? ''))));
+  }
+
+  /**
+   * JS/TS: the parameter names `params` of `method` and the locals derived from
+   * them by def-use chains inside the method. The walk does not pass through a
+   * def whose value is literal-only (`const where = options.id ? 'WHERE id = ?'
+   * : ''`): the parameter decides which literal, but the value carries none of it.
+   */
+  private jsNamesFromParams(
+    ir: CircleIR,
+    method: { start_line: number; end_line: number },
+    params: string[],
+    file: string,
+  ): Set<string> {
+    const names = new Set<string>(params);
+    const seeds = ir.dfg.defs
+      .filter(d => params.includes(d.variable) && d.line >= method.start_line && d.line <= method.end_line)
+      .map(d => d.id);
+    if (seeds.length === 0) return names;
+    const lines = this.sourceLines?.get(file);
+    const defById = new Map(ir.dfg.defs.map(d => [d.id, d]));
+    const visited = new Set<number>(seeds);
+    const frontier = [...seeds];
+    while (frontier.length > 0) {
+      const cur = frontier.shift()!;
+      for (const ch of ir.dfg.chains ?? []) {
+        if (ch.from_def !== cur || visited.has(ch.to_def)) continue;
+        visited.add(ch.to_def);
+        const d = defById.get(ch.to_def);
+        if (!d || (lines && literalOnlyAssignment(lines[d.line - 1] ?? '', d.variable))) continue;
+        if (d.variable) names.add(d.variable);
+        frontier.push(ch.to_def);
+      }
+    }
+    return names;
   }
 
   /** Sink call on this line (method + optional column), same filter as `jsParamReachesSinkArgs`. */
@@ -1287,6 +1472,150 @@ export class CrossFileResolver {
     }
     visited.delete(key);
     return out;
+  }
+
+  /**
+   * JS/TS: taint a module function hands back to its caller through a
+   * callback.
+   *
+   *   // app.js
+   *   withHost(req.query.host, (h) => exec(`ping ${h}`));
+   *   // host.js
+   *   exports.withHost = (value, cb) => { cb(value.trim()); };
+   *
+   * The caller passes a source to a function in another file, and that
+   * function calls one of its own parameters with a value derived from the
+   * tainted parameter. The function the caller passed in that position (an
+   * inline function, or a function of the caller's file named there) receives
+   * the value in the matching parameter; a sink inside it whose dangerous
+   * arguments read that parameter, directly or through a derived local, is
+   * reported. A callee that calls back with a constant or an unrelated value
+   * carries nothing.
+   */
+  findJsCallbackTaintPaths(deadline?: () => boolean): InterproceduralTaintPath[] {
+    const paths: InterproceduralTaintPath[] = [];
+    const seen = new Set<string>();
+    const wordRe = (n: string): RegExp => new RegExp(`(?<![\\w$.])${escapeRegExp(n)}(?![\\w$])`);
+    for (const [filePath, ir] of this.fileIRs) {
+      if (deadline?.()) break;
+      if (ir.meta.language !== 'javascript' && ir.meta.language !== 'typescript') continue;
+      if (ir.taint.sinks.length === 0) continue;
+      const lines = this.sourceLines?.get(filePath);
+      if (!lines) continue;
+      const idx = this.getFileIndex(ir);
+      for (const source of ir.taint.sources) {
+        if (source.type === 'interprocedural_param') continue;
+        const sourceVar = source.variable ?? this.getLocalDefVarAt(ir, source.line);
+        if (!sourceVar) continue;
+        const reachable = this.collectTaintReachable(ir, sourceVar, source.line, filePath);
+        for (const call of ir.calls) {
+          if (call.location.line < source.line || call.arguments.length < 2) continue;
+          const carried = this.carriedArgPositions(ir, call, reachable);
+          if (!carried) continue;
+          const resolved = this.resolveCall(call, filePath);
+          if (!resolved || resolved.targetFile === filePath) continue;
+          const targetIR = this.fileIRs.get(resolved.targetFile);
+          if (!targetIR || (targetIR.meta.language !== 'javascript' && targetIR.meta.language !== 'typescript')) continue;
+          const shortName = resolved.targetMethod.split('.').pop() ?? resolved.targetMethod;
+          const ownerName = resolved.targetClass.split('.').pop();
+          const callee = targetIR.types.find(t => t.name === ownerName)?.methods.find(m => m.name === shortName)
+            ?? targetIR.types.flatMap(t => t.methods).find(m => m.name === shortName);
+          if (!callee) continue;
+          const tainted = carried.map(i => callee.parameters[i]?.name).filter((n): n is string => !!n);
+          if (tainted.length === 0) continue;
+          const derived = this.jsNamesFromParams(targetIR, callee, tainted, resolved.targetFile);
+          const derivedRes = [...derived].map(wordRe);
+          const calleeCalls = this.getFileIndex(targetIR).callsByMethod.get(callee) ?? [];
+          const calleeLines = this.sourceLines?.get(resolved.targetFile);
+          const tables = calleeLines
+            ? constLookupTables(calleeLines.join('\n'), targetIR.meta.language)
+            : new Set<string>();
+
+          for (let j = 0; j < callee.parameters.length && j < call.arguments.length; j++) {
+            const cbName = callee.parameters[j]?.name;
+            if (!cbName || carried.includes(j) || !/^[A-Za-z_$][\w$]*$/.test(cbName)) continue;
+            const fn = this.jsCallbackFunction(ir, lines, call, j);
+            if (!fn) continue;
+            for (const cbCall of calleeCalls) {
+              if (cbCall.receiver || cbCall.method_name !== cbName) continue;
+              for (const arg of cbCall.arguments) {
+                const carriesValue = (!!arg.variable && derived.has(arg.variable))
+                  || derivedRes.some(re => re.test(arg.expression ?? ''));
+                if (!carriesValue) continue;
+                // `cb(cond ? 'a' : 'b')`, `cb(String(…))` of one, or `cb(TABLE[key])`
+                // on a constant table: the parameter picks the value, it is not in it.
+                const expr = (arg.expression ?? '').trim();
+                const inner = /^String\s*\(([\s\S]*)\)$/.exec(expr)?.[1]?.trim() ?? expr;
+                if (LITERAL_RHS.test(inner) || isConstTableLookup(inner, tables)) continue;
+                const param = fn.params[arg.position];
+                if (!param) continue;
+                const names = [...this.jsNamesFromParams(ir, fn, [param], filePath)].map(wordRe);
+                for (const sink of ir.taint.sinks) {
+                  if (sink.line < fn.start_line || sink.line > fn.end_line) continue;
+                  const sinkCalls = (idx.callsByLine.get(sink.line) ?? []).filter(c => this.callMatchesSink(sink, c));
+                  const reads = sinkCalls.some(c => this.dangerousSinkArguments(sink, c)
+                    .some(a => names.some(re => re.test(a.expression ?? ''))));
+                  if (!reads) continue;
+                  const key = `${filePath}:${source.line}→${filePath}:${sink.line}:${sink.type}`;
+                  if (seen.has(key)) continue;
+                  seen.add(key);
+                  const hops: InterproceduralTaintPath['hops'] = [
+                    { file: filePath, line: source.line, method: '', kind: 'source' },
+                    { file: filePath, line: call.location.line, method: call.in_method ?? '', kind: 'sink_call' },
+                    { file: resolved.targetFile, line: cbCall.location.line, method: resolved.targetMethod, kind: 'callback' },
+                    { file: filePath, line: sink.line, method: fn.name, kind: 'sink' },
+                  ];
+                  paths.push({
+                    source: { file: filePath, line: source.line, type: source.type },
+                    sink: { file: filePath, line: sink.line, type: sink.type, cwe: sink.cwe },
+                    hops,
+                    confidence: Math.max(0.3, Math.pow(0.85, hops.length - 1)),
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    return paths;
+  }
+
+  /**
+   * The function a JS/TS call passes as its argument `j`: an inline arrow
+   * function or function expression (its line range found in `lines` from
+   * the call's line), or the name of a function declared in the caller's
+   * file. Parameter names keep their positions; a destructuring pattern is ''.
+   */
+  private jsCallbackFunction(
+    ir: CircleIR,
+    lines: readonly string[],
+    call: CallInfo,
+    j: number,
+  ): { name: string; start_line: number; end_line: number; params: string[] } | undefined {
+    const expr = (call.arguments[j]?.expression ?? '').trim();
+    if (/^[A-Za-z_$][\w$]*$/.test(expr)) {
+      const m = ir.types.find(t => t.name === '<module>')?.methods.find(x => x.name === expr);
+      return m ? { name: m.name, start_line: m.start_line, end_line: m.end_line, params: m.parameters.map(p => p.name) } : undefined;
+    }
+    const head = /^(?:async\s+)?(?:function\b[^(]*\(([^)]*)\)|\(([^)]*)\)\s*(?::[^=]*)?=>|([A-Za-z_$][\w$]*)\s*=>)/.exec(expr);
+    if (!head) return undefined;
+    const list = head[1] ?? head[2] ?? head[3] ?? '';
+    const params = list.split(',').map(raw => {
+      let p = raw.trim();
+      if (p.startsWith('...')) p = p.slice(3);
+      const cut = p.search(/[=:?]/);
+      if (cut >= 0) p = p.slice(0, cut);
+      p = p.trim();
+      return /^[A-Za-z_$][\w$]*$/.test(p) ? p : '';
+    });
+    const first = expr.split('\n')[0].trim();
+    const from = call.location.line - 1;
+    for (let i = from; i < Math.min(lines.length, from + 50); i++) {
+      if (!(lines[i] ?? '').includes(first)) continue;
+      return { name: '', start_line: i + 1, end_line: i + expr.split('\n').length, params };
+    }
+    return undefined;
   }
 
   /**
@@ -1358,12 +1687,12 @@ export class CrossFileResolver {
             const resolved = this.resolveCall(call, callerFile);
             if (!resolved) continue;
 
-            const callee = this.methodTaintInfo.get(resolved.targetMethod);
+            const callee = this.calleeTaintInfo(resolved);
             if (!callee) continue;
 
             // 2a. If callee returns a source and is NOT a sanitizer, mark every
             //     local def on this caller line as tainted (the assignment LHS).
-            const calleeNode0 = methodIndex.get(resolved.targetMethod);
+            const calleeNode0 = this.calleeNodeOf(methodIndex, resolved);
             if (callee.returnsSource && !callee.sanitizes && callee.sourceType &&
                 !(calleeNode0 && this.sourcesOnlySteerBranches(callee.file, calleeNode0.ir, calleeNode0.method))) {
               const calleeNode = calleeNode0;
@@ -1411,7 +1740,7 @@ export class CrossFileResolver {
                 continue;
               }
 
-              const calleeNode = methodIndex.get(resolved.targetMethod);
+              const calleeNode = this.calleeNodeOf(methodIndex, resolved);
               if (!calleeNode) continue;
 
               this.noteJavaStaticFieldWriteFromParam(
@@ -1730,14 +2059,14 @@ export class CrossFileResolver {
           for (const call of callsInMethod) {
             const resolved = this.resolveCall(call, callerFile);
             if (!resolved) continue;
-            const callee = this.methodTaintInfo.get(resolved.targetMethod);
+            const callee = this.calleeTaintInfo(resolved);
             if (!callee || callee.sanitizes || callee.taintedParams.length === 0) continue;
 
             for (let argIdx = 0; argIdx < call.arguments.length; argIdx++) {
               if (!callee.taintedParams.includes(argIdx)) continue;
               const matched = this.matchTaintedArg(call.arguments[argIdx], tainted);
               if (!matched) continue;
-              const calleeNode = methodIndex.get(resolved.targetMethod);
+              const calleeNode = this.calleeNodeOf(methodIndex, resolved);
               if (!calleeNode) continue;
               const calleeIdx = this.getFileIndex(calleeNode.ir);
               const sinksInCallee = calleeIdx.sinksByMethod.get(calleeNode.method) ?? [];
@@ -1902,9 +2231,9 @@ export class CrossFileResolver {
           for (const call of callerIdx.callsByMethod.get(method) ?? []) {
             const resolved = this.resolveCall(call, callerFile);
             if (!resolved) continue;
-            const callee = this.methodTaintInfo.get(resolved.targetMethod);
+            const callee = this.calleeTaintInfo(resolved);
             if (!callee || callee.taintedParams.length === 0 || callee.sanitizes) continue;
-            const calleeNode = methodIndex.get(resolved.targetMethod);
+            const calleeNode = this.calleeNodeOf(methodIndex, resolved);
             if (!calleeNode) continue;
 
             for (let argIdx = 0; argIdx < call.arguments.length; argIdx++) {
@@ -2308,20 +2637,37 @@ export class CrossFileResolver {
   }
 
   /**
-   * Index methods by FQN for quick lookup during chain construction.
+   * Index methods by FQN for quick lookup during chain construction, and by
+   * `${file}#${fqn}` (see `methodTaintInfoByFile`).
    */
   private buildMethodIndex(): Map<string, { ir: CircleIR; method: MethodInfo }> {
     const idx = new Map<string, { ir: CircleIR; method: MethodInfo }>();
-    for (const [, ir] of this.fileIRs) {
+    for (const [file, ir] of this.fileIRs) {
       const pkg = ir.meta.package || '';
       for (const type of ir.types) {
         const typeFqn = pkg ? `${pkg}.${type.name}` : type.name;
         for (const method of type.methods) {
           idx.set(`${typeFqn}.${method.name}`, { ir, method });
+          idx.set(`${file}#${typeFqn}.${method.name}`, { ir, method });
         }
       }
     }
     return idx;
+  }
+
+  /** Taint summary of the method a call resolved to, in the file it resolved to. */
+  private calleeTaintInfo(resolved: ResolvedCall): MethodTaintInfo | undefined {
+    return this.methodTaintInfoByFile.get(`${resolved.targetFile}#${resolved.targetMethod}`)
+      ?? this.methodTaintInfo.get(resolved.targetMethod);
+  }
+
+  /** The method a call resolved to, in the file it resolved to. */
+  private calleeNodeOf(
+    methodIndex: Map<string, { ir: CircleIR; method: MethodInfo }>,
+    resolved: ResolvedCall,
+  ): { ir: CircleIR; method: MethodInfo } | undefined {
+    return methodIndex.get(`${resolved.targetFile}#${resolved.targetMethod}`)
+      ?? methodIndex.get(resolved.targetMethod);
   }
 
   /** Return the first local-def variable name at a given line, if any. */
@@ -2639,8 +2985,10 @@ export class CrossFileResolver {
   clear(): void {
     this.fileIRs.clear();
     this.methodTaintInfo.clear();
+    this.methodTaintInfoByFile.clear();
     this.fieldTaintInfo.clear();
     this.resolvedCalls.clear();
+    this.jsDefaultExportNames.clear();
   }
 
   /** Expose field-taint summary (for tests + diagnostics). */

@@ -1165,6 +1165,13 @@ function findJSEnclosingFunction(node: Node): string | null {
         }
       }
     }
+    // A function a module exports under a key (`exports.fn = …`,
+    // `module.exports = { fn: … }`, `export default function …`): the
+    // types extractor records it as a `<module>` method of that name.
+    if (current.type === 'arrow_function' || current.type === 'function_expression') {
+      const exported = jsExportedFunctionName(current);
+      if (exported) return exported;
+    }
     // Express route handler pattern: app.get('/path', (req, res) => { ... })
     if (current.type === 'arrow_function' || current.type === 'function_expression') {
       const parent = current.parent;
@@ -1185,6 +1192,62 @@ function findJSEnclosingFunction(node: Node): string | null {
     current = current.parent;
   }
   return null;
+}
+
+/** `exports` or `module.exports`. */
+function isJSExportsObject(node: Node | null): boolean {
+  if (!node) return false;
+  if (node.type === 'identifier') return getNodeText(node) === 'exports';
+  return node.type === 'member_expression' && getNodeText(node).replace(/\s+/g, '') === 'module.exports';
+}
+
+/** True when `node` is a statement directly in the program. */
+function isTopLevelStatement(node: Node | null): boolean {
+  return node?.parent?.type === 'program';
+}
+
+/**
+ * The name a module exports the function `fn` under, matching the
+ * `<module>` methods the types extractor records for exported functions;
+ * null when `fn` is not exported that way.
+ */
+function jsExportedFunctionName(fn: Node): string | null {
+  const ownName = (): string => {
+    const n = fn.childForFieldName('name');
+    return n ? getNodeText(n) : 'default';
+  };
+  const keyName = (key: Node | null): string | null => {
+    if (!key) return null;
+    if (key.type === 'property_identifier' || key.type === 'identifier') return getNodeText(key);
+    const m = key.type === 'string' ? /^(['"])([A-Za-z_$][\w$]*)\1$/.exec(getNodeText(key)) : null;
+    return m ? m[2] : null;
+  };
+  /** The object is `module.exports = { … }` or `export default { … }` at the top level. */
+  const exportedObject = (obj: Node | null): boolean => {
+    const p = obj?.parent;
+    if (!p) return false;
+    if (p.type === 'export_statement') return isTopLevelStatement(p);
+    return p.type === 'assignment_expression'
+      && p.childForFieldName('right')?.id === obj?.id
+      && isJSExportsObject(p.childForFieldName('left'))
+      && getNodeText(p.childForFieldName('left')!).replace(/\s+/g, '') === 'module.exports'
+      && p.parent?.type === 'expression_statement' && isTopLevelStatement(p.parent);
+  };
+
+  const parent = fn.parent;
+  if (!parent) return null;
+  if (parent.type === 'export_statement') return isTopLevelStatement(parent) ? ownName() : null;
+  if (parent.type === 'pair') {
+    return parent.childForFieldName('value')?.id === fn.id && exportedObject(parent.parent)
+      ? keyName(parent.childForFieldName('key'))
+      : null;
+  }
+  if (parent.type !== 'assignment_expression' || parent.childForFieldName('right')?.id !== fn.id) return null;
+  if (parent.parent?.type !== 'expression_statement' || !isTopLevelStatement(parent.parent)) return null;
+  const left = parent.childForFieldName('left');
+  if (left?.type !== 'member_expression') return null;
+  if (getNodeText(left).replace(/\s+/g, '') === 'module.exports') return ownName();
+  return isJSExportsObject(left.childForFieldName('object')) ? keyName(left.childForFieldName('property')) : null;
 }
 
 /**

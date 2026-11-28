@@ -32,6 +32,8 @@ import { findRustLiteralEqualityGuardSanitizers } from '../rust-literal-guard.js
 import { constLookupTables, isConstTableLookup } from '../const-table-lookup.js';
 import { jsReplaceChainVerdict } from '../js-crlf-strip.js';
 import { jsHelperReturnsNoParam } from '../js-helper-return.js';
+import { findH3EventHandlerSources } from '../js-h3-sources.js';
+import { findJsNestReturnSinks } from '../js-nest-return-sinks.js';
 
 // ---------------------------------------------------------------------------
 // Pattern tables (moved from analyzer.ts)
@@ -367,6 +369,27 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     }
 
     const jsTaintedVars = buildJavaScriptTaintedVars(code, language);
+
+    // -- JS/TS: a NestJS controller handler's returned string is the response
+    // body (text/html); a `@Redirect()` handler's returned `url` is followed.
+    // TaintPropagationPass links each synthesised sink to its source. The
+    // carriers join the forward-taint map so the XSS line filter keeps them.
+    if (language === 'javascript' || language === 'typescript') {
+      const tm = ctx.getResult<TaintMatcherResult>('taint-matcher');
+      for (const r of findJsNestReturnSinks(code, language, types, [...tm.sources, ...additionalSources])) {
+        additionalSinks.push({
+          type: r.type,
+          cwe: r.type === 'xss' ? 'CWE-79' : 'CWE-601',
+          line: r.sinkLine,
+          location: r.type === 'xss'
+            ? `NestJS handler returns a string with request input at line ${r.sinkLine}`
+            : `NestJS @Redirect handler returns a url with request input at line ${r.sinkLine}`,
+          confidence: 0.9,
+        });
+        for (const c of r.carriers) if (!jsTaintedVars.has(c)) jsTaintedVars.set(c, r.sourceLine);
+      }
+    }
+
     const jsSubscribeInterproceduralVars = javascriptSubscribeInterproceduralTaintVars(
       code,
       language,
@@ -2842,6 +2865,7 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
   sources.push(...findExpressDestructuredRequestSources(sourceCode));
   if (language === 'javascript' || language === 'typescript') {
     sources.push(...findGraphqlResolverArgSources(sourceCode));
+    sources.push(...findH3EventHandlerSources(sourceCode, language));
   }
 
   return sources;

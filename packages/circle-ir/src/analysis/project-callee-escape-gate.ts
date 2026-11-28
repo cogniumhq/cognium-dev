@@ -1,5 +1,6 @@
 /**
- * Project-callee escape gate (cognium-dev#637, C#).
+ * Project-callee escape gate (cognium-dev#637, C#; also JS/TS calls resolved
+ * through an import to a function another module exports).
  *
  * A file analysed on its own cannot see a method defined in another file, so
  * a tainted argument passed to it is reported as an `external_taint_escape`
@@ -36,6 +37,12 @@ import type { CircleIR, CallInfo, DFGDef, MethodInfo } from '../types/index.js';
 import type { ProjectGraph } from '../graph/project-graph.js';
 
 const ESCAPE = 'external_taint_escape';
+
+/**
+ * C#, and JS/TS, where a call through an import of a relative module resolves
+ * exactly to the function that module exports.
+ */
+const GATED_LANGUAGES: ReadonlySet<string> = new Set(['csharp', 'javascript', 'typescript']);
 
 /**
  * Blank string literals but keep the contents of `{...}` holes in interpolated
@@ -214,7 +221,7 @@ export function dropEscapesToProjectCallees(
   const resolver = projectGraph.resolver;
   for (const fa of fileAnalyses) {
     const ir = fa.analysis;
-    if (ir.meta.language !== 'csharp') continue;
+    if (!GATED_LANGUAGES.has(ir.meta.language)) continue;
     const sinks = ir.taint?.sinks ?? [];
     if (!sinks.some(s => s.type === ESCAPE)) continue;
 

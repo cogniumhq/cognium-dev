@@ -2171,9 +2171,12 @@ export async function analyzeProject(
     }
   }
 
-  // 1.5 (#637) — a C# call that resolves to a method in another project file
-  //     is not an `external_taint_escape`; drop it before the cross-file phase
-  //     so the callee-reach check decides what is reported.
+  // 1.5 (#637) — a C# or JS/TS call that resolves to a method in another
+  //     project file is not an `external_taint_escape`; drop it before the
+  //     cross-file phase so the callee-reach check decides what is reported.
+  //     The resolver reads a JS/TS module's default export from its text, so
+  //     it gets the source lines before it resolves (and caches) any call.
+  projectGraph.resolver.setSourceLines(sourceLinesByFile);
   dropEscapesToProjectCallees(fileAnalyses, projectGraph);
 
   // 2. Cross-file analysis
@@ -2242,6 +2245,7 @@ export async function analyzeProject(
   const entryPathDropped = applyRequireEntryPath(fileAnalyses, {
     projectProfile: options.projectProfile,
     disabledPasses: options.disabledPasses,
+    crossFileTaintPaths: crossFileResult.taintPaths,
   });
 
   // 3.6 (#636 / #614) — constant-caller gate. Drops a C#/Java parameter-seeded sink flow

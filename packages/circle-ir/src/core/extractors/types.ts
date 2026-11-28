@@ -577,8 +577,18 @@ function extractJavaScriptTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
     }
   }
 
-  // Extract arrow functions assigned to const/let
+  // Extract arrow functions assigned to const/let, then the functions a
+  // module exports under a key rather than a declared name.
   const arrowFuncs = extractNamedArrowFunctions(tree, cache);
+  const declared = new Set([
+    ...(types.find(t => t.name === '<module>')?.methods ?? []).map(m => m.name),
+    ...arrowFuncs.map(m => m.name),
+  ]);
+  for (const m of extractModuleExportFunctions(tree.rootNode)) {
+    if (declared.has(m.name)) continue;
+    declared.add(m.name);
+    arrowFuncs.push(m);
+  }
   if (arrowFuncs.length > 0) {
     // Add to existing module or create one
     const moduleType = types.find(t => t.name === '<module>');
@@ -1430,50 +1440,140 @@ function extractNamedArrowFunctions(tree: Tree, cache?: NodeCache): MethodInfo[]
       const nameNode = declarator.childForFieldName('name');
       const valueNode = declarator.childForFieldName('value');
 
-      if (nameNode && nameNode.type === 'identifier' &&
-          valueNode && valueNode.type === 'arrow_function') {
-        const name = getNodeText(nameNode);
-
-        // Extract parameters from arrow function
-        const params = valueNode.childForFieldName('parameters');
-        const parameters = params ? extractJSParameters(params) : [];
-
-        // Check for single parameter without parentheses
-        if (!params) {
-          const paramNode = valueNode.childForFieldName('parameter');
-          if (paramNode && paramNode.type === 'identifier') {
-            parameters.push({
-              name: getNodeText(paramNode),
-              type: null,
-              annotations: [],
-              line: paramNode.startPosition.row + 1,
-            });
-          }
-        }
-
-        const modifiers: string[] = [];
-        for (let i = 0; i < valueNode.childCount; i++) {
-          const child = valueNode.child(i);
-          if (child && child.type === 'async') {
-            modifiers.push('async');
-            break;
-          }
-        }
-
-        functions.push({
-          name,
-          return_type: null,
-          parameters,
-          annotations: [],
-          modifiers,
-          start_line: declarator.startPosition.row + 1,
-          end_line: declarator.endPosition.row + 1,
-        });
+      if (nameNode && nameNode.type === 'identifier' && valueNode && isJSFunctionValue(valueNode)) {
+        functions.push(jsFunctionValueInfo(getNodeText(nameNode), valueNode, declarator));
       }
     }
   }
 
   return functions;
+}
+
+/** An arrow function or a function expression. */
+function isJSFunctionValue(node: Node): boolean {
+  return node.type === 'arrow_function' || node.type === 'function_expression' || node.type === 'function';
+}
+
+/**
+ * A `<module>` method for the function value `fn` bound under `name`,
+ * spanning `range` (the declarator, assignment or property that binds it).
+ */
+function jsFunctionValueInfo(name: string, fn: Node, range: Node): MethodInfo {
+  const params = fn.childForFieldName('parameters');
+  const parameters = params ? extractJSParameters(params) : [];
+  // A single arrow parameter without parentheses: `x => …`.
+  if (!params) {
+    const paramNode = fn.childForFieldName('parameter');
+    if (paramNode && paramNode.type === 'identifier') {
+      parameters.push({
+        name: getNodeText(paramNode),
+        type: null,
+        annotations: [],
+        line: paramNode.startPosition.row + 1,
+      });
+    }
+  }
+
+  const modifiers: string[] = [];
+  for (let i = 0; i < fn.childCount; i++) {
+    const child = fn.child(i);
+    if (child && child.type === 'async') {
+      modifiers.push('async');
+      break;
+    }
+  }
+
+  return {
+    name,
+    return_type: null,
+    parameters,
+    annotations: [],
+    modifiers,
+    start_line: range.startPosition.row + 1,
+    end_line: range.endPosition.row + 1,
+  };
+}
+
+/** `exports` or `module.exports`. */
+function isCommonJsExportsObject(node: Node | null): boolean {
+  if (!node) return false;
+  if (node.type === 'identifier') return getNodeText(node) === 'exports';
+  if (node.type !== 'member_expression') return false;
+  const obj = node.childForFieldName('object');
+  const prop = node.childForFieldName('property');
+  return obj?.type === 'identifier' && getNodeText(obj) === 'module'
+    && !!prop && getNodeText(prop) === 'exports';
+}
+
+/** The property name of an object key node (`fn`, `'fn'`, `"fn"`), or null when computed. */
+function jsPropertyKeyName(key: Node | null): string | null {
+  if (!key) return null;
+  if (key.type === 'property_identifier' || key.type === 'identifier') return getNodeText(key);
+  if (key.type === 'string') {
+    const m = /^(['"])([A-Za-z_$][\w$]*)\1$/.exec(getNodeText(key));
+    return m ? m[2] : null;
+  }
+  return null;
+}
+
+/**
+ * Functions a module exports without declaring them under that name, as
+ * `<module>` methods named by the exported key, so a call from another file
+ * can be resolved to them:
+ *   - CommonJS `exports.fn = …` and `module.exports.fn = …`;
+ *   - the function-valued properties and methods of `module.exports = { … }`
+ *     and of `export default { … }`;
+ *   - `module.exports = function …` / `module.exports = (…) => …` and an
+ *     anonymous `export default function …` / `export default (…) => …`,
+ *     named by the function's own name when it has one, else `default`.
+ * Only top-level statements count.
+ */
+function extractModuleExportFunctions(root: Node): MethodInfo[] {
+  const out: MethodInfo[] = [];
+  const fromObject = (obj: Node): void => {
+    for (let i = 0; i < obj.namedChildCount; i++) {
+      const member = obj.namedChild(i);
+      if (!member) continue;
+      if (member.type === 'pair') {
+        const name = jsPropertyKeyName(member.childForFieldName('key'));
+        const value = member.childForFieldName('value');
+        if (name && value && isJSFunctionValue(value)) out.push(jsFunctionValueInfo(name, value, member));
+      } else if (member.type === 'method_definition') {
+        const name = jsPropertyKeyName(member.childForFieldName('name'));
+        if (name) out.push(jsFunctionValueInfo(name, member, member));
+      }
+    }
+  };
+  const ownName = (fn: Node): string => {
+    const n = fn.childForFieldName('name');
+    return n ? getNodeText(n) : 'default';
+  };
+
+  for (let i = 0; i < root.namedChildCount; i++) {
+    const stmt = root.namedChild(i);
+    if (!stmt) continue;
+    if (stmt.type === 'expression_statement') {
+      const asn = stmt.namedChild(0);
+      if (asn?.type !== 'assignment_expression') continue;
+      const left = asn.childForFieldName('left');
+      const right = asn.childForFieldName('right');
+      if (!left || !right || left.type !== 'member_expression') continue;
+      if (isCommonJsExportsObject(left)) {
+        if (getNodeText(left) !== 'module.exports') continue;
+        if (isJSFunctionValue(right)) out.push(jsFunctionValueInfo(ownName(right), right, stmt));
+        else if (right.type === 'object') fromObject(right);
+      } else if (isCommonJsExportsObject(left.childForFieldName('object'))) {
+        const name = jsPropertyKeyName(left.childForFieldName('property'));
+        if (name && isJSFunctionValue(right)) out.push(jsFunctionValueInfo(name, right, stmt));
+      }
+    } else if (stmt.type === 'export_statement') {
+      const value = stmt.childForFieldName('value');
+      if (!value) continue;
+      if (isJSFunctionValue(value)) out.push(jsFunctionValueInfo(ownName(value), value, stmt));
+      else if (value.type === 'object') fromObject(value);
+    }
+  }
+  return out;
 }
 
 /**
