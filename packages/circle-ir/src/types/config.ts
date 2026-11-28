@@ -122,6 +122,15 @@ export interface SinkPattern {
    */
   safe_if_stream_arg_at?: number;
   /**
+   * Suppress the sink when the argument at the given 0-indexed position is a
+   * Go `context.Context` value (`ctx`, `context.Background()`, `r.Context()`).
+   * Used by the sqlx `Get` / `Select` sinks, whose argument 0 is a
+   * destination: a context there means another library's method of the same
+   * name (`rdb.Get(ctx, key)`). Positive evidence only, like
+   * `safe_if_stream_arg_at`.
+   */
+  safe_if_context_arg_at?: number;
+  /**
    * When true, the sink matches even if `receiver_type` is unresolved at the
    * call site, provided the receiver expression is a dotted property chain
    * (e.g. `req.db.query`, `ctx.app.db.execute`). This handles Express-style

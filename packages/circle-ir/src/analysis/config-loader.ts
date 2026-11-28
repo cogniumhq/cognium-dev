@@ -15,6 +15,7 @@ import type {
   SanitizerPattern,
   HeaderRule,
 } from '../types/config.js';
+import { GO_SQLX_SINKS } from './go-sqlx.js';
 
 /**
  * Parse YAML/JSON configuration content.
@@ -2541,6 +2542,10 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'rmdir', class: 'os', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'rmtree', class: 'shutil', type: 'path_traversal', cwe: 'CWE-22', severity: 'critical', arg_positions: [0] },
   { method: 'send_file', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['python'] },
+  // FastAPI / Starlette `FileResponse(path)` streams the file at `path`.
+  // Import-gated: Django's `FileResponse(open(p, "rb"))` takes a file object,
+  // whose `open` is already the sink.
+  { method: 'FileResponse', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['python'], requires_import: ['fastapi', 'fastapi.responses', 'starlette', 'starlette.responses'] },
 
   // Python XSS / SSTI
   // Issue #54: Flask's `render_template_string(template_str)` with an
@@ -3482,6 +3487,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // pattern: constants defined near the ship-1 blocks and spread here.
   ...DESERIALIZATION_FRAMEWORK_SINKS,
   ...NOSQL_FRAMEWORK_SINKS,
+  // Go sqlx query methods (`go-sqlx.ts`).
+  ...GO_SQLX_SINKS,
 ];
 
 export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
